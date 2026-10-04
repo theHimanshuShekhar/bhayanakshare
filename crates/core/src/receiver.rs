@@ -10,17 +10,25 @@
 //! Until the move into the save folder starts, either side can cancel (the incoming store is
 //! deleted), and an Offer nobody answers expires. A Sender that already has 5 Offers waiting
 //! gets `Busy` instead of a new one.
+//!
+//! The Receiver drives resume. Once it has accepted, a lost connection (or a restart of
+//! either Device) does not end the Transfer: it shows Reconnecting, dials the Sender again
+//! with backoff and says `Resume`, and fetches again when the Sender answers `ResumeOk` and
+//! `HashReady`. There is one fetch per Transfer, with no chunking: iroh-blobs keeps the
+//! verified part of the incoming store, re-hashing it after a crash, and asks only for what
+//! is missing. With no progress for 24 hours the Receiver gives up and deletes it.
 
 use std::{
     collections::hash_map::Entry,
     io,
     path::{Path, PathBuf},
     sync::Arc,
+    time::Duration,
 };
 
 use iroh::{
     EndpointAddr,
-    endpoint::{Connection, SendStream},
+    endpoint::Connection,
     protocol::{AcceptError, ProtocolHandler},
 };
 use iroh_blobs::{
@@ -30,9 +38,10 @@ use iroh_blobs::{
         remote::GetProgressItem,
     },
     format::collection::Collection,
+    get::GetError,
 };
 use n0_future::StreamExt;
-use tokio::sync::{mpsc, oneshot};
+use tokio::sync::oneshot;
 use tokio_util::sync::CancellationToken;
 
 use crate::{
@@ -41,8 +50,11 @@ use crate::{
     fsmove::rename_no_replace,
     identity::DeviceId,
     names::{numbered, validate_file_name},
-    protocol::{self, FrameError, Message, spawn_reader, write_frame},
-    session::{CLOSE_GRACE, Failure, LOST, Stop, UNEXPECTED, expect_hello, fail, stop},
+    protocol::{self, Message, spawn_reader, write_frame},
+    session::{
+        CLOSE_GRACE, FORGOTTEN, Failure, LOST, STALLED, Session, Stall, Stop, UNEXPECTED,
+        expect_hello, fail, made_progress, retry_delay, save_progress, stop,
+    },
     store,
     transfer::{OFFER_TTL_MS, Role, TransferId, TransferState},
 };
@@ -59,6 +71,12 @@ const PROGRESS_INTERVAL_MS: UnixMillis = 100;
 /// Bytes a one-file Transfer may download beyond the file itself: the Collection's hash
 /// sequence and names, a few hundred bytes at most.
 const COLLECTION_ALLOWANCE: u64 = 4096;
+
+/// How long one try to reach the Sender may take before the next is made.
+const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// How long a Receiver that cancelled while disconnected tries to tell the Sender.
+const TELL_TIMEOUT: Duration = Duration::from_secs(5);
 
 const BAD_OFFER: &str = "The other Device sent an invalid Offer.";
 const CANT_FETCH: &str = "Could not download the file from the sending Device.";
@@ -90,13 +108,61 @@ impl ProtocolHandler for Handler {
     }
 }
 
+/// A Transfer's incoming store, once opened.
+struct Opened {
+    store: store::Store,
+    dir: PathBuf,
+}
+
 async fn run(sh: Arc<Shared>, conn: Connection) {
     // Set once the Offer is accepted for processing, so a failure can be reported against it.
     let mut info = None;
+    let mut opened = None;
     let outcome = tokio::select! {
         () = sh.cancel.cancelled() => None,
-        outcome = flow(&sh, &conn, &mut info) => Some(outcome),
+        outcome = flow(&sh, &conn, &mut info, &mut opened) => Some(outcome),
     };
+    finish(&sh, info, opened, outcome).await;
+}
+
+/// Picks up a Transfer this Device had accepted before it restarted: the Receiver redials
+/// the Sender, which still has the Transfer, and fetches what is missing from the incoming
+/// store the Transfer left behind.
+pub(crate) fn recover(
+    sh: &Arc<Shared>,
+    info: TransferInfo,
+    root: [u8; 32],
+    save_dir: PathBuf,
+    progress_at: UnixMillis,
+) {
+    let cancel = sh.track(info.id);
+    let task_sh = sh.clone();
+    sh.tasks.spawn(async move {
+        let sh = task_sh;
+        let mut opened = None;
+        let root = Some(Hash::from_bytes(root));
+        let outcome = tokio::select! {
+            () = sh.cancel.cancelled() => None,
+            outcome = settle(
+                &sh, &info, &save_dir, None, root, None, &cancel, &mut opened,
+                Stall::new(progress_at),
+            ) => Some(outcome),
+        };
+        finish(&sh, Some(info), opened, outcome).await;
+    });
+}
+
+/// Ends the Transfer's task. `outcome` is `None` when the Device is shutting down: the
+/// Transfer is not over, so the incoming store is closed cleanly but kept for the next start.
+async fn finish(
+    sh: &Shared,
+    info: Option<TransferInfo>,
+    opened: Option<Opened>,
+    outcome: Option<Result<(), Failure>>,
+) {
+    if let Some(opened) = opened {
+        close_store(sh, opened, outcome.is_some());
+    }
     let Some(info) = info else { return };
     sh.pending.lock().unwrap_or_else(|e| e.into_inner()).remove(&info.id);
     sh.untrack(info.id);
@@ -109,6 +175,7 @@ async fn flow(
     sh: &Arc<Shared>,
     conn: &Connection,
     announced: &mut Option<TransferInfo>,
+    opened: &mut Option<Opened>,
 ) -> Result<(), Failure> {
     let peer_endpoint = conn.remote_id();
     let (mut send, recv) = conn.accept_bi().await.map_err(fail(LOST))?;
@@ -118,9 +185,15 @@ async fn flow(
         .map_err(fail(LOST))?;
     let peer_name = expect_hello(&mut incoming).await?;
     sh.remember_peer(DeviceId::from_endpoint_id(peer_endpoint), conn, peer_name.clone()).await;
+    let mut session = Session { conn: conn.clone(), send, incoming };
 
-    let offer = match incoming.recv().await {
+    let offer = match session.incoming.recv().await {
         Some(Ok(Message::Offer(offer))) => offer,
+        // Not an Offer: the Receiver of one of this Device's Transfers dialling back.
+        Some(Ok(Message::Resume { transfer_id })) => {
+            crate::sender::resume(sh, session, TransferId::from_bytes(transfer_id)).await;
+            return Ok(());
+        }
         Some(Ok(_)) => return Err(Failure::with(UNEXPECTED, "expected Offer")),
         Some(Err(e)) => return Err(Failure::with(LOST, e)),
         None => return Err(Failure::with(LOST, "closed before the Offer")),
@@ -165,8 +238,8 @@ async fn flow(
     if busy {
         // Not shown to the user and not recorded: it is as if the Offer had never come.
         tracing::debug!(peer = %info.peer.fingerprint(), "Offer refused: too many waiting");
-        write_frame(&mut send, &Message::Busy).await.map_err(fail(LOST))?;
-        let _ = send.finish();
+        write_frame(&mut session.send, &Message::Busy).await.map_err(fail(LOST))?;
+        let _ = session.send.finish();
         let _ = tokio::time::timeout(CLOSE_GRACE, conn.closed()).await;
         return Ok(());
     }
@@ -187,16 +260,16 @@ async fn flow(
             // and cancel, so both sides end the Transfer the same way.
             biased;
             decided = &mut decision => break decided.map_err(|_| Failure::with(LOST, "Offer withdrawn"))?,
-            msg = incoming.recv() => match msg {
+            msg = session.incoming.recv() => match msg {
                 Some(Ok(Message::HashReady { collection_hash })) if root.is_none() => {
                     root = Some(collection_hash.into());
                 }
                 Some(Ok(Message::Cancel)) => {
-                    stop(sh, &info, conn, &mut send, Stop::PeerCancelled).await;
+                    stop(sh, &info, Some(&mut session), Stop::PeerCancelled).await;
                     return Ok(());
                 }
                 Some(Ok(Message::Expired)) => {
-                    stop(sh, &info, conn, &mut send, Stop::PeerExpired).await;
+                    stop(sh, &info, Some(&mut session), Stop::PeerExpired).await;
                     return Ok(());
                 }
                 Some(Ok(_)) => return Err(Failure::with(UNEXPECTED, "message while deciding")),
@@ -204,94 +277,37 @@ async fn flow(
                 None => return Err(Failure::with(LOST, "stream ended while deciding")),
             },
             () = cancel.cancelled() => {
-                stop(sh, &info, conn, &mut send, Stop::Cancelled).await;
+                stop(sh, &info, Some(&mut session), Stop::Cancelled).await;
                 return Ok(());
             }
             () = &mut expiry => {
-                stop(sh, &info, conn, &mut send, Stop::Expired).await;
+                stop(sh, &info, Some(&mut session), Stop::Expired).await;
                 return Ok(());
             }
         }
     };
 
     let Decision::Accept(save_dir) = decision else {
-        write_frame(&mut send, &Message::Decline).await.map_err(fail(LOST))?;
-        let _ = send.finish();
+        write_frame(&mut session.send, &Message::Decline).await.map_err(fail(LOST))?;
+        let _ = session.send.finish();
         sh.transition(&info, TransferState::Declined).await;
         let _ = tokio::time::timeout(CLOSE_GRACE, conn.closed()).await;
         return Ok(());
     };
 
-    write_frame(&mut send, &Message::Accept).await.map_err(fail(LOST))?;
+    // Saved before the Sender can learn of the yes, so a restart finds where to resume.
+    let now = sh.now();
+    let known = root.map(|hash| *hash.as_bytes());
+    if let Err(e) = sh.db.start_transfer(info.id, known, Some(&save_dir), now).await {
+        tracing::warn!(transfer = %info.id, "could not record the save folder, so a restart cannot resume: {e}");
+    }
+    write_frame(&mut session.send, &Message::Accept).await.map_err(fail(LOST))?;
+    // An auto-accepted Transfer was announced as Accepted when it began.
     if auto.is_none() {
         sh.transition(&info, TransferState::Accepted).await;
     }
-    while root.is_none() {
-        tokio::select! {
-            biased;
-            msg = incoming.recv() => match msg {
-                Some(Ok(Message::HashReady { collection_hash })) => {
-                    root = Some(collection_hash.into());
-                }
-                Some(Ok(Message::Cancel)) => {
-                    stop(sh, &info, conn, &mut send, Stop::PeerCancelled).await;
-                    return Ok(());
-                }
-                // The Sender's clock ran out just before it read our answer.
-                Some(Ok(Message::Expired)) => {
-                    stop(sh, &info, conn, &mut send, Stop::PeerExpired).await;
-                    return Ok(());
-                }
-                Some(Ok(_)) => return Err(Failure::with(UNEXPECTED, "message before HashReady")),
-                Some(Err(e)) => return Err(Failure::with(LOST, e)),
-                None => return Err(Failure::with(LOST, "stream ended before HashReady")),
-            },
-            () = cancel.cancelled() => {
-                stop(sh, &info, conn, &mut send, Stop::Cancelled).await;
-                return Ok(());
-            }
-        }
-    }
-    let root = root.expect("loop above runs until set");
-
-    sh.transition(&info, TransferState::Transferring).await;
-    // On the chosen folder's filesystem, so saving is a rename.
-    let dir = incoming_dir(&save_dir, info.id);
-    let store = match store::open(&dir).await {
-        Ok(store) => store,
-        Err(e) => {
-            remove_dir(&dir).await;
-            return Err(Failure::with("Could not prepare space to receive the file.", e));
-        }
-    };
-
-    let control = Control { send: &mut send, incoming: &mut incoming, cancel: &cancel };
-    match fetch_and_save(sh, control, peer_endpoint, &store, &info, root, &save_dir).await {
-        Ok(Fetched::Saved(saved)) => {
-            let sent = write_frame(&mut send, &Message::Completed).await;
-            let _ = send.finish();
-            spawn_cleanup(sh, store, dir);
-            sh.transition(&info, TransferState::Completed { saved_to: Some(saved) }).await;
-            match sent {
-                Ok(()) => {
-                    let _ = tokio::time::timeout(CLOSE_GRACE, conn.closed()).await;
-                }
-                // The file is safely saved either way.
-                Err(e) => tracing::warn!("could not tell the Sender the file arrived: {e}"),
-            }
-            Ok(())
-        }
-        // Whatever was received so far is deleted with the store.
-        Ok(Fetched::Stopped(how)) => {
-            spawn_cleanup(sh, store, dir);
-            stop(sh, &info, conn, &mut send, how).await;
-            Ok(())
-        }
-        Err(failure) => {
-            spawn_cleanup(sh, store, dir);
-            Err(failure)
-        }
-    }
+    let shown = Some(TransferState::Accepted);
+    settle(sh, &info, &save_dir, Some(session), root, shown, &cancel, opened, Stall::new(now)).await
 }
 
 /// The save folder to accept `info` into without asking, if its Sender is a Contact with
@@ -320,14 +336,280 @@ fn incoming_dir(save_dir: &Path, id: TransferId) -> PathBuf {
     save_dir.join(INCOMING_DIR).join(id.to_string())
 }
 
-type Incoming = mpsc::Receiver<Result<Message, FrameError>>;
+/// How the Transfer ended after the Receiver accepted it, and the connection to the Sender
+/// if one is up.
+enum Ended {
+    /// The file is in the save folder, at this path.
+    Saved(String, Option<Session>),
+    /// Cancelled before anything was saved.
+    Stopped(Stop, Option<Session>),
+}
 
-/// The control stream to the Sender and the user's cancel signal, which a download has to
-/// watch while it runs.
-struct Control<'a> {
-    send: &'a mut SendStream,
-    incoming: &'a mut Incoming,
-    cancel: &'a CancellationToken,
+/// Everything after the Receiver said yes: fetch, reconnecting as often as it takes, then
+/// tell the Sender and record how it ended. `session` is the connection the Offer arrived
+/// on (none after a restart), `root` the content hash if the Sender already sent it, and
+/// `shown` the state the Transfer was last announced in on this Device's event stream.
+async fn settle(
+    sh: &Arc<Shared>,
+    info: &TransferInfo,
+    save_dir: &Path,
+    session: Option<Session>,
+    root: Option<Hash>,
+    shown: Option<TransferState>,
+    cancel: &CancellationToken,
+    opened: &mut Option<Opened>,
+    stall: Stall,
+) -> Result<(), Failure> {
+    let ended = drive(sh, info, save_dir, session, root, shown, cancel, opened, stall).await;
+    // However it ended, whatever is left in the incoming store is deleted with it: partial
+    // data after a failure or cancel, nothing after a save.
+    match opened.take() {
+        Some(opened) => close_store(sh, opened, true),
+        None => remove_dir(&incoming_dir(save_dir, info.id)).await,
+    }
+    match ended? {
+        Ended::Saved(saved, session) => {
+            let sent = match session {
+                Some(mut session) => {
+                    let sent = write_frame(&mut session.send, &Message::Completed).await;
+                    let _ = session.send.finish();
+                    Some(sent.map(|()| session.conn))
+                }
+                None => None,
+            };
+            finish_saved(sh, info, saved, sent).await
+        }
+        Ended::Stopped(how, mut session) => {
+            stop(sh, info, session.as_mut(), how).await;
+            if session.is_none() && matches!(how, Stop::Cancelled) {
+                // Cancelled while the Sender was out of reach, so it was not told: one quick
+                // try, after the user has seen it cancelled, to tell it now.
+                if let Ok(Resumed::Session(mut live)) =
+                    tokio::time::timeout(TELL_TIMEOUT, try_resume(sh, info)).await
+                {
+                    let _ = write_frame(&mut live.send, &Message::Cancel).await;
+                    let _ = live.send.finish();
+                    let _ = tokio::time::timeout(CLOSE_GRACE, live.conn.closed()).await;
+                }
+            }
+            Ok(())
+        }
+    }
+}
+
+/// Records the file as received. `sent` is the outcome of telling the Sender, if it could
+/// be told; the file is safely saved either way.
+async fn finish_saved(
+    sh: &Shared,
+    info: &TransferInfo,
+    saved: String,
+    sent: Option<Result<Connection, protocol::FrameError>>,
+) -> Result<(), Failure> {
+    sh.transition(info, TransferState::Completed { saved_to: Some(saved) }).await;
+    match sent {
+        Some(Ok(conn)) => {
+            let _ = tokio::time::timeout(CLOSE_GRACE, conn.closed()).await;
+        }
+        Some(Err(e)) => tracing::warn!("could not tell the Sender the file arrived: {e}"),
+        None => tracing::warn!("the Sender was out of reach, so it was not told the file arrived"),
+    }
+    Ok(())
+}
+
+/// Fetches the content, over a new connection whenever the last one is lost.
+async fn drive(
+    sh: &Arc<Shared>,
+    info: &TransferInfo,
+    save_dir: &Path,
+    mut session: Option<Session>,
+    mut root: Option<Hash>,
+    mut shown: Option<TransferState>,
+    cancel: &CancellationToken,
+    opened: &mut Option<Opened>,
+    mut stall: Stall,
+) -> Result<Ended, Failure> {
+    // Tries made to reach the Sender since the fetch last made progress; paces the next.
+    let mut attempt = 0;
+    loop {
+        let mut live = match session.take() {
+            Some(live) => live,
+            None => {
+                show(sh, info, &mut shown, TransferState::Reconnecting).await;
+                match reconnect(sh, info, cancel, &stall, &mut attempt).await? {
+                    Redialled::Session(live) => live,
+                    Redialled::Stopped(how) => return Ok(Ended::Stopped(how, None)),
+                }
+            }
+        };
+        // The go-ahead to fetch is the Sender's `HashReady`, which may already have arrived.
+        // After a reconnect the hash is the one known already and `ResumeOk` is the go-ahead.
+        let hash = match root {
+            Some(hash) => hash,
+            None => match await_hash(&mut live, cancel).await? {
+                Awaited::Ready(hash) => {
+                    // Saved so a restart can resume.
+                    let saved = sh.db.start_transfer(info.id, Some(*hash.as_bytes()), None, sh.now());
+                    if let Err(e) = saved.await {
+                        tracing::warn!(transfer = %info.id, "could not record the content hash, so a restart cannot resume: {e}");
+                    }
+                    *root.insert(hash)
+                }
+                Awaited::Stopped(how) => return Ok(Ended::Stopped(how, Some(live))),
+            },
+        };
+        show(sh, info, &mut shown, TransferState::Transferring).await;
+        if opened.is_none() {
+            // On the chosen folder's filesystem, so saving is a rename.
+            let dir = incoming_dir(save_dir, info.id);
+            match store::open(&dir).await {
+                Ok(store) => *opened = Some(Opened { store, dir }),
+                Err(e) => {
+                    remove_dir(&dir).await;
+                    return Err(Failure::with("Could not prepare space to receive the file.", e));
+                }
+            }
+        }
+        let store = &opened.as_ref().expect("opened above").store;
+        let last_progress = stall.last();
+        match fetch_and_save(sh, &mut live, cancel, store, info, hash, save_dir, &mut stall).await? {
+            Fetched::Saved(saved) => return Ok(Ended::Saved(saved, Some(live))),
+            Fetched::Stopped(how) => return Ok(Ended::Stopped(how, Some(live))),
+            Fetched::Lost => {
+                tracing::debug!(transfer = %info.id, "lost the Sender mid-fetch; reconnecting");
+                // The Sender is gone, but it may not know it yet.
+                live.conn.close(0u32.into(), b"reconnecting");
+                // A connection that got somewhere starts the quick retries over.
+                if stall.last() != last_progress {
+                    attempt = 0;
+                }
+                save_progress(sh, info, &mut stall).await;
+            }
+        }
+    }
+}
+
+/// Announces a state change unless the Transfer is already shown in that state (`None`:
+/// nothing has been announced on this Device's event stream yet).
+async fn show(
+    sh: &Shared,
+    info: &TransferInfo,
+    shown: &mut Option<TransferState>,
+    state: TransferState,
+) {
+    if shown.as_ref() != Some(&state) {
+        sh.transition(info, state.clone()).await;
+        *shown = Some(state);
+    }
+}
+
+enum Redialled {
+    Session(Session),
+    Stopped(Stop),
+}
+
+/// Dials the Sender and says `Resume` until it answers `ResumeOk`, pacing the tries with
+/// [`retry_delay`]. Ends the Transfer if the Sender no longer knows it or has failed or
+/// cancelled it, or if 24 hours pass with no progress.
+async fn reconnect(
+    sh: &Shared,
+    info: &TransferInfo,
+    cancel: &CancellationToken,
+    stall: &Stall,
+    attempt: &mut u32,
+) -> Result<Redialled, Failure> {
+    loop {
+        let pause = retry_delay(*attempt);
+        *attempt = attempt.saturating_add(1);
+        let try_again = async {
+            tokio::time::sleep(pause).await;
+            try_resume(sh, info).await
+        };
+        let resumed = tokio::select! {
+            biased;
+            () = cancel.cancelled() => return Ok(Redialled::Stopped(Stop::Cancelled)),
+            () = sleep_until(&*sh.clock, stall.deadline()) => return Err(Failure(STALLED.into())),
+            resumed = try_again => resumed,
+        };
+        match resumed {
+            Resumed::Session(live) => return Ok(Redialled::Session(live)),
+            Resumed::Cancelled => return Ok(Redialled::Stopped(Stop::PeerCancelled)),
+            Resumed::Refused(reason) => return Err(Failure(reason)),
+            Resumed::Unreachable => {}
+        }
+    }
+}
+
+enum Resumed {
+    /// The Sender answered `ResumeOk`.
+    Session(Session),
+    /// The Sender cancelled the Transfer.
+    Cancelled,
+    /// The Sender does not have the Transfer any more, or it failed there: the reason.
+    Refused(String),
+    /// Could not reach the Sender, or lost it again before it answered. Try again.
+    Unreachable,
+}
+
+async fn try_resume(sh: &Shared, info: &TransferInfo) -> Resumed {
+    let to = EndpointAddr::new(info.peer.endpoint_id());
+    let dialled = async {
+        let conn = sh.endpoint.connect(to, protocol::ALPN).await.map_err(|e| e.to_string())?;
+        let (mut send, recv) = conn.open_bi().await.map_err(|e| e.to_string())?;
+        let mut incoming = spawn_reader(recv);
+        let hello = Message::Hello(protocol::Hello::named(sh.device_name().await));
+        write_frame(&mut send, &hello).await.map_err(|e| e.to_string())?;
+        let peer_name = expect_hello(&mut incoming).await.map_err(|Failure(reason)| reason)?;
+        sh.remember_peer(info.peer, &conn, peer_name).await;
+        let resume = Message::Resume { transfer_id: *info.id.as_bytes() };
+        write_frame(&mut send, &resume).await.map_err(|e| e.to_string())?;
+        Ok::<_, String>(Session { conn, send, incoming })
+    };
+    let mut live = match tokio::time::timeout(CONNECT_TIMEOUT, dialled).await {
+        Ok(Ok(live)) => live,
+        Ok(Err(e)) => {
+            tracing::debug!(transfer = %info.id, "could not reach the Sender: {e}");
+            return Resumed::Unreachable;
+        }
+        Err(_) => {
+            tracing::debug!(transfer = %info.id, "timed out reaching the Sender");
+            return Resumed::Unreachable;
+        }
+    };
+    // The Sender may take a while to answer: it has to look at its files first.
+    match live.incoming.recv().await {
+        Some(Ok(Message::ResumeOk)) => Resumed::Session(live),
+        Some(Ok(Message::Cancel)) => Resumed::Cancelled,
+        Some(Ok(Message::Unknown)) => Resumed::Refused(FORGOTTEN.into()),
+        Some(Ok(Message::Failed { reason })) => Resumed::Refused(reason),
+        other => {
+            tracing::debug!(transfer = %info.id, "no usable answer to Resume: {other:?}");
+            Resumed::Unreachable
+        }
+    }
+}
+
+enum Awaited {
+    Ready(Hash),
+    Stopped(Stop),
+}
+
+/// Waits for the Sender's `HashReady`: the content is hashed and this Receiver may fetch.
+/// A connection lost before then ends the Transfer: only an accepted Transfer with its
+/// content ready can be resumed.
+async fn await_hash(live: &mut Session, cancel: &CancellationToken) -> Result<Awaited, Failure> {
+    tokio::select! {
+        biased;
+        msg = live.incoming.recv() => match msg {
+            Some(Ok(Message::HashReady { collection_hash })) => Ok(Awaited::Ready(collection_hash.into())),
+            Some(Ok(Message::Cancel)) => Ok(Awaited::Stopped(Stop::PeerCancelled)),
+            // The Sender's clock ran out just before it read our answer.
+            Some(Ok(Message::Expired)) => Ok(Awaited::Stopped(Stop::PeerExpired)),
+            Some(Ok(_)) => Err(Failure::with(UNEXPECTED, "message before HashReady")),
+            Some(Err(e)) => Err(Failure::with(LOST, e)),
+            None => Err(Failure::with(LOST, "stream ended before HashReady")),
+        },
+        () = cancel.cancelled() => Ok(Awaited::Stopped(Stop::Cancelled)),
+    }
 }
 
 enum Fetched {
@@ -335,73 +617,90 @@ enum Fetched {
     Saved(String),
     /// Cancelled before anything was saved.
     Stopped(Stop),
+    /// The Sender went away mid-fetch. What arrived stays in the store.
+    Lost,
 }
 
 /// Announces how much has arrived on our own event stream and tells the Sender, whose
 /// display it feeds. The Sender being unreachable is no reason to stop.
-async fn report_progress(sh: &Shared, send: &mut SendStream, info: &TransferInfo, bytes: u64) {
+async fn report_progress(sh: &Shared, live: &mut Session, info: &TransferInfo, bytes: u64) {
     sh.progress(info, bytes);
-    let _ = write_frame(send, &Message::Progress { bytes: bytes.min(info.size) }).await;
+    let _ = write_frame(&mut live.send, &Message::Progress { bytes: bytes.min(info.size) }).await;
 }
 
 /// Fetches the Transfer's content into `store`, checks it is what was offered, and moves it
-/// into `save_dir`. Returns where it ended up.
+/// into `save_dir`. Returns where it ended up. Whatever `store` already holds from an
+/// earlier try is kept, and only the rest is requested.
 async fn fetch_and_save(
     sh: &Arc<Shared>,
-    control: Control<'_>,
-    sender: iroh::EndpointId,
+    live: &mut Session,
+    cancel: &CancellationToken,
     store: &store::Store,
     info: &TransferInfo,
     root: Hash,
     save_dir: &Path,
+    stall: &mut Stall,
 ) -> Result<Fetched, Failure> {
-    let Control { send, incoming, cancel } = control;
     let blobs: &iroh_blobs::api::Store = store;
     let content = HashAndFormat::hash_seq(root);
+    let sender = info.peer.endpoint_id();
+    // iroh-blobs counts only what a request downloads, so the progress shown adds what an
+    // earlier try left in the store.
+    let already = blobs.remote().local(content).await.map_err(fail(CANT_FETCH))?.local_bytes();
 
     let conn = tokio::select! {
         biased;
         () = cancel.cancelled() => return Ok(Fetched::Stopped(Stop::Cancelled)),
-        conn = sh.endpoint.connect(EndpointAddr::new(sender), iroh_blobs::ALPN) => {
-            conn.map_err(fail(CANT_FETCH))?
+        conn = sh.endpoint.connect(EndpointAddr::new(sender), iroh_blobs::ALPN) => match conn {
+            Ok(conn) => conn,
+            Err(e) => {
+                tracing::debug!(transfer = %info.id, "could not reach the Sender's provider: {e}");
+                return Ok(Fetched::Lost);
+            }
         }
     };
     // iroh-blobs checks every chunk against its BLAKE3 hash as it arrives.
     let mut fetch = Box::pin(blobs.remote().fetch(conn.clone(), content).stream());
     let mut last_report: Option<UnixMillis> = None;
-    // The Sender's stream ending is not a cancel; if it has really gone, the fetch fails.
-    let mut sender_talking = true;
     loop {
         let item = tokio::select! {
             biased;
-            msg = incoming.recv(), if sender_talking => match msg {
+            msg = live.incoming.recv() => match msg {
                 Some(Ok(Message::Cancel)) => return Ok(Fetched::Stopped(Stop::PeerCancelled)),
                 Some(Ok(_)) => return Err(Failure::with(UNEXPECTED, "message while fetching")),
-                Some(Err(_)) | None => {
-                    sender_talking = false;
-                    continue;
-                }
+                // The Sender only ends this stream by going away.
+                Some(Err(_)) | None => return Ok(Fetched::Lost),
             },
             () = cancel.cancelled() => return Ok(Fetched::Stopped(Stop::Cancelled)),
+            () = sleep_until(&*sh.clock, stall.deadline()) => return Err(Failure(STALLED.into())),
             item = fetch.next() => item,
         };
         let Some(item) = item else { break };
         match item {
-            GetProgressItem::Progress(bytes) => {
+            GetProgressItem::Progress(downloaded) => {
+                let bytes = already.saturating_add(downloaded);
                 // The free-space check was made for the offered size; a Sender that sends
                 // more must not fill the disk beyond it.
                 if bytes > info.size.saturating_add(COLLECTION_ALLOWANCE) {
                     conn.close(0u32.into(), b"too much");
                     return Err(Failure::with(TOO_MUCH, format!("{bytes} bytes, offered {}", info.size)));
                 }
+                made_progress(sh, info, stall).await;
                 let now = sh.now();
                 if last_report.is_none_or(|at| now - at >= PROGRESS_INTERVAL_MS) {
                     last_report = Some(now);
-                    report_progress(sh, send, info, bytes).await;
+                    report_progress(sh, live, info, bytes).await;
                 }
             }
             GetProgressItem::Done(_) => break,
-            GetProgressItem::Error(e) => return Err(Failure::with(CANT_FETCH, e)),
+            // A broken store is ours to fail on; anything else is the connection.
+            GetProgressItem::Error(e @ GetError::LocalFailure { .. }) => {
+                return Err(Failure::with(CANT_FETCH, e));
+            }
+            GetProgressItem::Error(e) => {
+                tracing::debug!(transfer = %info.id, "fetch interrupted: {e}");
+                return Ok(Fetched::Lost);
+            }
         }
     }
     conn.close(0u32.into(), b"done");
@@ -409,7 +708,7 @@ async fn fetch_and_save(
         return Err(Failure::with(CANT_FETCH, "fetch ended incomplete"));
     }
     // The count above includes the Collection's own few bytes, so only now is it exact.
-    report_progress(sh, send, info, info.size).await;
+    report_progress(sh, live, info, info.size).await;
 
     // The Collection must be exactly the one file that was offered.
     let collection = Collection::load(root, blobs).await.map_err(fail(WRONG_FILE))?;
@@ -481,14 +780,18 @@ fn sync_dir(_dir: &Path) -> io::Result<()> {
     Ok(())
 }
 
-/// Shuts the Transfer's store down and deletes its directory. Runs as its own tracked task,
-/// so a Device shutdown waits for it instead of cancelling it.
-fn spawn_cleanup(sh: &Shared, store: store::Store, dir: PathBuf) {
+/// Shuts the Transfer's store down, then deletes its directory unless `delete` is false (the
+/// Device is shutting down with the Transfer unfinished). Runs as its own tracked task, so a
+/// Device shutdown waits for it instead of cancelling it.
+fn close_store(sh: &Shared, opened: Opened, delete: bool) {
     sh.tasks.spawn(async move {
+        let Opened { store, dir } = opened;
         if let Err(e) = store.shutdown().await {
             tracing::warn!("closing incoming store: {e}");
         }
-        remove_dir(&dir).await;
+        if delete {
+            remove_dir(&dir).await;
+        }
     });
 }
 

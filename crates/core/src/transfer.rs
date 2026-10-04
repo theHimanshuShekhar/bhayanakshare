@@ -94,6 +94,10 @@ impl FromStr for Role {
 /// How long an Offer waits for an answer before it expires (spec section 4).
 pub const OFFER_TTL_MS: i64 = 10 * 60 * 1000;
 
+/// How long a Transfer may go without progress before both sides give up on it (spec
+/// section 4).
+pub const STALL_TTL_MS: i64 = 24 * 60 * 60 * 1000;
+
 /// Where a Transfer is in its lifecycle (spec section 4, the part the skeleton covers).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, specta::Type)]
 #[serde(tag = "kind", rename_all = "snake_case")]
@@ -103,6 +107,9 @@ pub enum TransferState {
     Declined,
     /// The Receiver is fetching the content.
     Transferring,
+    /// The Receiver lost the Sender part-way through and is redialling it (Receiver only;
+    /// the Sender just keeps showing Transferring).
+    Reconnecting,
     /// The Receiver has everything and is moving it into the save folder.
     Saving,
     /// `saved_to` is set on the Receiver only.
@@ -122,6 +129,7 @@ impl TransferState {
             Self::Accepted => "accepted",
             Self::Declined => "declined",
             Self::Transferring => "transferring",
+            Self::Reconnecting => "reconnecting",
             Self::Saving => "saving",
             Self::Completed { .. } => "completed",
             Self::Failed { .. } => "failed",
@@ -147,6 +155,7 @@ impl TransferState {
             "accepted" => Self::Accepted,
             "declined" => Self::Declined,
             "transferring" => Self::Transferring,
+            "reconnecting" => Self::Reconnecting,
             "saving" => Self::Saving,
             "completed" => Self::Completed { saved_to },
             "failed" => Self::Failed { reason: error.unwrap_or_default() },
@@ -193,6 +202,7 @@ mod tests {
         let states = [
             TransferState::Offered,
             TransferState::Declined,
+            TransferState::Reconnecting,
             TransferState::Completed { saved_to: Some("/x/y".into()) },
             TransferState::Failed { reason: "nope".into() },
             TransferState::Expired,

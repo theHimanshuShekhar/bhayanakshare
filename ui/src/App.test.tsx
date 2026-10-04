@@ -436,6 +436,22 @@ describe("cancelling, expiry and the Offer countdown", () => {
     expect(screen.getByRole("button", { name: "Cancel photo.jpg" })).toBeTruthy();
   });
 
+  it("shows a Receiver that lost the Sender as Reconnecting, keeping its progress and Cancel", async () => {
+    const device = await start();
+    await device.transfer("receiver", { kind: "offered" });
+    await device.transfer("receiver", { kind: "accepted" });
+    await device.transfer("receiver", { kind: "transferring" });
+    await device.push({ type: "progress", transfer_id: TRANSFER, bytes: 512, total: 2048, at: 5_000 });
+
+    await device.transfer("receiver", { kind: "reconnecting" });
+    expect(screen.getByText("Lost contact with K3QF-7XNA. Reconnecting…")).toBeTruthy();
+    expect(screen.getByRole("progressbar").getAttribute("value")).toBe("512");
+    expect(screen.getByRole("button", { name: "Cancel photo.jpg" })).toBeTruthy();
+
+    await device.transfer("receiver", { kind: "transferring" });
+    expect(screen.getByText("Receiving…")).toBeTruthy();
+  });
+
   it("lets the Sender cancel a Transfer and says who cancelled", async () => {
     const device = await start();
     await device.transfer("sender", { kind: "offered" });

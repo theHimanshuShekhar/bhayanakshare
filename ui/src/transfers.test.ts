@@ -164,6 +164,7 @@ describe("expiry and cancelling", () => {
     expect(canCancel(view("receiver", { kind: "offered" }))).toBe(false); // Decline is on the sheet
     expect(canCancel(view("receiver", { kind: "accepted" }))).toBe(true);
     expect(canCancel(view("receiver", { kind: "transferring" }))).toBe(true);
+    expect(canCancel(view("receiver", { kind: "reconnecting" }))).toBe(true);
     expect(canCancel(view("receiver", { kind: "saving" }))).toBe(false);
     for (const state of [
       { kind: "completed", saved_to: null },

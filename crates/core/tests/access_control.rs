@@ -427,6 +427,71 @@ async fn content_cannot_be_fetched_after_the_receiver_cancels() {
     alice.shutdown().await;
 }
 
+/// A control connection that `endpoint` opened to Alice and said `Resume` on.
+struct Resumed {
+    answer: Message,
+    send: SendStream,
+    /// Keeps the connection open.
+    _conn: Connection,
+}
+
+async fn say_resume(endpoint: &Endpoint, alice: &EndpointAddr, id: TransferId) -> Resumed {
+    let conn = endpoint.connect(alice.clone(), protocol::ALPN).await.unwrap();
+    let (mut send, recv) = conn.open_bi().await.unwrap();
+    let mut incoming = spawn_reader(recv);
+    write_frame(&mut send, &Message::Hello(Hello::current())).await.unwrap();
+    assert!(matches!(next(&mut incoming).await, Message::Hello(_)));
+    write_frame(&mut send, &Message::Resume { transfer_id: *id.as_bytes() }).await.unwrap();
+    Resumed { answer: next(&mut incoming).await, send, _conn: conn }
+}
+
+#[tokio::test]
+async fn a_resumed_fetch_takes_a_fresh_grant() {
+    let mut alice = TestDevice::start("alice").await;
+    let bytes = pseudo_random_bytes(100_000, 15);
+    let mut bob = RawReceiver::offered(&alice, "plans.bin", &bytes).await;
+    bob.accept().await;
+    let first = bob.blobs_conn().await;
+    bob.fetch_and_check(&first, "plans.bin", &bytes).await;
+
+    // Bob's control connection breaks. Alice keeps the Transfer, but takes the grant back,
+    // so Bob cannot fetch on his own say-so, on a connection already open or a new one.
+    bob._conn.close(0u32.into(), b"lost");
+    tokio::time::timeout(ANSWER_TIMEOUT, async {
+        while ask(&first, get(bob.root)).await != Answer::Refused(ERR_PERMISSION) {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .expect("the grant is dropped when the control connection is lost");
+    assert_refused(&bob.blobs_conn().await, get(bob.root), "GET after the connection was lost").await;
+
+    // Only Bob can resume his Transfer, and Alice answers Unknown to one she never had.
+    let mallory = raw_peer().await;
+    let theirs = say_resume(&mallory, &bob.alice, bob.id).await;
+    assert_eq!(theirs.answer, Message::Unknown, "another Device resuming Bob's Transfer");
+    let unknown = say_resume(&bob.endpoint, &bob.alice, TransferId::random()).await;
+    assert_eq!(unknown.answer, Message::Unknown, "a Transfer Alice never had");
+    let conn = mallory.connect(dial_addr(&alice), iroh_blobs::ALPN).await.unwrap();
+    assert_refused(&conn, get(bob.root), "GET by the Device that tried to resume").await;
+    assert_refused(&bob.blobs_conn().await, get(bob.root), "GET before Bob resumed").await;
+
+    // Bob dials back and Alice takes him back: now, and only now, he may fetch again, all
+    // of it, from a store that has none of it.
+    let mut resumed = say_resume(&bob.endpoint, &bob.alice, bob.id).await;
+    assert_eq!(resumed.answer, Message::ResumeOk);
+    let fresh = MemStore::new();
+    let content = HashAndFormat::hash_seq(bob.root);
+    fresh.remote().fetch(bob.blobs_conn().await, content).await.expect("a resumed fetch is served");
+    assert!(fresh.remote().local(content).await.unwrap().is_complete());
+
+    // When the Transfer is over the grant goes again.
+    write_frame(&mut resumed.send, &Message::Completed).await.unwrap();
+    alice.wait_state(bob.id, "completed").await;
+    assert_refused(&bob.blobs_conn().await, get(bob.root), "GET after the Transfer completed").await;
+    alice.shutdown().await;
+}
+
 #[tokio::test]
 async fn an_expired_offers_content_cannot_be_fetched_and_the_receiver_is_told() {
     let mut alice = TestDevice::start("alice").await;

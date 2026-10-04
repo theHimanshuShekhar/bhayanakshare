@@ -187,6 +187,11 @@ export type TransferId = string;
 export type TransferState = { kind: "offered" } | { kind: "accepted" } | { kind: "declined" } | 
 /**  The Receiver is fetching the content. */
 { kind: "transferring" } | 
+/**
+ *  The Receiver lost the Sender part-way through and is redialling it (Receiver only;
+ *  the Sender just keeps showing Transferring).
+ */
+{ kind: "reconnecting" } | 
 /**  The Receiver has everything and is moving it into the save folder. */
 { kind: "saving" } | 
 /**  `saved_to` is set on the Receiver only. */

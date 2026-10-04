@@ -8,6 +8,7 @@
 use std::{
     path::PathBuf,
     sync::{Arc, Mutex},
+    time::Duration,
 };
 
 use bhayanakshare_core::{
@@ -24,6 +25,9 @@ use tauri_specta::{Builder, ErrorHandlingMode, Event as _, collect_commands, col
 const DATA_DIR_VAR: &str = "BHAYANAKSHARE_DATA_DIR";
 /// Overrides the folder accepted files are saved to.
 const SAVE_DIR_VAR: &str = "BHAYANAKSHARE_SAVE_DIR";
+
+/// How long quitting waits for the Device to save its Transfers' progress.
+const QUIT_DEADLINE: Duration = Duration::from_secs(30);
 
 /// Every event the Device emits, in order, as one UI event.
 #[derive(Clone, Serialize, Type, tauri_specta::Event)]
@@ -328,10 +332,12 @@ pub fn run() {
         .build(tauri::generate_context!())
         .expect("error while building BhayanakShare")
         .run(|app, event| {
-            // Let the Device close its stores cleanly so a restart does not re-hash them.
+            // Let the Device close its stores cleanly so a restart does not re-hash them. A
+            // busy disk can make that slow (spec section 7: "Saving progress…" for up to 30
+            // s); after that the process exits anyway, and the next start re-checks.
             if let tauri::RunEvent::Exit = event {
                 if let Some(device) = app.try_state::<Device>() {
-                    tauri::async_runtime::block_on(device.shutdown());
+                    tauri::async_runtime::block_on(device.shutdown(QUIT_DEADLINE));
                 }
             }
         });

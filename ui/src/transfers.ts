@@ -107,6 +107,7 @@ export function canCancel(view: TransferView): boolean {
       return view.role === "sender";
     case "accepted":
     case "transferring":
+    case "reconnecting":
       return true;
     default:
       return false;

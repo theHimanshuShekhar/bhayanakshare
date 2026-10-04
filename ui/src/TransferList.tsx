@@ -57,7 +57,10 @@ function TransferRow({
   const [resent, setResent] = useState(false);
   const peer = peerName(x.peer, contacts, x.peerName);
   const title = t(x.role === "sender" ? "transfer.to" : "transfer.from", { name: x.name, peer });
-  const moving = x.state.kind === "transferring" || (x.state.kind === "accepted" && x.bytes > 0);
+  const moving =
+    x.state.kind === "transferring" ||
+    x.state.kind === "reconnecting" ||
+    (x.state.kind === "accepted" && x.bytes > 0);
   const savedTo = x.state.kind === "completed" ? x.state.saved_to : null;
 
   return (
