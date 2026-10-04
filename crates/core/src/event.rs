@@ -51,6 +51,9 @@ pub struct TransferEvent {
     pub peer: DeviceId,
     pub name: String,
     pub size: u64,
+    /// When the Offer lapses if nobody answers it, by this Device's clock. The same on every
+    /// event of the Transfer, so a late subscriber can show the countdown.
+    pub expires_at: UnixMillis,
     pub state: TransferState,
 }
 
@@ -103,6 +106,7 @@ mod tests {
             peer: DeviceId::from_endpoint_id(iroh::SecretKey::generate().public()),
             name: format!("f{i}"),
             size: i,
+            expires_at: 0,
             state: TransferState::Offered,
         })
     }

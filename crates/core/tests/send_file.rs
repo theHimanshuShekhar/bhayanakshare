@@ -47,7 +47,7 @@ async fn accepted_file_arrives_byte_identical_and_both_sides_complete() {
     let id = accepted_transfer(&mut alice, &mut bob, "photo.bin", &bytes).await;
 
     assert_eq!(std::fs::read(bob.save_dir.join("photo.bin")).unwrap(), bytes);
-    assert_eq!(alice.history(id), ["offered", "accepted", "completed"]);
+    assert_eq!(alice.history(id), ["offered", "accepted", "transferring", "completed"]);
     assert_eq!(
         bob.history(id),
         ["offered", "accepted", "transferring", "saving", "completed"]

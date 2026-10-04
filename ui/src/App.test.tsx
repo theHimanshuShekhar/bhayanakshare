@@ -9,6 +9,8 @@ afterEach(cleanup);
 const MY_ID = "A".repeat(52);
 const PEER_ID = "K3QF7XNA" + "B".repeat(44);
 const TRANSFER = "ab".repeat(16);
+/** When the Offers in these tests lapse: 10 minutes after the stand-in's clock reads 0. */
+const EXPIRES_AT = 600_000;
 
 /** A Device event without the stream position and time the stand-in fills in. */
 type Unstamped = DeviceEvent extends infer E
@@ -30,6 +32,8 @@ function fakeApi(overrides: Partial<Api> = {}) {
     ),
     acceptOffer: vi.fn((_id: string, _folder: string | null) => Promise.resolve(null)),
     declineOffer: vi.fn(() => Promise.resolve(null)),
+    cancelTransfer: vi.fn(() => Promise.resolve(null)),
+    resendTransfer: vi.fn(() => Promise.resolve("cd".repeat(16))),
     pickFile: vi.fn(() => Promise.resolve<string | null>("/tmp/photo.jpg")),
     pickFolder: vi.fn(() => Promise.resolve<string | null>("/mnt/big")),
     showInFolder: vi.fn(() => Promise.resolve()),
@@ -43,7 +47,16 @@ function fakeApi(overrides: Partial<Api> = {}) {
   const push = (event: Unstamped) =>
     act(() => handler({ seq: seq++, at: 1_000 * seq, ...event } as DeviceEvent));
   const transfer = (role: "sender" | "receiver", state: TransferState) =>
-    push({ type: "transfer", transfer_id: TRANSFER, role, peer: PEER_ID, name: "photo.jpg", size: 2048, state });
+    push({
+      type: "transfer",
+      transfer_id: TRANSFER,
+      role,
+      peer: PEER_ID,
+      name: "photo.jpg",
+      size: 2048,
+      expires_at: EXPIRES_AT,
+      state,
+    });
   return { api, push, transfer };
 }
 
@@ -177,6 +190,7 @@ describe("sending", () => {
       peer: PEER_ID,
       name: "b.bin",
       size: 1,
+      expires_at: EXPIRES_AT,
       state: { kind: "failed", reason: "The other Device went away." },
     });
     expect(screen.getByText("Could not send. The other Device went away.")).toBeTruthy();
@@ -341,5 +355,114 @@ describe("receiving", () => {
 
     fireEvent.click(button);
     await waitFor(() => expect(screen.queryByRole("alert")).toBeNull());
+  });
+});
+
+describe("cancelling, expiry and the Offer countdown", () => {
+  it("shows the time left to answer, counting down", async () => {
+    vi.useFakeTimers({ toFake: ["Date", "setInterval", "clearInterval"] });
+    try {
+      vi.setSystemTime(EXPIRES_AT - 581_000);
+      const device = await start();
+      await device.transfer("receiver", { kind: "offered" });
+      const sheet = await screen.findByRole("dialog", { name: "Incoming file" });
+      expect(within(sheet).getByRole("timer").textContent).toBe("Expires in 9:41");
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(41_000);
+      });
+      expect(within(sheet).getByRole("timer").textContent).toBe("Expires in 9:00");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("shows the Sender while the content is being fetched, and keeps Cancel available", async () => {
+    const device = await start();
+    await device.transfer("sender", { kind: "offered" });
+    await device.transfer("sender", { kind: "accepted" });
+    await device.transfer("sender", { kind: "transferring" });
+    expect(screen.getByText("Sending…")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Cancel photo.jpg" })).toBeTruthy();
+  });
+
+  it("lets the Sender cancel a Transfer and says who cancelled", async () => {
+    const device = await start();
+    await device.transfer("sender", { kind: "offered" });
+    fireEvent.click(screen.getByRole("button", { name: "Cancel photo.jpg" }));
+    expect(device.api.cancelTransfer).toHaveBeenCalledWith(TRANSFER);
+
+    await device.transfer("sender", { kind: "cancelled", by: "sender" });
+    expect(screen.getByText("You cancelled.")).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Cancel photo.jpg" })).toBeNull();
+  });
+
+  it("shows a Receiver that the Sender cancelled, and lets it cancel once it has accepted", async () => {
+    const device = await start();
+    await device.transfer("receiver", { kind: "offered" });
+    expect(screen.queryByRole("button", { name: "Cancel photo.jpg" })).toBeNull();
+    await device.transfer("receiver", { kind: "accepted" });
+    await device.transfer("receiver", { kind: "transferring" });
+    fireEvent.click(screen.getByRole("button", { name: "Cancel photo.jpg" }));
+    expect(device.api.cancelTransfer).toHaveBeenCalledWith(TRANSFER);
+
+    await device.transfer("receiver", { kind: "cancelled", by: "sender" });
+    expect(screen.getByText("K3QF-7XNA cancelled.")).toBeTruthy();
+  });
+
+  it("says so when a Transfer could no longer be cancelled", async () => {
+    const device = await start(
+      fakeApi({ cancelTransfer: vi.fn(() => Promise.reject("Transfer is not running")) }),
+    );
+    await device.transfer("sender", { kind: "offered" });
+    fireEvent.click(screen.getByRole("button", { name: "Cancel photo.jpg" }));
+    expect((await screen.findByRole("alert")).textContent).toContain("can no longer be cancelled");
+  });
+
+  it("shows an expired Offer on both sides, with one-click resend for the Sender", async () => {
+    const device = await start();
+    await device.transfer("sender", { kind: "offered" });
+    await device.transfer("sender", { kind: "expired" });
+    expect(screen.getByText("K3QF-7XNA did not answer in time. The Offer expired.")).toBeTruthy();
+
+    fireEvent.click(screen.getByRole("button", { name: "Send photo.jpg again" }));
+    expect(device.api.resendTransfer).toHaveBeenCalledWith(TRANSFER);
+    await waitFor(() => expect(screen.queryByRole("alert")).toBeNull());
+  });
+
+  it("gives the Receiver of an expired Offer no resend, and closes the sheet", async () => {
+    const device = await start();
+    await device.transfer("receiver", { kind: "offered" });
+    await screen.findByRole("dialog");
+    await device.transfer("receiver", { kind: "expired" });
+    expect(screen.queryByRole("dialog")).toBeNull();
+    expect(screen.getByText("The Offer expired before you answered.")).toBeTruthy();
+    expect(screen.queryByRole("button", { name: /again/ })).toBeNull();
+  });
+
+  it("says so when an Offer cannot be sent again", async () => {
+    const device = await start(
+      fakeApi({ resendTransfer: vi.fn(() => Promise.reject("/tmp/photo.jpg is not a file")) }),
+    );
+    await device.transfer("sender", { kind: "expired" });
+    fireEvent.click(screen.getByRole("button", { name: "Send photo.jpg again" }));
+    const alert = await screen.findByRole("alert");
+    expect(alert.textContent).toContain("Could not send it again");
+    expect(alert.textContent).toContain("is not a file");
+  });
+
+  it("shows the Sender that the Receiver was busy, as a failure with its reason", async () => {
+    const device = await start();
+    await device.push({
+      type: "transfer",
+      transfer_id: TRANSFER,
+      role: "sender",
+      peer: PEER_ID,
+      name: "photo.jpg",
+      size: 2048,
+      expires_at: EXPIRES_AT,
+      state: { kind: "failed", reason: "The other Device already has too many Offers from you." },
+    });
+    expect(screen.getByText(/Could not send\. The other Device already has too many Offers/)).toBeTruthy();
   });
 });

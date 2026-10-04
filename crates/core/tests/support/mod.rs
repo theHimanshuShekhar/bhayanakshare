@@ -129,6 +129,16 @@ impl TestDevice {
             .collect()
     }
 
+    /// Keeps reading events for `real_time`, so a test can then assert that something did
+    /// not happen (the injected clock does not move on its own, so only real time passes).
+    pub async fn quiet_for(&mut self, real_time: Duration) {
+        let until = tokio::time::Instant::now() + real_time;
+        while let Ok(Some(event)) = tokio::time::timeout_at(until, self.events.next()).await {
+            self.log.push(event);
+            self.consumed.push(false);
+        }
+    }
+
     /// Shuts the Device down, then reads the events already queued so `log` is complete.
     pub async fn shutdown(&mut self) {
         self.device.shutdown().await;

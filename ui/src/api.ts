@@ -26,6 +26,10 @@ export interface Api {
   /** Accepts into `folder` for this Offer only (the save folder when null). */
   acceptOffer(id: TransferId, folder: string | null): Promise<unknown>;
   declineOffer(id: TransferId): Promise<unknown>;
+  /** Stops a Transfer on either side, until it starts saving. */
+  cancelTransfer(id: TransferId): Promise<unknown>;
+  /** Sends an expired Offer again; resolves to the new Transfer ID. */
+  resendTransfer(id: TransferId): Promise<string>;
   /** Asks the user for a file; null if they cancel. */
   pickFile(): Promise<string | null>;
   /** Asks the user for a folder; null if they cancel. */
@@ -63,6 +67,8 @@ export const tauriApi: Api = {
   checkOffer: commands.checkOffer,
   acceptOffer: commands.acceptOffer,
   declineOffer: commands.declineOffer,
+  cancelTransfer: commands.cancelTransfer,
+  resendTransfer: commands.resendTransfer,
   pickFile: async () => {
     const picked = await open({ multiple: false, directory: false });
     return typeof picked === "string" ? picked : null;

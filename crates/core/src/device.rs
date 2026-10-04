@@ -28,7 +28,7 @@ use crate::{
     protocol, receiver, sender,
     space::{FreeSpace, SpaceCheck},
     store,
-    transfer::{Role, TransferId, TransferState},
+    transfer::{OFFER_TTL_MS, Role, TransferId, TransferState},
 };
 
 /// Which network a Device lives on.
@@ -86,6 +86,7 @@ pub(crate) enum Decision {
 
 /// An Offer waiting for the user.
 pub(crate) struct PendingOffer {
+    pub peer: DeviceId,
     pub size: u64,
     pub decide: oneshot::Sender<Decision>,
 }
@@ -98,6 +99,8 @@ pub(crate) struct TransferInfo {
     pub peer: DeviceId,
     pub name: String,
     pub size: u64,
+    /// When the Offer lapses if nobody has answered it, by this Device's clock.
+    pub expires_at: UnixMillis,
 }
 
 /// State shared by the Device handle and the tasks it spawns.
@@ -115,6 +118,13 @@ pub(crate) struct Shared {
     pub events: EventSink,
     /// Offers waiting for the user, by Transfer ID.
     pub pending: Mutex<HashMap<TransferId, PendingOffer>>,
+    /// Stops a running Transfer on this Device's side, by Transfer ID. A Transfer is listed
+    /// from its Offer until it ends, or (on the Receiver) until it starts Saving, which is
+    /// too late to stop.
+    pub cancels: Mutex<HashMap<TransferId, CancellationToken>>,
+    /// Offers this Device sent that expired, with where they went and what they held, so the
+    /// user can send them again in one step.
+    pub expired: Mutex<HashMap<TransferId, (DeviceAddr, PathBuf)>>,
     pub tasks: TaskTracker,
     /// Cancelled on shutdown; Transfer tasks stop, cleanup tasks run to the end.
     pub cancel: CancellationToken,
@@ -123,6 +133,17 @@ pub(crate) struct Shared {
 impl Shared {
     pub fn now(&self) -> UnixMillis {
         self.clock.now()
+    }
+
+    /// Makes a running Transfer cancellable and returns the token its task watches.
+    pub fn track(&self, id: TransferId) -> CancellationToken {
+        let token = CancellationToken::new();
+        self.cancels.lock().unwrap_or_else(|e| e.into_inner()).insert(id, token.clone());
+        token
+    }
+
+    pub fn untrack(&self, id: TransferId) {
+        self.cancels.lock().unwrap_or_else(|e| e.into_inner()).remove(&id);
     }
 
     /// Records a new Transfer and announces it.
@@ -169,6 +190,7 @@ impl Shared {
                 peer: t.peer,
                 name: t.name.clone(),
                 size: t.size,
+                expires_at: t.expires_at,
                 state,
             }),
         );
@@ -234,6 +256,8 @@ impl Device {
             free_space,
             events,
             pending: Mutex::default(),
+            cancels: Mutex::default(),
+            expired: Mutex::default(),
             tasks: TaskTracker::new(),
             cancel: CancellationToken::new(),
         });
@@ -289,12 +313,46 @@ impl Device {
             peer: to.id,
             name,
             size: meta.len(),
+            expires_at: sh.now() + OFFER_TTL_MS,
         };
         sh.begin(&info, TransferState::Offered).await?;
         let id = info.id;
+        let cancel = sh.track(id);
         let sh = sh.clone();
-        self.inner.shared.tasks.spawn(sender::run(sh, info, to, path));
+        self.inner.shared.tasks.spawn(sender::run(sh, info, to, path, cancel));
         Ok(id)
+    }
+
+    /// Sends an Offer that expired again, to the same Device, as a new Transfer. Fails if the
+    /// file has gone in the meantime.
+    pub async fn resend(&self, id: TransferId) -> Result<TransferId, Error> {
+        let sh = &self.inner.shared;
+        let (to, path) = sh
+            .expired
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(&id)
+            .cloned()
+            .ok_or(Error::NothingToResend(id))?;
+        let new = self.send_file(to, &path).await?;
+        sh.expired.lock().unwrap_or_else(|e| e.into_inner()).remove(&id);
+        Ok(new)
+    }
+
+    /// Stops a Transfer on either side, any time before it starts Saving. The other Device is
+    /// told and shows it Cancelled; a Receiver deletes what it has received.
+    pub async fn cancel(&self, id: TransferId) -> Result<(), Error> {
+        let token = self
+            .inner
+            .shared
+            .cancels
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(&id)
+            .cloned()
+            .ok_or(Error::NotRunning(id))?;
+        token.cancel();
+        Ok(())
     }
 
     /// Whether a pending Offer fits in `folder` (the save folder when `None`).

@@ -11,6 +11,8 @@ export interface TransferView {
   name: string;
   size: number;
   state: TransferState;
+  /** When an unanswered Offer lapses, by the Device's clock (Unix milliseconds). */
+  expiresAt: number;
   /** Bytes of the file received so far. */
   bytes: number;
   /** Smoothed transfer rate in bytes per second; null until two reports have arrived. */
@@ -48,6 +50,7 @@ export function applyEvent(transfers: Transfers, event: DeviceEvent): Transfers 
           name: event.name,
           size: event.size,
           state: event.state,
+          expiresAt: event.expires_at,
           bytes: 0,
           rate: null,
           progressAt: null,
@@ -87,6 +90,35 @@ export function pendingOffer(transfers: Transfers): TransferView | undefined {
   return transfers.order
     .map((id) => transfers.byId[id])
     .find((x) => x.role === "receiver" && x.state.kind === "offered");
+}
+
+/**
+ * Whether the user can still stop this Transfer from its row. Not once it is saving, which
+ * cannot be taken back, and not a Receiver's unanswered Offer, which the Offer sheet's
+ * Decline covers.
+ */
+export function canCancel(view: TransferView): boolean {
+  switch (view.state.kind) {
+    case "offered":
+      return view.role === "sender";
+    case "accepted":
+    case "transferring":
+      return true;
+    default:
+      return false;
+  }
+}
+
+/** A Sender can send an Offer nobody answered again in one step. */
+export function canResend(view: TransferView): boolean {
+  return view.role === "sender" && view.state.kind === "expired";
+}
+
+/** 581_000 ms becomes "9:41": the time left, rounded up to whole seconds, never below 0:00. */
+export function formatCountdown(millis: number): string {
+  const total = Math.max(0, Math.ceil(millis / 1000));
+  const seconds = String(total % 60).padStart(2, "0");
+  return `${Math.floor(total / 60)}:${seconds}`;
 }
 
 /** Whole percent received, 0 to 100. An empty file is complete as soon as it is known. */

@@ -2,7 +2,10 @@ import { describe, expect, it } from "vitest";
 import type { DeviceEvent, TransferState } from "./bindings";
 import {
   applyEvent,
+  canCancel,
+  canResend,
   fingerprint,
+  formatCountdown,
   formatSize,
   newestFirst,
   noTransfers,
@@ -24,6 +27,7 @@ function transfer(seq: number, state: TransferState, extra: Partial<{ id: string
     peer: PEER,
     name: "photo.jpg",
     size: 1000,
+    expires_at: 601_000,
     state,
   };
 }
@@ -128,9 +132,53 @@ describe("formatting", () => {
   });
 
   it("counts whole percent, and an empty file as complete", () => {
-    const base = { id: ID, role: "receiver", peer: PEER, name: "x", state: { kind: "transferring" }, rate: null, progressAt: null } as const;
+    const base = { id: ID, role: "receiver", peer: PEER, name: "x", state: { kind: "transferring" }, expiresAt: 0, rate: null, progressAt: null } as const;
     expect(percent({ ...base, size: 1000, bytes: 999 })).toBe(99);
     expect(percent({ ...base, size: 1000, bytes: 1000 })).toBe(100);
     expect(percent({ ...base, size: 0, bytes: 0 })).toBe(100);
+  });
+});
+
+describe("expiry and cancelling", () => {
+  it("remembers when an Offer lapses", () => {
+    expect(run([transfer(0, { kind: "offered" })]).byId[ID].expiresAt).toBe(601_000);
+  });
+
+  it("shows the time left as minutes and seconds, rounded up, never negative", () => {
+    expect(formatCountdown(600_000)).toBe("10:00");
+    expect(formatCountdown(581_000)).toBe("9:41");
+    expect(formatCountdown(59_001)).toBe("1:00");
+    expect(formatCountdown(1)).toBe("0:01");
+    expect(formatCountdown(0)).toBe("0:00");
+    expect(formatCountdown(-5_000)).toBe("0:00");
+  });
+
+  const view = (role: "sender" | "receiver", state: TransferState) =>
+    run([transfer(0, state, { role })]).byId[ID];
+
+  it("lets the Sender cancel until the Transfer ends, and the Receiver once it has accepted", () => {
+    expect(canCancel(view("sender", { kind: "offered" }))).toBe(true);
+    expect(canCancel(view("sender", { kind: "accepted" }))).toBe(true);
+    expect(canCancel(view("sender", { kind: "transferring" }))).toBe(true);
+    expect(canCancel(view("receiver", { kind: "offered" }))).toBe(false); // Decline is on the sheet
+    expect(canCancel(view("receiver", { kind: "accepted" }))).toBe(true);
+    expect(canCancel(view("receiver", { kind: "transferring" }))).toBe(true);
+    expect(canCancel(view("receiver", { kind: "saving" }))).toBe(false);
+    for (const state of [
+      { kind: "completed", saved_to: null },
+      { kind: "failed", reason: "x" },
+      { kind: "declined" },
+      { kind: "expired" },
+      { kind: "cancelled", by: "sender" },
+    ] as const) {
+      expect(canCancel(view("sender", state))).toBe(false);
+    }
+  });
+
+  it("offers to send again only an expired Offer on the Sender", () => {
+    expect(canResend(view("sender", { kind: "expired" }))).toBe(true);
+    expect(canResend(view("receiver", { kind: "expired" }))).toBe(false);
+    expect(canResend(view("sender", { kind: "declined" }))).toBe(false);
+    expect(canResend(view("sender", { kind: "failed", reason: "x" }))).toBe(false);
   });
 });

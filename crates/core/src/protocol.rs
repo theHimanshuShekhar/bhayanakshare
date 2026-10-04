@@ -1,6 +1,6 @@
 //! The control protocol: ALPN `bhayanakshare/ctrl/1`, length-prefixed postcard frames on one
-//! bidirectional stream per Transfer. It negotiates a Transfer (Offer, accept, decline); the
-//! content itself moves over iroh-blobs afterwards (ADR 0001).
+//! bidirectional stream per Transfer. It negotiates a Transfer (Offer, accept, decline, busy,
+//! cancel, expiry); the content itself moves over iroh-blobs afterwards (ADR 0001).
 //!
 //! Frame layout: `u32` big-endian body length, then the postcard-encoded [`Message`]. The
 //! variant order of [`Message`] is the wire format: only ever append.
@@ -37,6 +37,16 @@ pub enum Message {
     Completed,
     /// Receiver to Sender, while fetching: bytes received so far. For display only.
     Progress { bytes: u64 },
+    /// Receiver to Sender, in reply to an Offer: this Receiver already has 5 Offers from this
+    /// Sender waiting for an answer. The Offer is dropped, not queued.
+    Busy,
+    /// Either side, any time before `Completed`: stop. The Receiver deletes what it has.
+    Cancel,
+    /// Either side, while the Offer is unanswered: the sender of this message has timed it
+    /// out (10 minutes by its own clock). Both sides time an Offer, so without this the one
+    /// whose clock fires first would just hang up and the other would report a lost
+    /// connection. The spec's table has no such message.
+    Expired,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -148,6 +158,9 @@ mod tests {
             Message::HashReady { collection_hash: [3; 32] },
             Message::Completed,
             Message::Progress { bytes: 1 << 33 },
+            Message::Busy,
+            Message::Cancel,
+            Message::Expired,
         ]
     }
 
@@ -167,7 +180,7 @@ mod tests {
             .iter()
             .map(|m| postcard::to_stdvec(m).unwrap()[0])
             .collect();
-        assert_eq!(tags, [0, 1, 2, 3, 4, 5, 6]);
+        assert_eq!(tags, [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]);
     }
 
     #[tokio::test]

@@ -91,6 +91,9 @@ impl FromStr for Role {
     }
 }
 
+/// How long an Offer waits for an answer before it expires (spec section 4).
+pub const OFFER_TTL_MS: i64 = 10 * 60 * 1000;
+
 /// Where a Transfer is in its lifecycle (spec section 4, the part the skeleton covers).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, specta::Type)]
 #[serde(tag = "kind", rename_all = "snake_case")]
@@ -105,6 +108,10 @@ pub enum TransferState {
     /// `saved_to` is set on the Receiver only.
     Completed { saved_to: Option<String> },
     Failed { reason: String },
+    /// Nobody answered the Offer within 10 minutes ([`OFFER_TTL_MS`]).
+    Expired,
+    /// One side stopped the Transfer before it completed; `by` is which.
+    Cancelled { by: Role },
 }
 
 impl TransferState {
@@ -118,14 +125,18 @@ impl TransferState {
             Self::Saving => "saving",
             Self::Completed { .. } => "completed",
             Self::Failed { .. } => "failed",
+            Self::Expired => "expired",
+            Self::Cancelled { .. } => "cancelled",
         }
     }
 
-    /// The detail columns stored next to the label: `(saved_to, error)`.
+    /// The detail columns stored next to the label: `(saved_to, error)`. A Cancelled
+    /// Transfer keeps who cancelled in the `error` column.
     pub fn details(&self) -> (Option<&str>, Option<&str>) {
         match self {
             Self::Completed { saved_to } => (saved_to.as_deref(), None),
             Self::Failed { reason } => (None, Some(reason)),
+            Self::Cancelled { by } => (None, Some(by.as_str())),
             _ => (None, None),
         }
     }
@@ -139,12 +150,21 @@ impl TransferState {
             "saving" => Self::Saving,
             "completed" => Self::Completed { saved_to },
             "failed" => Self::Failed { reason: error.unwrap_or_default() },
+            "expired" => Self::Expired,
+            "cancelled" => Self::Cancelled { by: error?.parse().ok()? },
             _ => return None,
         })
     }
 
     pub fn is_terminal(&self) -> bool {
-        matches!(self, Self::Declined | Self::Completed { .. } | Self::Failed { .. })
+        matches!(
+            self,
+            Self::Declined
+                | Self::Completed { .. }
+                | Self::Failed { .. }
+                | Self::Expired
+                | Self::Cancelled { .. }
+        )
     }
 }
 
@@ -175,6 +195,9 @@ mod tests {
             TransferState::Declined,
             TransferState::Completed { saved_to: Some("/x/y".into()) },
             TransferState::Failed { reason: "nope".into() },
+            TransferState::Expired,
+            TransferState::Cancelled { by: Role::Sender },
+            TransferState::Cancelled { by: Role::Receiver },
         ];
         for state in states {
             let (saved_to, error) = state.details();
