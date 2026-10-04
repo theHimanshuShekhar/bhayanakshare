@@ -1,44 +1,65 @@
-// The only place the UI talks to the Rust shell: typed commands in, one event stream out.
-// The shapes mirror what bhayanakshare-core serialises.
+// The only place the UI talks to the outside: the commands and events the Rust shell
+// generated (bindings.ts), plus the file picker and "show in folder". Everything else gets an
+// `Api`, so tests can hand the UI a stand-in.
 
-import { invoke } from "@tauri-apps/api/core";
-import { listen, type UnlistenFn } from "@tauri-apps/api/event";
+import { open } from "@tauri-apps/plugin-dialog";
+import { revealItemInDir } from "@tauri-apps/plugin-opener";
+import { commands, events, type DeviceEvent, type MyId, type TransferId } from "./bindings";
 
-export interface MyId {
-  /** 52-character base32 Device ID. */
-  id: string;
-  /** First 8 characters, XXXX-XXXX. */
-  fingerprint: string;
+export type { DeviceEvent, MyId, TransferId };
+
+export interface Api {
+  myId(): Promise<MyId>;
+  /** The folder accepted files are saved to. */
+  saveFolder(): Promise<string>;
+  /** Offers the file at `path` to the Device with ID `to`; resolves to the Transfer ID. */
+  sendFile(to: string, path: string): Promise<string>;
+  acceptOffer(id: TransferId): Promise<unknown>;
+  declineOffer(id: TransferId): Promise<unknown>;
+  /** Asks the user for a file; null if they cancel. */
+  pickFile(): Promise<string | null>;
+  showInFolder(path: string): Promise<void>;
+  copyText(text: string): Promise<void>;
+  /** Calls `handler` for every Device event, in order. Resolves to the unsubscribe function. */
+  onDeviceEvent(handler: (event: DeviceEvent) => void): Promise<() => void>;
 }
 
-export type TransferState =
-  | { kind: "offered" | "accepted" | "declined" | "transferring" | "saving" }
-  | { kind: "completed"; saved_to: string | null }
-  | { kind: "failed"; reason: string };
-
-export interface DeviceEvent {
-  /** Position in the stream, from 0 with no gaps. */
-  seq: number;
-  /** Unix milliseconds. */
-  at: number;
-  type: "transfer";
-  transfer_id: string;
-  role: "sender" | "receiver";
-  /** The other Device's ID. */
-  peer: string;
-  name: string;
-  size: number;
-  state: TransferState;
+/** The async clipboard API where the webview has it, else the older copy command. */
+async function copyText(text: string): Promise<void> {
+  try {
+    await navigator.clipboard.writeText(text);
+    return;
+  } catch {
+    // Not available here (or refused); try the older way below.
+  }
+  const field = document.createElement("textarea");
+  field.value = text;
+  field.setAttribute("readonly", "");
+  field.style.position = "fixed";
+  field.style.opacity = "0";
+  document.body.append(field);
+  field.select();
+  const copied = document.execCommand("copy");
+  field.remove();
+  if (!copied) throw new Error("copy failed");
 }
 
-export const myId = () => invoke<MyId>("my_id");
-
-/** Offers the file at `path` to the Device with ID `to`; resolves to the Transfer ID. */
-export const sendFile = (to: string, path: string) => invoke<string>("send_file", { to, path });
-
-export const acceptOffer = (transferId: string) => invoke<void>("accept_offer", { transferId });
-
-export const declineOffer = (transferId: string) => invoke<void>("decline_offer", { transferId });
-
-export const onDeviceEvent = (handler: (event: DeviceEvent) => void): Promise<UnlistenFn> =>
-  listen<DeviceEvent>("device-event", (e) => handler(e.payload));
+export const tauriApi: Api = {
+  myId: commands.myId,
+  saveFolder: commands.saveFolder,
+  sendFile: commands.sendFile,
+  acceptOffer: commands.acceptOffer,
+  declineOffer: commands.declineOffer,
+  pickFile: async () => {
+    const picked = await open({ multiple: false, directory: false });
+    return typeof picked === "string" ? picked : null;
+  },
+  showInFolder: revealItemInDir,
+  copyText,
+  onDeviceEvent: async (handler) => {
+    const unlisten = await events.deviceEvent.listen((e) => handler(e.payload));
+    // Everything emitted before this point is held by the shell until now.
+    await commands.eventsReady();
+    return unlisten;
+  },
+};

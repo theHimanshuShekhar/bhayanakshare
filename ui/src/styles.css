@@ -32,3 +32,83 @@ nav button[aria-current="page"] {
 code {
   overflow-wrap: anywhere;
 }
+
+.note {
+  margin-inline-start: 0.5rem;
+  opacity: 0.8;
+}
+
+.tiles {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(10rem, 1fr));
+  gap: 0.75rem;
+}
+
+.tile {
+  min-height: 5rem;
+  font-size: 1rem;
+}
+
+.transfers {
+  list-style: none;
+  padding: 0;
+  display: grid;
+  gap: 0.75rem;
+}
+
+.transfers li {
+  border: 1px solid currentColor;
+  border-radius: 0.5rem;
+  padding: 0.5rem 0.75rem;
+}
+
+.transfers p {
+  margin: 0.25rem 0;
+}
+
+progress {
+  vertical-align: middle;
+}
+
+/* Sheets sit over the page; the border keeps them apart without relying on colour. */
+.overlay {
+  position: fixed;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  background: rgb(0 0 0 / 0.5);
+}
+
+.sheet {
+  box-sizing: border-box;
+  width: min(32rem, calc(100vw - 2rem));
+  max-height: calc(100vh - 2rem);
+  overflow: auto;
+  padding: 1rem 1.25rem;
+  border: 2px solid currentColor;
+  border-radius: 0.75rem;
+  background: Canvas;
+  color: CanvasText;
+}
+
+.sheet input {
+  display: block;
+  box-sizing: border-box;
+  width: 100%;
+  font-family: monospace;
+}
+
+.sheet dt {
+  font-weight: 700;
+}
+
+.sheet dd {
+  margin: 0 0 0.5rem;
+  overflow-wrap: anywhere;
+}
+
+.actions {
+  display: flex;
+  gap: 0.5rem;
+  justify-content: flex-end;
+}

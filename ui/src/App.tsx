@@ -1,6 +1,11 @@
-import { useEffect, useState } from "react";
-import { myId, type MyId } from "./api";
+import { useEffect, useReducer, useState } from "react";
+import { tauriApi, type Api } from "./api";
+import { MyDeviceId } from "./MyDeviceId";
+import { OfferSheet } from "./OfferSheet";
+import { SendDialog } from "./SendDialog";
+import { TransferList } from "./TransferList";
 import { t, type MessageKey } from "./i18n";
+import { applyEvent, newestFirst, noTransfers, pendingOffer } from "./transfers";
 
 const TABS = [
   { id: "home", label: "tab.home", placeholder: "home.placeholder" },
@@ -12,17 +17,34 @@ const TABS = [
 type TabId = (typeof TABS)[number]["id"];
 
 interface AppProps {
-  /** Where this Device's ID comes from; the Rust shell by default, a stub in tests. */
-  loadMyId?: () => Promise<MyId>;
+  /** Where commands go and events come from; the Rust shell by default, a stub in tests. */
+  api?: Api;
 }
 
-export function App({ loadMyId = myId }: AppProps) {
+export function App({ api = tauriApi }: AppProps) {
   const [tab, setTab] = useState<TabId>("home");
+  const [sending, setSending] = useState(false);
+  const [transfers, dispatch] = useReducer(applyEvent, noTransfers);
+  const [saveFolder, setSaveFolder] = useState<string | null>(null);
   const current = TABS.find((x) => x.id === tab) ?? TABS[0];
+  const offer = pendingOffer(transfers);
+  // While a sheet is open the page behind it can be neither clicked nor tabbed to.
+  const inert = sending || offer !== undefined;
+
+  useEffect(() => {
+    let live = true;
+    let unlisten: (() => void) | undefined;
+    api.onDeviceEvent(dispatch).then((stop) => (live ? (unlisten = stop) : stop()));
+    api.saveFolder().then((folder) => live && setSaveFolder(folder), () => {});
+    return () => {
+      live = false;
+      unlisten?.();
+    };
+  }, [api]);
 
   return (
     <div className="app">
-      <header>
+      <header inert={inert}>
         <h1>{t("app.name")}</h1>
         <nav aria-label={t("nav.label")}>
           {TABS.map((x) => (
@@ -37,37 +59,32 @@ export function App({ loadMyId = myId }: AppProps) {
           ))}
         </nav>
       </header>
-      <main>
+      <main inert={inert}>
         <p>{t(current.placeholder)}</p>
-        {tab === "home" && <MyDeviceId loadMyId={loadMyId} />}
+        {tab === "home" && (
+          <>
+            <MyDeviceId api={api} />
+            <section aria-labelledby="devices-heading">
+              <h2 id="devices-heading">{t("home.devices")}</h2>
+              <div className="tiles">
+                <button type="button" className="tile" onClick={() => setSending(true)}>
+                  {t("home.sendToId")}
+                </button>
+              </div>
+            </section>
+            <section aria-labelledby="transfers-heading">
+              <h2 id="transfers-heading">{t("home.transfers")}</h2>
+              {transfers.order.length === 0 ? (
+                <p>{t("home.noTransfers")}</p>
+              ) : (
+                <TransferList api={api} transfers={newestFirst(transfers)} />
+              )}
+            </section>
+          </>
+        )}
       </main>
+      {sending && <SendDialog api={api} onClose={() => setSending(false)} />}
+      {offer && <OfferSheet api={api} offer={offer} saveFolder={saveFolder} />}
     </div>
-  );
-}
-
-function MyDeviceId({ loadMyId }: { loadMyId: () => Promise<MyId> }) {
-  const [state, setState] = useState<"loading" | "error" | MyId>("loading");
-
-  useEffect(() => {
-    let live = true;
-    loadMyId().then(
-      (id) => live && setState(id),
-      () => live && setState("error"),
-    );
-    return () => {
-      live = false;
-    };
-  }, [loadMyId]);
-
-  if (state === "loading") return <p role="status">{t("home.loading")}</p>;
-  if (state === "error") return <p role="alert">{t("home.error")}</p>;
-  return (
-    <section aria-labelledby="my-id-heading">
-      <h2 id="my-id-heading">{t("home.myId")}</h2>
-      <p>
-        {t("home.fingerprint")}: <strong>{state.fingerprint}</strong>
-      </p>
-      <code>{state.id}</code>
-    </section>
   );
 }

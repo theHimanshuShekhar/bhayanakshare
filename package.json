@@ -6,7 +6,8 @@
     "dev": "tauri dev",
     "build": "tauri build",
     "typecheck": "cargo check --workspace --all-targets && pnpm --filter ui typecheck",
-    "test": "cargo test && pnpm --filter ui test",
+    "test": "cargo test --workspace && pnpm --filter ui test",
+    "bindings": "cargo test -p bhayanakshare export_ui_bindings -- --ignored",
     "tauri": "tauri"
   },
   "devDependencies": {

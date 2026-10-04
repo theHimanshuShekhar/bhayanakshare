@@ -1,31 +1,96 @@
 //! The desktop shell: a thin layer that starts a core [`Device`], exposes its commands to the
 //! UI and forwards its event stream. All behaviour lives in `bhayanakshare-core`.
+//!
+//! Commands map one to one onto `Device` methods and the UI hears exactly the core's events;
+//! the TypeScript for both is generated from the Rust types into `ui/src/bindings.ts`
+//! (`pnpm bindings`; a test fails when the file is stale).
 
-use std::{path::PathBuf, sync::Arc};
+use std::{
+    path::PathBuf,
+    sync::{Arc, Mutex},
+};
 
 use bhayanakshare_core::{
-    Device, DeviceConfig, DeviceId, KeySource, Network, SystemClock, TransferId,
+    Device, DeviceConfig, DeviceId, Event, KeySource, Network, SystemClock, TransferId,
 };
 use serde::Serialize;
-use tauri::{Emitter, Manager, State};
+use specta::Type;
+use tauri::{Manager, Runtime, State};
+use tauri_specta::{Builder, ErrorHandlingMode, Event as _, collect_commands, collect_events};
 
-/// The event the UI listens to; its payload is a core `Event`.
-const DEVICE_EVENT: &str = "device-event";
+/// Overrides where this install keeps its data (Device ID, database, blobs). Set it to
+/// different folders to run several instances on one machine.
+const DATA_DIR_VAR: &str = "BHAYANAKSHARE_DATA_DIR";
+/// Overrides the folder accepted files are saved to.
+const SAVE_DIR_VAR: &str = "BHAYANAKSHARE_SAVE_DIR";
 
-#[derive(Serialize)]
-struct MyId {
+/// Every event the Device emits, in order, as one UI event.
+#[derive(Clone, Serialize, Type, tauri_specta::Event)]
+#[serde(transparent)]
+pub struct DeviceEvent(pub Event);
+
+#[derive(Serialize, Type)]
+pub struct MyId {
+    /// 52-character base32 Device ID.
     id: String,
+    /// First 8 characters, `XXXX-XXXX`.
     fingerprint: String,
 }
 
+/// The folder accepted files are saved to (shown on the Offer sheet).
+struct SaveFolder(PathBuf);
+
+/// Holds the Device's events back until the UI is listening, so an Offer that arrives while
+/// the window is still loading is not lost; after that it passes events straight through.
+struct EventGate(Mutex<GateState>);
+
+struct GateState {
+    open: bool,
+    held: Vec<Event>,
+    deliver: Box<dyn Fn(Event) + Send>,
+}
+
+impl EventGate {
+    fn new(deliver: impl Fn(Event) + Send + 'static) -> Self {
+        Self(Mutex::new(GateState { open: false, held: Vec::new(), deliver: Box::new(deliver) }))
+    }
+
+    fn send(&self, event: Event) {
+        let mut gate = self.0.lock().unwrap_or_else(|e| e.into_inner());
+        if gate.open {
+            (gate.deliver)(event);
+        } else {
+            gate.held.push(event);
+        }
+    }
+
+    /// Delivers what was held, in order, and everything after it directly.
+    fn open(&self) {
+        let mut gate = self.0.lock().unwrap_or_else(|e| e.into_inner());
+        gate.open = true;
+        for event in std::mem::take(&mut gate.held) {
+            (gate.deliver)(event);
+        }
+    }
+}
+
 #[tauri::command]
+#[specta::specta]
 fn my_id(device: State<'_, Device>) -> MyId {
     let id = device.device_id();
     MyId { id: id.to_string(), fingerprint: id.fingerprint() }
 }
 
-/// Offers the file at `path` to the Device with the pasted Device ID `to`.
 #[tauri::command]
+#[specta::specta]
+fn save_folder(folder: State<'_, SaveFolder>) -> String {
+    folder.0.to_string_lossy().into_owned()
+}
+
+/// Offers the file at `path` to the Device with the pasted Device ID `to`; resolves to the
+/// Transfer ID.
+#[tauri::command]
+#[specta::specta]
 async fn send_file(device: State<'_, Device>, to: String, path: String) -> Result<String, String> {
     let to: DeviceId = to.trim().parse().map_err(|e| format!("{e}"))?;
     let id = device.send_file(to, &PathBuf::from(path)).await.map_err(|e| e.to_string())?;
@@ -33,46 +98,100 @@ async fn send_file(device: State<'_, Device>, to: String, path: String) -> Resul
 }
 
 #[tauri::command]
-async fn accept_offer(device: State<'_, Device>, transfer_id: String) -> Result<(), String> {
-    device.accept(parse_transfer_id(&transfer_id)?).await.map_err(|e| e.to_string())
+#[specta::specta]
+async fn accept_offer(device: State<'_, Device>, transfer_id: TransferId) -> Result<(), String> {
+    device.accept(transfer_id).await.map_err(|e| e.to_string())
 }
 
 #[tauri::command]
-async fn decline_offer(device: State<'_, Device>, transfer_id: String) -> Result<(), String> {
-    device.decline(parse_transfer_id(&transfer_id)?).await.map_err(|e| e.to_string())
+#[specta::specta]
+async fn decline_offer(device: State<'_, Device>, transfer_id: TransferId) -> Result<(), String> {
+    device.decline(transfer_id).await.map_err(|e| e.to_string())
 }
 
-fn parse_transfer_id(text: &str) -> Result<TransferId, String> {
-    text.parse().map_err(|()| "not a Transfer ID".to_owned())
+/// Not a Device command: the UI calls it once it is listening for `DeviceEvent`s, and
+/// receives everything the Device emitted before that, in order.
+#[tauri::command]
+#[specta::specta]
+fn events_ready(gate: State<'_, EventGate>) {
+    gate.open();
+}
+
+/// The commands and events the UI sees. Also the source of `ui/src/bindings.ts`.
+pub fn specta_builder<R: Runtime>() -> Builder<R> {
+    Builder::<R>::new()
+        .commands(collect_commands![
+            my_id,
+            save_folder,
+            send_file,
+            accept_offer,
+            decline_offer,
+            events_ready
+        ])
+        .events(collect_events![DeviceEvent])
+        // A rejected command is a rejected promise, not a wrapped result.
+        .error_handling(ErrorHandlingMode::Throw)
+        // Sizes and timestamps travel as JSON numbers; they stay far below 2^53.
+        .dangerously_cast_bigints_to_number()
+}
+
+/// Starts the Device, makes it available to the commands and forwards its event stream to
+/// the UI.
+pub fn start_device<R: Runtime>(
+    app: &impl Manager<R>,
+    config: DeviceConfig,
+) -> Result<(), Box<dyn std::error::Error>> {
+    // Shown to the user as the Device resolves it.
+    app.manage(SaveFolder(std::path::absolute(&config.save_dir)?));
+    let (device, mut events) = tauri::async_runtime::block_on(Device::start(config))?;
+    app.manage(device);
+
+    let handle = app.app_handle().clone();
+    app.manage(EventGate::new({
+        let handle = handle.clone();
+        move |event| {
+            if let Err(e) = DeviceEvent(event).emit(&handle) {
+                tracing::warn!("could not forward a Device event: {e}");
+            }
+        }
+    }));
+    tauri::async_runtime::spawn(async move {
+        while let Some(event) = events.next().await {
+            handle.state::<EventGate>().send(event);
+        }
+    });
+    Ok(())
+}
+
+/// Where this install keeps its data and saves received files.
+fn default_config<R: Runtime>(app: &impl Manager<R>) -> Result<DeviceConfig, tauri::Error> {
+    let data_dir = match std::env::var_os(DATA_DIR_VAR) {
+        Some(dir) => PathBuf::from(dir),
+        None => app.path().app_data_dir()?,
+    };
+    let save_dir = match std::env::var_os(SAVE_DIR_VAR) {
+        Some(dir) => PathBuf::from(dir),
+        None => app.path().download_dir()?.join("BhayanakShare"),
+    };
+    Ok(DeviceConfig {
+        key_source: KeySource::File(data_dir.join("secret.key")),
+        data_dir,
+        save_dir,
+        clock: Arc::new(SystemClock),
+        network: Network::Internet,
+    })
 }
 
 pub fn run() {
+    let builder = specta_builder();
     tauri::Builder::default()
-        .setup(|app| {
-            let data_dir = app.path().app_data_dir()?;
-            let save_dir = app.path().download_dir()?.join("BhayanakShare");
-            let config = DeviceConfig {
-                key_source: KeySource::File(data_dir.join("secret.key")),
-                data_dir,
-                save_dir,
-                clock: Arc::new(SystemClock),
-                network: Network::Internet,
-            };
-            let (device, mut events) =
-                tauri::async_runtime::block_on(Device::start(config))?;
-            app.manage(device);
-
-            let handle = app.handle().clone();
-            tauri::async_runtime::spawn(async move {
-                while let Some(event) = events.next().await {
-                    if let Err(e) = handle.emit(DEVICE_EVENT, &event) {
-                        tracing::warn!("could not forward a Device event: {e}");
-                    }
-                }
-            });
-            Ok(())
+        .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_opener::init())
+        .invoke_handler(builder.invoke_handler())
+        .setup(move |app| {
+            builder.mount_events(app);
+            start_device(app, default_config(app)?)
         })
-        .invoke_handler(tauri::generate_handler![my_id, send_file, accept_offer, decline_offer])
         .build(tauri::generate_context!())
         .expect("error while building BhayanakShare")
         .run(|app, event| {
@@ -83,4 +202,75 @@ pub fn run() {
                 }
             }
         });
+}
+
+#[cfg(test)]
+mod tests {
+    use std::path::Path;
+
+    use specta_typescript::Typescript;
+
+    use super::*;
+
+    use bhayanakshare_core::EventKind;
+
+    const BINDINGS: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../ui/src/bindings.ts");
+
+    fn progress(seq: u64) -> Event {
+        let transfer_id = TransferId::from_bytes([1; 16]);
+        Event {
+            seq,
+            at: 0,
+            kind: EventKind::Progress(bhayanakshare_core::ProgressEvent {
+                transfer_id,
+                bytes: seq,
+                total: 10,
+            }),
+        }
+    }
+
+    #[test]
+    fn the_gate_holds_events_until_opened_then_keeps_order() {
+        let delivered = Arc::new(Mutex::new(Vec::new()));
+        let gate = EventGate::new({
+            let delivered = delivered.clone();
+            move |e: Event| delivered.lock().unwrap().push(e.seq)
+        });
+
+        gate.send(progress(0));
+        gate.send(progress(1));
+        assert!(delivered.lock().unwrap().is_empty());
+
+        gate.open();
+        gate.send(progress(2));
+        assert_eq!(*delivered.lock().unwrap(), [0, 1, 2]);
+
+        gate.open(); // a reloaded window asks again: nothing is delivered twice
+        assert_eq!(*delivered.lock().unwrap(), [0, 1, 2]);
+    }
+
+    fn generate(to: &Path) {
+        specta_builder::<tauri::Wry>().export(Typescript::default(), to).unwrap();
+    }
+
+    /// Run by `pnpm bindings`: rewrites the generated UI types.
+    #[test]
+    #[ignore = "writes ui/src/bindings.ts; run through `pnpm bindings`"]
+    fn export_ui_bindings() {
+        generate(Path::new(BINDINGS));
+    }
+
+    #[test]
+    fn ui_bindings_match_the_rust_types() {
+        let fresh = std::env::temp_dir().join(format!("bindings-{}.ts", std::process::id()));
+        generate(&fresh);
+        let fresh_text = std::fs::read_to_string(&fresh).unwrap();
+        let _ = std::fs::remove_file(&fresh);
+
+        let committed = std::fs::read_to_string(BINDINGS).unwrap_or_default();
+        assert!(
+            committed == fresh_text,
+            "ui/src/bindings.ts is out of date; run `pnpm bindings` and commit the result"
+        );
+    }
 }
