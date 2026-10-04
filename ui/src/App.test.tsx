@@ -684,6 +684,20 @@ describe("Contacts", () => {
     expect(sheet.textContent).toContain("K3QF-7XNA");
   });
 
+  it("looks at the Contacts again when a Transfer arrives, as a connection may have refreshed one", async () => {
+    let name = "old name";
+    const api = fakeApi({
+      contacts: vi.fn(() => Promise.resolve([contact({ device_name: name })])),
+    });
+    await start(api);
+    await screen.findByRole("button", { name: "Send to old name" });
+
+    name = "new name"; // refreshed by the connection that brought the Offer
+    await api.transfer("receiver", { kind: "offered" });
+    expect(await screen.findByRole("dialog", { name: "Incoming file" })).toBeTruthy();
+    await waitFor(() => expect(screen.getByRole("dialog").textContent).toContain("new name"));
+  });
+
   it("shows an Offer from a non-Contact by the name it announced, plus its Fingerprint", async () => {
     const device = await start();
     await device.transfer("receiver", { kind: "offered" }, "Alice's desktop");

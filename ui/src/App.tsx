@@ -46,12 +46,18 @@ export function App({ api = tauriApi }: AppProps) {
     let unlisten: (() => void) | undefined;
     api.onDeviceEvent(dispatch).then((stop) => (live ? (unlisten = stop) : stop()));
     api.saveFolder().then((folder) => live && setSaveFolder(folder), () => {});
-    api.contacts().then((all) => live && setContacts(all), () => {});
     return () => {
       live = false;
       unlisten?.();
     };
   }, [api]);
+
+  // A connection can refresh a Contact's Device Name or address behind the UI's back, so look
+  // again whenever a tab is opened or a Transfer begins or learns the other Device's name.
+  const named = Object.values(transfers.byId).filter((x) => x.peerName !== null).length;
+  useEffect(() => {
+    loadContacts();
+  }, [loadContacts, tab, transfers.order.length, named]);
 
   return (
     <div className="app">
