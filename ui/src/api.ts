@@ -3,7 +3,7 @@
 // `Api`, so tests can hand the UI a stand-in.
 
 import { open } from "@tauri-apps/plugin-dialog";
-import { revealItemInDir } from "@tauri-apps/plugin-opener";
+import { openUrl, revealItemInDir } from "@tauri-apps/plugin-opener";
 import {
   commands,
   events,
@@ -12,9 +12,10 @@ import {
   type MyId,
   type SpaceCheck,
   type TransferId,
+  type Visibility,
 } from "./bindings";
 
-export type { Contact, DeviceEvent, MyId, SpaceCheck, TransferId };
+export type { Contact, DeviceEvent, MyId, SpaceCheck, TransferId, Visibility };
 
 export interface Api {
   myId(): Promise<MyId>;
@@ -31,6 +32,10 @@ export interface Api {
   cancelTransfer(id: TransferId): Promise<unknown>;
   /** Sends an expired Offer again; resolves to the new Transfer ID. */
   resendTransfer(id: TransferId): Promise<string>;
+  /** Who can see this Device as a Nearby Device. */
+  visibility(): Promise<Visibility>;
+  /** Changes who can see this Device as a Nearby Device; it takes effect at once. */
+  setVisibility(visibility: Visibility): Promise<unknown>;
   /** Every Contact, in the order they were added. */
   contacts(): Promise<Contact[]>;
   /** Saves a Device as a Contact; `deviceName` is the name it goes by, if known. */
@@ -45,6 +50,8 @@ export interface Api {
   /** Asks the user for a folder; null if they cancel. */
   pickFolder(): Promise<string | null>;
   showInFolder(path: string): Promise<void>;
+  /** Opens a web page in the user's browser. */
+  openUrl(url: string): Promise<void>;
   copyText(text: string): Promise<void>;
   /** Calls `handler` for every Device event, in order. Resolves to the unsubscribe function. */
   onDeviceEvent(handler: (event: DeviceEvent) => void): Promise<() => void>;
@@ -79,6 +86,8 @@ export const tauriApi: Api = {
   declineOffer: commands.declineOffer,
   cancelTransfer: commands.cancelTransfer,
   resendTransfer: commands.resendTransfer,
+  visibility: commands.visibility,
+  setVisibility: commands.setVisibility,
   contacts: commands.contacts,
   addContact: commands.addContact,
   setNickname: commands.setNickname,
@@ -93,6 +102,7 @@ export const tauriApi: Api = {
     return typeof picked === "string" ? picked : null;
   },
   showInFolder: revealItemInDir,
+  openUrl: (url) => openUrl(url),
   copyText,
   onDeviceEvent: async (handler) => {
     const unlisten = await events.deviceEvent.listen((e) => handler(e.payload));

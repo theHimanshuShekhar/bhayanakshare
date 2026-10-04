@@ -10,16 +10,20 @@ import { fingerprint } from "./transfers";
  */
 export function AddContactDialog({
   api,
+  prefilled,
   onAdded,
   onClose,
 }: {
   api: Api;
+  /** A Device already in front of the user (a Nearby tile): its ID is not typed, so the dialog
+   * starts at the Fingerprint check. */
+  prefilled?: { id: string; name: string | null };
   onAdded: (contact: Contact) => void;
   onClose: () => void;
 }) {
-  const [id, setId] = useState("");
-  const [name, setName] = useState("");
-  const [checking, setChecking] = useState(false);
+  const [id, setId] = useState(prefilled?.id ?? "");
+  const [name, setName] = useState(prefilled?.name ?? "");
+  const [checking, setChecking] = useState(prefilled !== undefined);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const idInput = useRef<HTMLInputElement>(null);

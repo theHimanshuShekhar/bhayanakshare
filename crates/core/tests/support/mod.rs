@@ -9,7 +9,7 @@ use std::{path::PathBuf, sync::Arc, time::Duration};
 
 use bhayanakshare_core::{
     Device, DeviceAddr, DeviceConfig, Event, EventKind, EventStream, FreeSpace, KeySource,
-    ManualClock, Network, SystemFreeSpace, TransferEvent, TransferId, TransferState,
+    ManualClock, NearbyDevice, Network, SystemFreeSpace, TransferEvent, TransferId, TransferState,
 };
 use iroh::{Endpoint, EndpointAddr, RelayMode, TransportAddr, endpoint::presets};
 use tempfile::TempDir;
@@ -38,6 +38,16 @@ impl TestDevice {
 
     /// Like `start`, but the Device sees `free_space` instead of the real disk.
     pub async fn start_with_free_space(name: &str, free_space: impl FreeSpace) -> Self {
+        Self::start_on(name, Network::Localhost, free_space).await
+    }
+
+    /// Like `start`, but the Device also finds and announces itself over multicast on the
+    /// loopback interface, so a test can see Devices discover each other.
+    pub async fn start_discovering(name: &str) -> Self {
+        Self::start_on(name, Network::LocalhostLan, SystemFreeSpace).await
+    }
+
+    async fn start_on(name: &str, network: Network, free_space: impl FreeSpace) -> Self {
         let tmp = tempfile::tempdir().unwrap();
         let data_dir = tmp.path().join("data");
         let save_dir = tmp.path().join("save");
@@ -48,7 +58,7 @@ impl TestDevice {
             data_dir: data_dir.clone(),
             save_dir: save_dir.clone(),
             clock: clock.clone(),
-            network: Network::Localhost,
+            network,
             free_space: Arc::new(free_space),
         })
         .await
@@ -86,17 +96,43 @@ impl TestDevice {
                     return t.clone();
                 }
             }
-            match tokio::time::timeout(EVENT_TIMEOUT, self.events.next()).await {
-                Ok(Some(event)) => {
-                    self.log.push(event);
-                    self.consumed.push(false);
-                }
-                Ok(None) => panic!("{}: event stream ended waiting for {what}", self.name),
-                Err(_) => panic!(
-                    "{}: timed out waiting for {what}; events so far:\n{:#?}",
-                    self.name, self.log
-                ),
+            self.read_next(what).await;
+        }
+    }
+
+    /// Waits until the list of Nearby Devices satisfies `pred` and returns it. Each `Nearby`
+    /// event holds the whole list, so this looks at the latest one (an empty list before the
+    /// first), not at events no earlier wait has used.
+    pub async fn wait_nearby(
+        &mut self,
+        what: &str,
+        pred: impl Fn(&[NearbyDevice]) -> bool,
+    ) -> Vec<NearbyDevice> {
+        loop {
+            let latest = self.log.iter().rev().find_map(|e| match &e.kind {
+                EventKind::Nearby(n) => Some(n.devices.clone()),
+                _ => None,
+            });
+            let latest = latest.unwrap_or_default();
+            if pred(&latest) {
+                return latest;
             }
+            self.read_next(what).await;
+        }
+    }
+
+    /// Reads the next event into the log, or fails the test if none comes in time.
+    async fn read_next(&mut self, what: &str) {
+        match tokio::time::timeout(EVENT_TIMEOUT, self.events.next()).await {
+            Ok(Some(event)) => {
+                self.log.push(event);
+                self.consumed.push(false);
+            }
+            Ok(None) => panic!("{}: event stream ended waiting for {what}", self.name),
+            Err(_) => panic!(
+                "{}: timed out waiting for {what}; events so far:\n{:#?}",
+                self.name, self.log
+            ),
         }
     }
 
@@ -122,7 +158,7 @@ impl TestDevice {
             .iter()
             .filter_map(|e| match &e.kind {
                 EventKind::Transfer(t) => Some(t),
-                EventKind::Progress(_) => None,
+                EventKind::Progress(_) | EventKind::Nearby(_) => None,
             })
             .filter(|t| t.transfer_id == id)
             .map(|t| t.state.label())

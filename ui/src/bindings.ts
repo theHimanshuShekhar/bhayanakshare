@@ -25,6 +25,10 @@ export const commands = {
 	deviceName: () => __TAURI_INVOKE<string>("device_name"),
 	/**  Renames this Device; resolves to the name as stored (trimmed, shortened if too long). */
 	setDeviceName: (name: string) => __TAURI_INVOKE<string>("set_device_name", { name }),
+	/**  Who can see this Device as a Nearby Device. */
+	visibility: () => __TAURI_INVOKE<Visibility>("visibility"),
+	/**  Changes who can see this Device as a Nearby Device; it takes effect at once. */
+	setVisibility: (visibility: Visibility) => __TAURI_INVOKE<null>("set_visibility", { visibility }),
 	/**  Every Contact, in the order they were added. */
 	contacts: () => __TAURI_INVOKE<Contact[]>("contacts"),
 	/**
@@ -87,7 +91,11 @@ export type EventKind =
 /**  How much of a Transfer's content a Receiver has downloaded so far. */
 {
 	type: "progress",
-} & ProgressEvent;
+} & ProgressEvent | 
+/**  The list of Nearby Devices changed. */
+{
+	type: "nearby",
+} & NearbyEvent;
 
 /**
  *  Where a Contact was last reached: its relay and the direct addresses seen on the latest
@@ -103,6 +111,24 @@ export type MyId = {
 	id: string,
 	/**  First 8 characters, `XXXX-XXXX`. */
 	fingerprint: string,
+};
+
+/**  A Device found on the LAN. */
+export type NearbyDevice = {
+	id: DeviceId,
+	/**
+	 *  What the Device calls itself, as it announced. Untrusted text: show it next to the
+	 *  Fingerprint. Absent if it announced none.
+	 */
+	name: string | null,
+};
+
+/**
+ *  The Devices found on the LAN, after a change: one appeared, left, or announced a new name.
+ *  Always the whole list, so a listener never has to track individual changes.
+ */
+export type NearbyEvent = {
+	devices: NearbyDevice[],
 };
 
 /**
@@ -169,6 +195,18 @@ export type TransferState = { kind: "offered" } | { kind: "accepted" } | { kind:
 { kind: "expired" } | 
 /**  One side stopped the Transfer before it completed; `by` is which. */
 { kind: "cancelled"; by: Role };
+
+/**
+ *  Who can see a Device as a Nearby Device (spec section 3). Governs discovery only: anyone
+ *  holding the Device ID can still send to it.
+ */
+export type Visibility = 
+/**  A plain announcement with the Device Name: anyone on the LAN sees it. */
+"everyone" | 
+/**  Only Devices that hold this Device's ID. Announces nothing until the beacon exists. */
+"id_holders" | 
+/**  Nobody. Announces nothing until the responder exists. */
+"hidden";
 
 /* Tauri Specta runtime */
 type EventEmit<T> = [T] extends [null] ? () => Promise<void> : (payload: T) => Promise<void>;

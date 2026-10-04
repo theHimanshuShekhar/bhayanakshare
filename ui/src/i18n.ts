@@ -13,6 +13,13 @@ const en = {
   "home.placeholder": "Your Contacts and Nearby Devices will appear here.",
   "home.sendToId": "Send to ID…",
   "home.sendToContact": "Send to {name}",
+  "home.sendToNearby": "Send to {name}",
+  "home.nearby": "Nearby",
+  "home.saveAsContact": "Save as Contact…",
+  "home.saveAsContactLabel": "Save {name} as a Contact",
+  "home.firewallHint":
+    "No Devices found on this network yet. If you expect some, a firewall may be blocking local discovery.",
+  "home.firewallDocs": "How to allow local discovery",
   "home.transfers": "Transfers",
   "home.noTransfers": "No Transfers yet.",
   "home.loading": "Starting this Device…",
@@ -55,6 +62,18 @@ const en = {
   "removeContact.confirm": "Remove",
   "removeContact.cancel": "Keep",
   "settings.placeholder": "Settings will appear here.",
+  "settings.heading": "Settings",
+
+  "visibility.legend": "Who can see this Device nearby",
+  "visibility.everyone": "Everyone",
+  "visibility.everyoneHint": "Anyone on your network can see this Device and its name.",
+  "visibility.idHolders": "People who have my ID",
+  "visibility.idHoldersHint": "Only Devices that already have your Device ID can see it.",
+  "visibility.hidden": "Hidden",
+  "visibility.hiddenHint":
+    "No one sees this Device on your network. People with your ID can still send to it.",
+  "visibility.loadFailed": "Could not read who can see this Device.",
+  "visibility.failed": "Could not change who can see this Device. {reason}",
 
   "myId.heading": "My ID",
   "myId.fingerprint": "Fingerprint",

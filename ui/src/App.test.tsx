@@ -1,8 +1,9 @@
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { App } from "./App";
-import type { Api, Contact, DeviceEvent } from "./api";
-import type { TransferState } from "./bindings";
+import type { Api, Contact, DeviceEvent, Visibility } from "./api";
+import type { NearbyDevice, TransferState } from "./bindings";
+import { NEARBY_WAIT_MS } from "./nearby";
 
 afterEach(cleanup);
 
@@ -36,7 +37,8 @@ function fakeApi(overrides: Partial<Api> = {}, initialContacts: Contact[] = []) 
   let handler: (event: DeviceEvent) => void = () => {};
   let seq = 0;
   let contacts = initialContacts;
-  const change = (id: string, over: (c: Contact) => Partial<Contact>) => {
+  let visibility: Visibility = "id_holders";
+  const change =(id: string, over: (c: Contact) => Partial<Contact>) => {
     const changed = contacts.map((c) => (c.id === id ? { ...c, ...over(c) } : c));
     contacts = changed;
     return Promise.resolve(changed.find((c) => c.id === id)!);
@@ -52,6 +54,11 @@ function fakeApi(overrides: Partial<Api> = {}, initialContacts: Contact[] = []) 
     declineOffer: vi.fn(() => Promise.resolve(null)),
     cancelTransfer: vi.fn(() => Promise.resolve(null)),
     resendTransfer: vi.fn(() => Promise.resolve("cd".repeat(16))),
+    visibility: vi.fn(() => Promise.resolve(visibility)),
+    setVisibility: vi.fn((v: Visibility) => {
+      visibility = v;
+      return Promise.resolve(null);
+    }),
     contacts: vi.fn(() => Promise.resolve(contacts)),
     addContact: vi.fn((id: string, deviceName: string | null) => {
       const added = contact({ id, device_name: deviceName, added_at: contacts.length + 1 });
@@ -69,6 +76,7 @@ function fakeApi(overrides: Partial<Api> = {}, initialContacts: Contact[] = []) 
     pickFile: vi.fn(() => Promise.resolve<string | null>("/tmp/photo.jpg")),
     pickFolder: vi.fn(() => Promise.resolve<string | null>("/mnt/big")),
     showInFolder: vi.fn(() => Promise.resolve()),
+    openUrl: vi.fn((_url: string) => Promise.resolve()),
     copyText: vi.fn(() => Promise.resolve()),
     onDeviceEvent: (h: (event: DeviceEvent) => void) => {
       handler = h;
@@ -94,7 +102,9 @@ function fakeApi(overrides: Partial<Api> = {}, initialContacts: Contact[] = []) 
       expires_at: EXPIRES_AT,
       state,
     });
-  return { api, push, transfer };
+  /** The Device reports the Nearby Devices as they are now. */
+  const nearby = (...devices: NearbyDevice[]) => push({ type: "nearby", devices });
+  return { api, push, transfer, nearby };
 }
 
 /** Renders the app and waits until it is listening for events. */
@@ -727,5 +737,241 @@ describe("Contacts", () => {
     expect(screen.getByText("Bob's laptop · K3QF-7XNA accepted. Sending…")).toBeTruthy();
     await device.transfer("sender", { kind: "completed", saved_to: null });
     expect(screen.getByText("photo.jpg to Bob's laptop · K3QF-7XNA")).toBeTruthy();
+  });
+});
+
+describe("Nearby Devices", () => {
+  const OTHER_ID = "ZZZZ2222" + "C".repeat(44);
+
+  it("shows a Nearby non-Contact as its name and Fingerprint, ahead of Send to ID", async () => {
+    const device = await start();
+    await device.nearby({ id: PEER_ID, name: "Dad's PC" });
+    const tile = await screen.findByRole("button", { name: "Send to Dad's PC · K3QF-7XNA" });
+    expect(tile.textContent).toContain("Dad's PC");
+    expect(tile.textContent).toContain("K3QF-7XNA");
+    expect(tile.textContent).toContain("Nearby");
+    expect(tile.textContent).not.toContain("Contact");
+    const tiles = screen.getAllByRole("button", { name: /^Send to / });
+    expect(tiles.map((x) => x.getAttribute("aria-label") ?? x.textContent)).toEqual([
+      "Send to Dad's PC · K3QF-7XNA",
+      "Send to ID…",
+    ]);
+  });
+
+  it("shows a Nearby Device that announced no name by its Fingerprint alone", async () => {
+    const device = await start();
+    await device.nearby({ id: PEER_ID, name: null });
+    expect(await screen.findByRole("button", { name: "Send to K3QF-7XNA" })).toBeTruthy();
+  });
+
+  it("matches a Nearby Contact by Device ID: one badged tile, marked Nearby, under its own name", async () => {
+    const device = await start(fakeApi({}, [contact({ nickname: "Mum" })]));
+    await screen.findByRole("button", { name: "Send to Mum" });
+    await device.nearby({ id: PEER_ID, name: "Some other name" }, { id: OTHER_ID, name: "Dad" });
+
+    const tiles = await screen.findAllByRole("button", { name: /^Send to / });
+    expect(tiles.map((x) => x.getAttribute("aria-label") ?? x.textContent)).toEqual([
+      "Send to Mum",
+      "Send to Dad · ZZZZ-2222",
+      "Send to ID…",
+    ]);
+    expect(tiles[0].textContent).toContain("Contact");
+    expect(tiles[0].textContent).toContain("Nearby");
+    // Only the stranger can be saved.
+    expect(screen.getAllByRole("button", { name: /^Save .* as a Contact$/ })).toHaveLength(1);
+  });
+
+  it("uses the announced name for a Contact that has none yet, and shows an offline Contact without Nearby", async () => {
+    const device = await start(fakeApi({}, [contact({ nickname: null, device_name: null })]));
+    const offline = await screen.findByRole("button", { name: "Send to K3QF-7XNA" });
+    expect(offline.textContent).not.toContain("Nearby");
+    await device.nearby({ id: PEER_ID, name: "Mum's phone" });
+    expect(await screen.findByRole("button", { name: "Send to Mum's phone" })).toBeTruthy();
+  });
+
+  it("drops a tile when the Device is no longer Nearby", async () => {
+    const device = await start();
+    await device.nearby({ id: PEER_ID, name: "Dad's PC" });
+    await screen.findByRole("button", { name: /^Send to Dad's PC/ });
+    await device.nearby();
+    expect(screen.queryByRole("button", { name: /^Send to Dad's PC/ })).toBeNull();
+  });
+
+  it("sends to a Nearby tile with its ID filled in", async () => {
+    const device = await start();
+    await device.nearby({ id: PEER_ID, name: "Dad's PC" });
+    fireEvent.click(await screen.findByRole("button", { name: /^Send to Dad's PC/ }));
+    expect(screen.getByRole("dialog", { name: "Send to Dad's PC · K3QF-7XNA" })).toBeTruthy();
+    expect((screen.getByLabelText("Device ID") as HTMLInputElement).value).toBe(PEER_ID);
+  });
+
+  it("saves a Nearby tile as a Contact after checking the Fingerprint, with the name it announced", async () => {
+    const device = await start();
+    await device.nearby({ id: PEER_ID, name: "Dad's PC" });
+    fireEvent.click(await screen.findByRole("button", { name: /^Save Dad's PC · K3QF-7XNA as a Contact$/ }));
+
+    // Straight to the check: the ID was not typed, but the Fingerprint is still compared.
+    const dialog = screen.getByRole("dialog");
+    expect(within(dialog).getByText("K3QF-7XNA")).toBeTruthy();
+    expect(device.api.addContact).not.toHaveBeenCalled();
+
+    fireEvent.click(within(dialog).getByRole("button", { name: "It matches, add Contact" }));
+    await waitFor(() => expect(device.api.addContact).toHaveBeenCalledWith(PEER_ID, "Dad's PC"));
+    // Now a Contact: its tile is badged and the Save button is gone.
+    expect(await screen.findByRole("button", { name: "Send to Dad's PC" })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: /as a Contact$/ })).toBeNull();
+  });
+
+  it("saves nothing when the Fingerprint check is cancelled", async () => {
+    const device = await start();
+    await device.nearby({ id: PEER_ID, name: null });
+    fireEvent.click(await screen.findByRole("button", { name: /^Save K3QF-7XNA as a Contact$/ }));
+    fireEvent.keyDown(screen.getByRole("dialog"), { key: "Escape" });
+    expect(screen.queryByRole("dialog")).toBeNull();
+    expect(device.api.addContact).not.toHaveBeenCalled();
+  });
+});
+
+describe("the firewall hint", () => {
+  const HINT = /No Devices found on this network yet/;
+  const DOCS = "https://github.com/theHimanshuShekhar/bhayanakshare/blob/main/docs/firewall.md";
+
+  /**
+   * Takes over the 30-second wait and leaves every other timer real (a fake clock would also
+   * freeze the ones Testing Library waits on). `elapse` lets the wait run out; `delays` are the
+   * waits the app asked for.
+   */
+  function holdTheWait() {
+    const real = globalThis.setTimeout;
+    const delays: number[] = [];
+    let fire = () => {};
+    vi.spyOn(globalThis, "setTimeout").mockImplementation(((
+      fn: () => void,
+      ms?: number,
+      ...args: unknown[]
+    ) => {
+      if (ms !== NEARBY_WAIT_MS) return real(fn, ms, ...args);
+      delays.push(ms);
+      fire = fn;
+      return 0;
+    }) as unknown as typeof setTimeout);
+    return { delays, elapse: () => act(() => fire()) };
+  }
+
+  afterEach(() => vi.restoreAllMocks());
+
+  it("appears once the 30-second wait is over with nobody Nearby, and links to the docs", async () => {
+    const wait = holdTheWait();
+    const device = await start();
+    expect(wait.delays).toEqual([30_000]);
+    expect(screen.queryByText(HINT)).toBeNull();
+    await wait.elapse();
+    expect(screen.getByText(HINT)).toBeTruthy();
+
+    const link = screen.getByRole("link", { name: "How to allow local discovery" });
+    expect(link.getAttribute("href")).toBe(DOCS);
+    fireEvent.click(link);
+    // Opened in the browser, not in the app's own window.
+    expect(device.api.openUrl).toHaveBeenCalledWith(DOCS);
+  });
+
+  it("does not appear when a Device was found in time", async () => {
+    const wait = holdTheWait();
+    const device = await start();
+    await device.nearby({ id: PEER_ID, name: "Dad's PC" });
+    await wait.elapse();
+    expect(screen.queryByText(HINT)).toBeNull();
+  });
+
+  it("goes away when a Device turns up, and comes back if they all leave", async () => {
+    const wait = holdTheWait();
+    const device = await start();
+    await wait.elapse();
+    expect(screen.getByText(HINT)).toBeTruthy();
+    await device.nearby({ id: PEER_ID, name: "Dad's PC" });
+    expect(screen.queryByText(HINT)).toBeNull();
+    await device.nearby();
+    expect(screen.getByText(HINT)).toBeTruthy();
+  });
+});
+
+describe("Visibility", () => {
+  const open = async (device = fakeApi()) => {
+    await start(device);
+    fireEvent.click(screen.getByRole("button", { name: "Settings" }));
+    return device;
+  };
+
+  it("offers the three settings, each with a one-line explanation, and marks the current one", async () => {
+    await open();
+    const group = await screen.findByRole("group", { name: "Who can see this Device nearby" });
+    const radios = within(group).getAllByRole("radio");
+    expect(radios.map((r) => r.getAttribute("id"))).toEqual([
+      "visibility-everyone",
+      "visibility-id_holders",
+      "visibility-hidden",
+    ]);
+    await waitFor(() => expect((radios[1] as HTMLInputElement).checked).toBe(true));
+    expect(radios.map((r) => (r as HTMLInputElement).checked)).toEqual([false, true, false]);
+
+    // Named by the setting, and described: the explanation is what a screen reader reads next.
+    expect(within(group).getByRole("radio", { name: "Everyone" })).toBeTruthy();
+    expect(within(group).getByRole("radio", { name: "People who have my ID" })).toBeTruthy();
+    expect(within(group).getByRole("radio", { name: "Hidden" })).toBeTruthy();
+    const described = radios.map(
+      (r) => document.getElementById(r.getAttribute("aria-describedby") ?? "")?.textContent,
+    );
+    expect(described).toEqual([
+      "Anyone on your network can see this Device and its name.",
+      "Only Devices that already have your Device ID can see it.",
+      "No one sees this Device on your network. People with your ID can still send to it.",
+    ]);
+  });
+
+  it("changes the setting and shows the new one", async () => {
+    const device = await open();
+    const everyone = await screen.findByRole("radio", { name: "Everyone" });
+    await waitFor(() => expect((everyone as HTMLInputElement).disabled).toBe(false));
+    fireEvent.click(everyone);
+    await waitFor(() => expect(device.api.setVisibility).toHaveBeenCalledWith("everyone"));
+    await waitFor(() => expect((everyone as HTMLInputElement).checked).toBe(true));
+    expect(
+      (screen.getByRole("radio", { name: "People who have my ID" }) as HTMLInputElement).checked,
+    ).toBe(false);
+  });
+
+  it("reads the stored setting when Settings is opened again", async () => {
+    const device = await open();
+    const hiddenAtFirst = await screen.findByRole("radio", { name: "Hidden" });
+    await waitFor(() => expect((hiddenAtFirst as HTMLInputElement).disabled).toBe(false));
+    fireEvent.click(hiddenAtFirst);
+    await waitFor(() => expect(device.api.setVisibility).toHaveBeenCalledWith("hidden"));
+    fireEvent.click(screen.getByRole("button", { name: "Home" }));
+    fireEvent.click(screen.getByRole("button", { name: "Settings" }));
+    const hidden = await screen.findByRole("radio", { name: "Hidden" });
+    await waitFor(() => expect((hidden as HTMLInputElement).checked).toBe(true));
+  });
+
+  it("keeps the old setting and says why when the change is refused", async () => {
+    const device = await open(
+      fakeApi({ setVisibility: vi.fn(() => Promise.reject(new Error("the Device is shutting down"))) }),
+    );
+    const everyone = await screen.findByRole("radio", { name: "Everyone" });
+    await waitFor(() => expect((everyone as HTMLInputElement).disabled).toBe(false));
+    fireEvent.click(everyone);
+    expect((await screen.findByRole("alert")).textContent).toContain("the Device is shutting down");
+    expect((everyone as HTMLInputElement).checked).toBe(false);
+    expect(
+      (screen.getByRole("radio", { name: "People who have my ID" }) as HTMLInputElement).checked,
+    ).toBe(true);
+    expect(device.api.setVisibility).toHaveBeenCalledTimes(1);
+  });
+
+  it("says so, and offers no choice, when the setting cannot be read", async () => {
+    await open(fakeApi({ visibility: () => Promise.reject(new Error("no")) }));
+    expect((await screen.findByRole("alert")).textContent).toContain("Could not read");
+    for (const radio of screen.getAllByRole("radio")) {
+      expect((radio as HTMLInputElement).disabled).toBe(true);
+    }
   });
 });

@@ -7,6 +7,7 @@ use tokio::sync::mpsc;
 
 use crate::{
     clock::UnixMillis,
+    discovery::NearbyDevice,
     identity::DeviceId,
     transfer::{Role, TransferId, TransferState},
 };
@@ -28,6 +29,15 @@ pub enum EventKind {
     Transfer(TransferEvent),
     /// How much of a Transfer's content a Receiver has downloaded so far.
     Progress(ProgressEvent),
+    /// The list of Nearby Devices changed.
+    Nearby(NearbyEvent),
+}
+
+/// The Devices found on the LAN, after a change: one appeared, left, or announced a new name.
+/// Always the whole list, so a listener never has to track individual changes.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, specta::Type)]
+pub struct NearbyEvent {
+    pub devices: Vec<NearbyDevice>,
 }
 
 /// Download progress of an accepted Transfer, reported by its Receiver while it is

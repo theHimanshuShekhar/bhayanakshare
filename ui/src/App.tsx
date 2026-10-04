@@ -6,9 +6,11 @@ import { MyDeviceId } from "./MyDeviceId";
 import { OfferSheet } from "./OfferSheet";
 import { RemoveContactDialog } from "./RemoveContactDialog";
 import { SendDialog } from "./SendDialog";
+import { SettingsScreen } from "./SettingsScreen";
 import { TransferList } from "./TransferList";
-import { contactName, sortedContacts } from "./contacts";
+import { peerName, sortedContacts } from "./contacts";
 import { t, type MessageKey } from "./i18n";
+import { FIREWALL_DOCS_URL, NEARBY_WAIT_MS, applyNearby, nearbyStrangers } from "./nearby";
 import { applyEvent, fingerprint, newestFirst, noTransfers, pendingOffer } from "./transfers";
 
 const TABS = [
@@ -31,20 +33,31 @@ export function App({ api = tauriApi }: AppProps) {
   const [sending, setSending] = useState<{ to: string; name: string | null } | null>(null);
   const [contacts, setContacts] = useState<Contact[]>([]);
   const [adding, setAdding] = useState(false);
+  // A Nearby Device being saved as a Contact: its ID is already known.
+  const [saving, setSaving] = useState<{ id: string; name: string | null } | null>(null);
   const [removing, setRemoving] = useState<Contact | null>(null);
   const [transfers, dispatch] = useReducer(applyEvent, noTransfers);
+  const [nearby, dispatchNearby] = useReducer(applyNearby, []);
+  // Set once Home has waited long enough for a Nearby Device to show up.
+  const [waited, setWaited] = useState(false);
   const [saveFolder, setSaveFolder] = useState<string | null>(null);
   const current = TABS.find((x) => x.id === tab) ?? TABS[0];
   const offer = pendingOffer(transfers);
   // While a sheet is open the page behind it can be neither clicked nor tabbed to.
-  const inert = sending !== null || adding || removing !== null || offer !== undefined;
+  const inert =
+    sending !== null || adding || saving !== null || removing !== null || offer !== undefined;
 
   const loadContacts = useCallback(() => api.contacts().then(setContacts, () => {}), [api]);
 
   useEffect(() => {
     let live = true;
     let unlisten: (() => void) | undefined;
-    api.onDeviceEvent(dispatch).then((stop) => (live ? (unlisten = stop) : stop()));
+    api
+      .onDeviceEvent((event) => {
+        dispatch(event);
+        dispatchNearby(event);
+      })
+      .then((stop) => (live ? (unlisten = stop) : stop()));
     api.saveFolder().then((folder) => live && setSaveFolder(folder), () => {});
     return () => {
       live = false;
@@ -52,12 +65,18 @@ export function App({ api = tauriApi }: AppProps) {
     };
   }, [api]);
 
+  useEffect(() => {
+    const timer = setTimeout(() => setWaited(true), NEARBY_WAIT_MS);
+    return () => clearTimeout(timer);
+  }, []);
+
   // A connection can refresh a Contact's Device Name or address behind the UI's back, so look
-  // again whenever a tab is opened or a Transfer begins or learns the other Device's name.
+  // again whenever a tab is opened, a Transfer begins or learns the other Device's name, or the
+  // Nearby Devices change.
   const named = Object.values(transfers.byId).filter((x) => x.peerName !== null).length;
   useEffect(() => {
     loadContacts();
-  }, [loadContacts, tab, transfers.order.length, named]);
+  }, [loadContacts, tab, transfers.order.length, named, nearby]);
 
   return (
     <div className="app">
@@ -77,7 +96,7 @@ export function App({ api = tauriApi }: AppProps) {
         </nav>
       </header>
       <main inert={inert}>
-        {tab !== "contacts" && <p>{t(current.placeholder)}</p>}
+        {tab !== "contacts" && tab !== "settings" && <p>{t(current.placeholder)}</p>}
         {tab === "home" && (
           <>
             <MyDeviceId api={api} />
@@ -85,7 +104,9 @@ export function App({ api = tauriApi }: AppProps) {
               <h2 id="devices-heading">{t("home.devices")}</h2>
               <div className="tiles">
                 {sortedContacts(contacts).map((c) => {
-                  const name = contactName(c) ?? fingerprint(c.id);
+                  // A Contact that is Nearby shows what it announces until it has a name here.
+                  const here = nearby.find((d) => d.id === c.id);
+                  const name = peerName(c.id, contacts, here?.name ?? null);
                   return (
                     <button
                       key={c.id}
@@ -97,7 +118,32 @@ export function App({ api = tauriApi }: AppProps) {
                       <strong>{name}</strong>
                       <span className="badge">{t("contacts.badge")}</span>
                       <span className="note">{fingerprint(c.id)}</span>
+                      {here && <span className="note">{t("home.nearby")}</span>}
                     </button>
+                  );
+                })}
+                {nearbyStrangers(nearby, contacts).map((d) => {
+                  const label = peerName(d.id, contacts, d.name);
+                  return (
+                    <div key={d.id} className="tile-group">
+                      <button
+                        type="button"
+                        className="tile"
+                        aria-label={t("home.sendToNearby", { name: label })}
+                        onClick={() => setSending({ to: d.id, name: label })}
+                      >
+                        <strong>{d.name ?? fingerprint(d.id)}</strong>
+                        {d.name !== null && <span className="note">{fingerprint(d.id)}</span>}
+                        <span className="note">{t("home.nearby")}</span>
+                      </button>
+                      <button
+                        type="button"
+                        aria-label={t("home.saveAsContactLabel", { name: label })}
+                        onClick={() => setSaving({ id: d.id, name: d.name })}
+                      >
+                        {t("home.saveAsContact")}
+                      </button>
+                    </div>
                   );
                 })}
                 <button
@@ -108,6 +154,21 @@ export function App({ api = tauriApi }: AppProps) {
                   {t("home.sendToId")}
                 </button>
               </div>
+              {waited && nearby.length === 0 && (
+                <p role="status" className="hint">
+                  {t("home.firewallHint")}{" "}
+                  <a
+                    href={FIREWALL_DOCS_URL}
+                    onClick={(e) => {
+                      // The webview must not navigate away from the app.
+                      e.preventDefault();
+                      api.openUrl(FIREWALL_DOCS_URL).catch(() => {});
+                    }}
+                  >
+                    {t("home.firewallDocs")}
+                  </a>
+                </p>
+              )}
             </section>
             <section aria-labelledby="transfers-heading">
               <h2 id="transfers-heading">{t("home.transfers")}</h2>
@@ -128,6 +189,7 @@ export function App({ api = tauriApi }: AppProps) {
             onRemove={setRemoving}
           />
         )}
+        {tab === "settings" && <SettingsScreen api={api} />}
       </main>
       {sending && (
         <SendDialog
@@ -139,6 +201,14 @@ export function App({ api = tauriApi }: AppProps) {
       )}
       {adding && (
         <AddContactDialog api={api} onAdded={loadContacts} onClose={() => setAdding(false)} />
+      )}
+      {saving && (
+        <AddContactDialog
+          api={api}
+          prefilled={saving}
+          onAdded={loadContacts}
+          onClose={() => setSaving(null)}
+        />
       )}
       {removing && (
         <RemoveContactDialog
