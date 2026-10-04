@@ -141,7 +141,7 @@ fn a_file_goes_from_one_shell_to_another_through_commands_and_events() {
     assert_eq!(sent["role"], "sender");
 
     for shell in [&alice, &bob] {
-        tauri::async_runtime::block_on(shell.device().shutdown());
+        tauri::async_runtime::block_on(shell.device().shutdown(Duration::from_secs(30)));
     }
 }
 
@@ -171,7 +171,7 @@ fn a_declined_offer_and_bad_input_are_reported_to_the_ui() {
     assert!(bad.unwrap_err().as_str().unwrap().contains("52 characters"));
 
     for shell in [&alice, &bob] {
-        tauri::async_runtime::block_on(shell.device().shutdown());
+        tauri::async_runtime::block_on(shell.device().shutdown(Duration::from_secs(30)));
     }
 }
 
@@ -203,7 +203,7 @@ fn cancelling_goes_through_the_commands_and_the_other_ui_hears_who_cancelled() {
     assert!(resend.unwrap_err().as_str().unwrap().contains("did not expire"));
 
     for shell in [&alice, &bob] {
-        tauri::async_runtime::block_on(shell.device().shutdown());
+        tauri::async_runtime::block_on(shell.device().shutdown(Duration::from_secs(30)));
     }
 }
 
@@ -241,6 +241,6 @@ fn contacts_are_managed_through_commands() {
     assert!(gone.unwrap_err().as_str().unwrap().contains("not a Contact"));
 
     for shell in [&alice, &bob] {
-        tauri::async_runtime::block_on(shell.device().shutdown());
+        tauri::async_runtime::block_on(shell.device().shutdown(Duration::from_secs(30)));
     }
 }

@@ -25,14 +25,14 @@ async fn identity_settings_and_history_survive_a_restart() {
     let (first, _events) = Device::start(config()).await.unwrap();
     let id = first.device_id();
     first.set_setting("device_name", "Laptop").await.unwrap();
-    first.shutdown().await;
+    first.shutdown(Duration::from_secs(30)).await;
     drop(first);
 
     // Same data folder: same key, same database, and the Sender's store reopens cleanly.
     let (second, _events) = Device::start(config()).await.unwrap();
     assert_eq!(second.device_id(), id);
     assert_eq!(second.setting("device_name").await.unwrap().as_deref(), Some("Laptop"));
-    second.shutdown().await;
+    second.shutdown(Duration::from_secs(30)).await;
 }
 
 #[tokio::test]
@@ -52,7 +52,7 @@ async fn two_live_devices_cannot_share_a_data_folder() {
         .await
         .expect("second start must fail fast, not hang");
     assert!(second.is_err());
-    first.shutdown().await;
+    first.shutdown(Duration::from_secs(30)).await;
 }
 
 #[tokio::test]

@@ -8,10 +8,12 @@ use std::{
     net::SocketAddr,
     path::{Path, PathBuf},
     sync::{Arc, Mutex},
+    time::Duration,
 };
 
 use iroh::{
-    Endpoint, EndpointAddr, RelayMode, TransportAddr, endpoint::presets, protocol::Router,
+    Endpoint, EndpointAddr, RelayMode, TransportAddr, address_lookup::MemoryLookup,
+    endpoint::presets, protocol::Router,
 };
 use iroh_blobs::BlobsProtocol;
 use tokio::sync::oneshot;
@@ -20,7 +22,7 @@ use tokio_util::{sync::CancellationToken, task::TaskTracker};
 use crate::{
     clock::{Clock, UnixMillis},
     contacts::{Contact, KnownAddress, clean_name},
-    db::{Db, TransferRecord},
+    db::{Db, Source, TransferRecord, Unfinished},
     device_name,
     discovery::{Discovery, NearbyDevice, Visibility},
     error::Error,
@@ -29,6 +31,7 @@ use crate::{
     identity::{DeviceId, KeySource},
     names::validate_file_name,
     protocol, receiver, sender,
+    session::RESTARTED,
     space::{FreeSpace, SpaceCheck},
     store,
     transfer::{OFFER_TTL_MS, Role, TransferId, TransferState},
@@ -111,6 +114,23 @@ pub(crate) struct TransferInfo {
     pub expires_at: UnixMillis,
 }
 
+impl TransferInfo {
+    /// A Transfer read back from the database, or `None` if its peer cannot be read.
+    pub(crate) fn from_record(record: &TransferRecord) -> Option<Self> {
+        Some(Self {
+            id: record.id,
+            role: record.role,
+            peer: record.peer.parse().ok()?,
+            // Learned again from the peer's Hello when it next connects.
+            peer_name: None,
+            name: record.name.clone(),
+            size: record.size,
+            // Both sides begin timing an Offer when they record it.
+            expires_at: record.created_at + OFFER_TTL_MS,
+        })
+    }
+}
+
 /// State shared by the Device handle and the tasks it spawns.
 pub(crate) struct Shared {
     pub id: DeviceId,
@@ -135,6 +155,11 @@ pub(crate) struct Shared {
     /// Offers this Device sent that expired, with where they went and what they held, so the
     /// user can send them again in one step.
     pub expired: Mutex<HashMap<TransferId, (DeviceAddr, PathBuf)>>,
+    /// Transfers this Device sends that are waiting for, or following, their Receiver, by
+    /// Transfer ID: where a Receiver that dials back with `Resume` is handed over.
+    pub resumers: Mutex<HashMap<TransferId, sender::Resumer>>,
+    /// Addresses of other Devices this Device was told about, for dialling them.
+    pub lookup: MemoryLookup,
     pub tasks: TaskTracker,
     /// Cancelled on shutdown; Transfer tasks stop, cleanup tasks run to the end.
     pub cancel: CancellationToken,
@@ -263,6 +288,58 @@ pub(crate) fn direct_addrs(endpoint: &Endpoint) -> Vec<SocketAddr> {
     if direct.is_empty() { endpoint.bound_sockets() } else { direct }
 }
 
+/// Takes up the Transfers the last run left unfinished (spec section 4):
+///
+/// - An Offer nobody answered does not survive a restart: it expires, on either side.
+/// - An accepted Transfer carries on. A Sender whose content was hashed waits for the
+///   Receiver to dial back; a Receiver that has its save folder redials the Sender. The 24
+///   hours without progress count from the last progress made before the restart.
+/// - Anything else cannot be resumed and fails with a reason: an accepted Transfer whose
+///   content hash had not been exchanged yet (a Sender that restarted while still hashing, a
+///   Receiver that had not been told the hash).
+///
+/// Only the database is told about the ones that end: nothing was shown to the user in this
+/// run, so there is no event to send.
+async fn recover(sh: &Arc<Shared>) -> Result<(), Error> {
+    for Unfinished { record, progress_at, root, save_dir } in sh.db.unfinished().await? {
+        let resumed = match (record.role, &record.state, TransferInfo::from_record(&record), root) {
+            (
+                Role::Sender,
+                TransferState::Accepted | TransferState::Transferring,
+                Some(info),
+                Some(root),
+            ) => {
+                sender::recover(sh, info, root, progress_at);
+                true
+            }
+            (
+                Role::Receiver,
+                TransferState::Accepted
+                | TransferState::Transferring
+                | TransferState::Reconnecting
+                | TransferState::Saving,
+                Some(info),
+                Some(root),
+            ) => match save_dir {
+                Some(save_dir) => {
+                    receiver::recover(sh, info, root, save_dir, progress_at);
+                    true
+                }
+                None => false,
+            },
+            _ => false,
+        };
+        if !resumed {
+            let state = match record.state {
+                TransferState::Offered => TransferState::Expired,
+                _ => TransferState::Failed { reason: RESTARTED.into() },
+            };
+            sh.db.update_transfer(record.id, state, sh.now()).await?;
+        }
+    }
+    Ok(())
+}
+
 struct Inner {
     shared: Arc<Shared>,
     router: Router,
@@ -296,6 +373,7 @@ impl Device {
         let store = store::open(&data_dir.join("blobs")).await?;
         let blobs: iroh_blobs::api::Store = (**store).clone();
 
+        let lookup = MemoryLookup::new();
         let endpoint = match network {
             Network::Internet => Endpoint::builder(presets::N0),
             Network::Localhost | Network::LocalhostLan => Endpoint::builder(presets::Minimal)
@@ -304,6 +382,7 @@ impl Device {
                 .bind_addr("127.0.0.1:0")
                 .map_err(|e| Error::network("binding", e))?,
         }
+        .address_lookup(lookup.clone())
         .secret_key(secret)
         .bind()
         .await
@@ -325,9 +404,14 @@ impl Device {
             pending: Mutex::default(),
             cancels: Mutex::default(),
             expired: Mutex::default(),
+            resumers: Mutex::default(),
+            lookup,
             tasks: TaskTracker::new(),
             cancel: CancellationToken::new(),
         });
+        // Before the Device accepts anyone: a Receiver dialling back to resume must find its
+        // Transfer already waiting for it.
+        recover(&shared).await?;
         let router = Router::builder(endpoint)
             .accept(protocol::ALPN, receiver::Handler::new(shared.clone()))
             .accept(iroh_blobs::ALPN, BlobsProtocol::new(&blobs, Some(gate.events())))
@@ -382,6 +466,9 @@ impl Device {
             expires_at: sh.now() + OFFER_TTL_MS,
         };
         sh.begin(&info, TransferState::Offered).await?;
+        // The files as they are now, for the check before they are served again.
+        let source = Source { path: path.clone(), size: meta.len(), mtime_ns: sender::mtime_ns(&meta) };
+        sh.db.insert_sources(info.id, vec![source]).await?;
         let id = info.id;
         let cancel = sh.track(id);
         let sh = sh.clone();
@@ -600,18 +687,42 @@ impl Device {
         Ok(self.inner.shared.db.transfers().await?)
     }
 
-    /// Stops Transfers in progress, waits for store cleanup to finish and closes the network
-    /// endpoint. Safe to call more than once.
-    pub async fn shutdown(&self) {
+    /// Tells this Device where to find another one, for when it dials it and discovery cannot
+    /// say: the address is kept for this run and tried alongside whatever discovery finds.
+    pub fn note_address(&self, addr: DeviceAddr) {
+        self.inner.shared.lookup.add_endpoint_info(addr.to_endpoint_addr());
+    }
+
+    /// Stops the Device cleanly: Transfers in progress are left as they are, to resume on the
+    /// next start, and every store they use is shut down, which flushes what it holds to
+    /// disk; then the network endpoint closes. Flushing can take a long time after a large
+    /// download, so this gives up waiting after `deadline` and returns anyway: stopping the
+    /// process then is like a crash, which is safe but makes the next start re-check what was
+    /// downloaded. Safe to call more than once.
+    pub async fn shutdown(&self, deadline: Duration) {
         let sh = &self.inner.shared;
+        let until = tokio::time::Instant::now() + deadline;
         sh.cancel.cancel();
         sh.tasks.close();
-        sh.tasks.wait().await;
-        sh.discovery.shutdown().await;
-        if let Err(e) = self.inner.router.shutdown().await {
-            tracing::warn!("network shutdown: {e}");
+        let mut closed = true;
+        if tokio::time::timeout_at(until, sh.tasks.wait()).await.is_err() {
+            tracing::warn!("shutdown gave up on Transfer stores after {deadline:?}; they recover on the next start");
+            closed = false;
         }
-        // The router has shut the Sender's store down; now release its directory.
-        self.inner.store.lock().unwrap_or_else(|e| e.into_inner()).take();
+        sh.discovery.shutdown().await;
+        // The router also shuts the Sender's store down.
+        match tokio::time::timeout_at(until, self.inner.router.shutdown()).await {
+            Ok(Ok(())) => {}
+            Ok(Err(e)) => tracing::warn!("network shutdown: {e}"),
+            Err(_) => {
+                tracing::warn!("shutdown gave up on the network after {deadline:?}");
+                closed = false;
+            }
+        }
+        // Release the Sender's store directory only once its store has really closed, or a
+        // Device started on the same folders would open it a second time, which hangs.
+        if closed {
+            self.inner.store.lock().unwrap_or_else(|e| e.into_inner()).take();
+        }
     }
 }

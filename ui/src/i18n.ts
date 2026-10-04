@@ -118,6 +118,7 @@ const en = {
   "transfer.receiving.offered": "Waiting for your answer.",
   "transfer.receiving.accepted": "Accepted. Starting…",
   "transfer.receiving.transferring": "Receiving…",
+  "transfer.receiving.reconnecting": "Lost contact with {peer}. Reconnecting…",
   "transfer.receiving.saving": "Saving…",
   "transfer.receiving.declined": "You declined.",
   "transfer.receiving.completed": "Received.",

@@ -2,7 +2,7 @@
 
 use std::{
     net::SocketAddr,
-    path::Path,
+    path::{Path, PathBuf},
     sync::{Arc, Mutex},
 };
 
@@ -15,7 +15,7 @@ use crate::{
     transfer::{Role, TransferId, TransferState},
 };
 
-const SCHEMA_VERSION: i32 = 2;
+const SCHEMA_VERSION: i32 = 3;
 
 #[derive(Debug, thiserror::Error)]
 pub enum DbError {
@@ -42,6 +42,31 @@ pub struct TransferRecord {
     pub created_at: UnixMillis,
     pub updated_at: UnixMillis,
 }
+
+/// A Transfer that has not ended, with what a restart needs to carry it on.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct Unfinished {
+    pub record: TransferRecord,
+    /// When the Transfer last made progress; the 24-hour stall clock runs from here.
+    pub progress_at: UnixMillis,
+    /// The Collection's root hash, once the content was ready and the Receiver had accepted.
+    pub root: Option<[u8; 32]>,
+    /// Receiver only: the folder the Offer was accepted into.
+    pub save_dir: Option<PathBuf>,
+}
+
+/// A file a Sender offered, as it was when the Offer was made.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct Source {
+    pub path: PathBuf,
+    pub size: u64,
+    /// Modification time in nanoseconds since the Unix epoch.
+    pub mtime_ns: i64,
+}
+
+/// The states that end a Transfer, as stored. Must list what [`TransferState::is_terminal`]
+/// does; a test checks.
+const ENDED: &str = "'declined', 'completed', 'failed', 'expired', 'cancelled'";
 
 /// A handle to the database. Cheap to clone; calls run on the blocking pool.
 #[derive(Clone)]
@@ -202,8 +227,9 @@ impl Db {
             let (saved_to, error) = t.state.details();
             c.execute(
                 "INSERT INTO transfers
-                 (id, role, peer, name, size, state, saved_to, error, created_at, updated_at)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+                 (id, role, peer, name, size, state, saved_to, error, created_at, updated_at,
+                  progress_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?9)",
                 params![
                     t.id.to_string(),
                     t.role.as_str(),
@@ -243,45 +269,172 @@ impl Db {
 
     pub async fn transfers(&self) -> Result<Vec<TransferRecord>, DbError> {
         self.run(|c| {
-            let mut stmt = c.prepare(
-                "SELECT id, role, peer, name, size, state, saved_to, error, created_at, updated_at
-                 FROM transfers ORDER BY created_at, rowid",
-            )?;
+            let mut stmt =
+                c.prepare(&format!("SELECT {COLUMNS} FROM transfers ORDER BY created_at, rowid"))?;
+            let rows = stmt.query_map([], read_row)?;
+            rows.map(|row| record(row?)).collect()
+        })
+        .await
+    }
+
+    pub async fn transfer(&self, id: TransferId) -> Result<Option<TransferRecord>, DbError> {
+        self.run(move |c| {
+            let row = c
+                .query_row(
+                    &format!("SELECT {COLUMNS} FROM transfers WHERE id = ?1"),
+                    [id.to_string()],
+                    read_row,
+                )
+                .optional()?;
+            row.map(record).transpose()
+        })
+        .await
+    }
+
+    /// Every Transfer that has not ended, oldest first.
+    pub async fn unfinished(&self) -> Result<Vec<Unfinished>, DbError> {
+        self.run(|c| {
+            let mut stmt = c.prepare(&format!(
+                "SELECT {COLUMNS}, progress_at, root_hash, save_dir FROM transfers
+                 WHERE state NOT IN ({ENDED}) ORDER BY created_at, rowid"
+            ))?;
             let rows = stmt.query_map([], |r| {
                 Ok((
-                    r.get::<_, String>(0)?,
-                    r.get::<_, String>(1)?,
-                    r.get::<_, String>(2)?,
-                    r.get::<_, String>(3)?,
-                    r.get::<_, i64>(4)?,
-                    r.get::<_, String>(5)?,
-                    r.get::<_, Option<String>>(6)?,
-                    r.get::<_, Option<String>>(7)?,
-                    r.get::<_, i64>(8)?,
-                    r.get::<_, i64>(9)?,
+                    read_row(r)?,
+                    r.get::<_, i64>(10)?,
+                    r.get::<_, Option<String>>(11)?,
+                    r.get::<_, Option<String>>(12)?,
                 ))
             })?;
             let mut out = Vec::new();
             for row in rows {
-                let (id, role, peer, name, size, state, saved_to, error, created_at, updated_at) =
-                    row?;
-                let corrupt = |what: &str, v: &str| DbError::Corrupt(format!("{what} {v:?}"));
-                out.push(TransferRecord {
-                    id: id.parse().map_err(|_| corrupt("transfer id", &id))?,
-                    role: role.parse().map_err(|_| corrupt("role", &role))?,
-                    peer,
-                    name,
-                    size: size as u64,
-                    state: TransferState::from_parts(&state, saved_to, error)
-                        .ok_or_else(|| corrupt("state", &state))?,
-                    created_at,
-                    updated_at,
+                let (row, progress_at, root, save_dir) = row?;
+                let root = root
+                    .map(|hex| {
+                        data_encoding::HEXLOWER
+                            .decode(hex.as_bytes())
+                            .ok()
+                            .and_then(|bytes| <[u8; 32]>::try_from(bytes).ok())
+                            .ok_or_else(|| DbError::Corrupt(format!("root hash {hex:?}")))
+                    })
+                    .transpose()?;
+                out.push(Unfinished {
+                    record: record(row)?,
+                    progress_at,
+                    root,
+                    save_dir: save_dir.map(PathBuf::from),
                 });
             }
             Ok(out)
         })
         .await
     }
+
+    /// Records an accepted Transfer's content hash and, for a Receiver, the folder it is
+    /// saved into. The stall clock starts here.
+    pub async fn start_transfer(
+        &self,
+        id: TransferId,
+        root: Option<[u8; 32]>,
+        save_dir: Option<&Path>,
+        now: UnixMillis,
+    ) -> Result<(), DbError> {
+        let save_dir = save_dir.map(|dir| dir.to_string_lossy().into_owned());
+        let root = root.map(|root| data_encoding::HEXLOWER.encode(&root));
+        self.run(move |c| {
+            c.execute(
+                "UPDATE transfers
+                 SET root_hash = COALESCE(?2, root_hash), save_dir = COALESCE(?3, save_dir),
+                     progress_at = ?4
+                 WHERE id = ?1",
+                params![id.to_string(), root, save_dir, now],
+            )?;
+            Ok(())
+        })
+        .await
+    }
+
+    pub async fn set_progress_at(&self, id: TransferId, at: UnixMillis) -> Result<(), DbError> {
+        self.run(move |c| {
+            c.execute(
+                "UPDATE transfers SET progress_at = ?2 WHERE id = ?1",
+                params![id.to_string(), at],
+            )?;
+            Ok(())
+        })
+        .await
+    }
+
+    pub async fn insert_sources(
+        &self,
+        id: TransferId,
+        sources: Vec<Source>,
+    ) -> Result<(), DbError> {
+        self.run(move |c| {
+            for s in sources {
+                c.execute(
+                    "INSERT INTO transfer_sources (transfer_id, path, size, mtime_ns)
+                     VALUES (?1, ?2, ?3, ?4)",
+                    params![id.to_string(), s.path.to_string_lossy(), s.size as i64, s.mtime_ns],
+                )?;
+            }
+            Ok(())
+        })
+        .await
+    }
+
+    pub async fn sources(&self, id: TransferId) -> Result<Vec<Source>, DbError> {
+        self.run(move |c| {
+            let mut stmt = c.prepare(
+                "SELECT path, size, mtime_ns FROM transfer_sources WHERE transfer_id = ?1
+                 ORDER BY rowid",
+            )?;
+            let rows = stmt.query_map([id.to_string()], |r| {
+                Ok(Source {
+                    path: PathBuf::from(r.get::<_, String>(0)?),
+                    size: r.get::<_, i64>(1)? as u64,
+                    mtime_ns: r.get(2)?,
+                })
+            })?;
+            Ok(rows.collect::<Result<_, _>>()?)
+        })
+        .await
+    }
+}
+
+const COLUMNS: &str = "id, role, peer, name, size, state, saved_to, error, created_at, updated_at";
+
+type TransferRow = (String, String, String, String, i64, String, Option<String>, Option<String>, i64, i64);
+
+fn read_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<TransferRow> {
+    Ok((
+        r.get(0)?,
+        r.get(1)?,
+        r.get(2)?,
+        r.get(3)?,
+        r.get(4)?,
+        r.get(5)?,
+        r.get(6)?,
+        r.get(7)?,
+        r.get(8)?,
+        r.get(9)?,
+    ))
+}
+
+fn record(row: TransferRow) -> Result<TransferRecord, DbError> {
+    let (id, role, peer, name, size, state, saved_to, error, created_at, updated_at) = row;
+    let corrupt = |what: &str, v: &str| DbError::Corrupt(format!("{what} {v:?}"));
+    Ok(TransferRecord {
+        id: id.parse().map_err(|_| corrupt("transfer id", &id))?,
+        role: role.parse().map_err(|_| corrupt("role", &role))?,
+        peer,
+        name,
+        size: size as u64,
+        state: TransferState::from_parts(&state, saved_to, error)
+            .ok_or_else(|| corrupt("state", &state))?,
+        created_at,
+        updated_at,
+    })
 }
 
 const SELECT_CONTACT: &str = "SELECT id, nickname, device_name, auto_accept, relay_url, direct_addrs, added_at FROM contacts";
@@ -354,6 +507,25 @@ fn migrate(conn: &Connection) -> Result<(), DbError> {
                  added_at INTEGER NOT NULL
              );
              PRAGMA user_version = 2;
+             COMMIT;",
+        )?;
+    }
+    if version < 3 {
+        // Resume: when a Transfer last made progress, its content hash, the folder a
+        // Receiver saves into, and the files a Sender offered as they were then.
+        conn.execute_batch(
+            "BEGIN;
+             ALTER TABLE transfers ADD COLUMN progress_at INTEGER NOT NULL DEFAULT 0;
+             ALTER TABLE transfers ADD COLUMN root_hash TEXT;
+             ALTER TABLE transfers ADD COLUMN save_dir TEXT;
+             CREATE TABLE transfer_sources (
+                 transfer_id TEXT NOT NULL,
+                 path TEXT NOT NULL,
+                 size INTEGER NOT NULL,
+                 mtime_ns INTEGER NOT NULL,
+                 PRIMARY KEY (transfer_id, path)
+             );
+             PRAGMA user_version = 3;
              COMMIT;",
         )?;
     }
@@ -493,6 +665,84 @@ mod tests {
         let db = Db::open(&path).await.unwrap();
         assert_eq!(db.setting("k").await.unwrap().as_deref(), Some("v"));
         assert!(db.insert_contact(contact(1)).await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn unfinished_lists_exactly_the_transfers_that_have_not_ended() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = Db::open(&dir.path().join("t.db")).await.unwrap();
+        let states = [
+            TransferState::Offered,
+            TransferState::Accepted,
+            TransferState::Declined,
+            TransferState::Transferring,
+            TransferState::Reconnecting,
+            TransferState::Saving,
+            TransferState::Completed { saved_to: None },
+            TransferState::Failed { reason: "x".into() },
+            TransferState::Expired,
+            TransferState::Cancelled { by: Role::Receiver },
+        ];
+        for (i, state) in states.iter().enumerate() {
+            db.insert_transfer(record(i as u8, state.clone())).await.unwrap();
+        }
+        let open: Vec<TransferState> =
+            db.unfinished().await.unwrap().into_iter().map(|u| u.record.state).collect();
+        let want: Vec<TransferState> = states.into_iter().filter(|s| !s.is_terminal()).collect();
+        assert_eq!(open, want);
+    }
+
+    #[tokio::test]
+    async fn what_a_restart_needs_is_stored_with_the_transfer() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("t.db");
+        let id = TransferId::from_bytes([4; 16]);
+        let db = Db::open(&path).await.unwrap();
+        db.insert_transfer(record(4, TransferState::Offered)).await.unwrap();
+        assert_eq!(db.unfinished().await.unwrap()[0].progress_at, 100, "starts at creation");
+        db.start_transfer(id, Some([7; 32]), Some(Path::new("/save")), 150).await.unwrap();
+        db.set_progress_at(id, 175).await.unwrap();
+        let source = Source { path: "/src/a.txt".into(), size: 12, mtime_ns: 1_700_000_000_123_456_789 };
+        db.insert_sources(id, vec![source.clone()]).await.unwrap();
+        drop(db);
+
+        let db = Db::open(&path).await.unwrap();
+        let [open] = db.unfinished().await.unwrap().try_into().unwrap();
+        assert_eq!(open.progress_at, 175);
+        assert_eq!(open.root, Some([7; 32]));
+        assert_eq!(open.save_dir.as_deref(), Some(Path::new("/save")));
+        assert_eq!(db.sources(id).await.unwrap(), [source]);
+        assert_eq!(db.transfer(id).await.unwrap(), Some(open.record));
+        assert_eq!(db.transfer(TransferId::from_bytes([5; 16])).await.unwrap(), None);
+        // The sender side records the hash alone: the save folder stays unset.
+        db.start_transfer(id, None, None, 200).await.unwrap();
+        let [open] = db.unfinished().await.unwrap().try_into().unwrap();
+        assert_eq!((open.root, open.progress_at), (Some([7; 32]), 200));
+    }
+
+    #[tokio::test]
+    async fn a_version_1_database_is_upgraded_in_place() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("t.db");
+        {
+            let conn = Connection::open(&path).unwrap();
+            conn.execute_batch(
+                "CREATE TABLE settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+                 CREATE TABLE transfers (
+                     id TEXT PRIMARY KEY, role TEXT NOT NULL, peer TEXT NOT NULL,
+                     name TEXT NOT NULL, size INTEGER NOT NULL, state TEXT NOT NULL,
+                     saved_to TEXT, error TEXT, created_at INTEGER NOT NULL,
+                     updated_at INTEGER NOT NULL);
+                 INSERT INTO transfers VALUES
+                     ('01010101010101010101010101010101', 'sender', 'P', 'a', 1, 'offered',
+                      NULL, NULL, 5, 5);
+                 PRAGMA user_version = 1;",
+            )
+            .unwrap();
+        }
+        let db = Db::open(&path).await.unwrap();
+        let [open] = db.unfinished().await.unwrap().try_into().unwrap();
+        assert_eq!((open.record.state, open.root, open.progress_at), (TransferState::Offered, None, 0));
     }
 
     #[tokio::test]

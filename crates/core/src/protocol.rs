@@ -1,6 +1,7 @@
 //! The control protocol: ALPN `bhayanakshare/ctrl/1`, length-prefixed postcard frames on one
 //! bidirectional stream per Transfer. It negotiates a Transfer (Offer, accept, decline, busy,
-//! cancel, expiry); the content itself moves over iroh-blobs afterwards (ADR 0001).
+//! cancel, expiry) and picks it up again after a lost connection (resume); the content
+//! itself moves over iroh-blobs afterwards (ADR 0001).
 //!
 //! Frame layout: `u32` big-endian body length, then the postcard-encoded [`Message`]. The
 //! variant order of [`Message`] is the wire format: only ever append.
@@ -47,6 +48,19 @@ pub enum Message {
     /// whose clock fires first would just hang up and the other would report a lost
     /// connection. The spec's table has no such message.
     Expired,
+    /// Receiver to Sender, first message on a new connection: the control connection of an
+    /// accepted Transfer was lost, so the Receiver redialled. The Receiver drives resume.
+    Resume { transfer_id: [u8; 16] },
+    /// Sender to Receiver, answering `Resume`: the Transfer is still running here and its
+    /// files are as offered. The Sender has allowed this Receiver to fetch again (a fresh
+    /// grant) before sending it, so it is the go-ahead; the Receiver already has the content
+    /// hash from `HashReady`.
+    ResumeOk,
+    /// Sender to Receiver, answering `Resume`: this Device has no such Transfer for you.
+    Unknown,
+    /// Sender to Receiver, answering `Resume`: the Transfer failed on the Sender, for this
+    /// plain-language reason. (A Sender that cancelled it answers `Cancel`.)
+    Failed { reason: String },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -173,6 +187,10 @@ mod tests {
             Message::Busy,
             Message::Cancel,
             Message::Expired,
+            Message::Resume { transfer_id: [9; 16] },
+            Message::ResumeOk,
+            Message::Unknown,
+            Message::Failed { reason: "The other Device went away.".into() },
         ]
     }
 
@@ -192,7 +210,7 @@ mod tests {
             .iter()
             .map(|m| postcard::to_stdvec(m).unwrap()[0])
             .collect();
-        assert_eq!(tags, [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]);
+        assert_eq!(tags, [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13]);
     }
 
     #[tokio::test]

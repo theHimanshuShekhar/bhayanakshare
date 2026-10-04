@@ -5,11 +5,16 @@
 
 #![allow(dead_code)] // each test binary uses a different subset
 
-use std::{path::PathBuf, sync::Arc, time::Duration};
+use std::{
+    path::{Path, PathBuf},
+    sync::Arc,
+    time::Duration,
+};
 
 use bhayanakshare_core::{
-    Device, DeviceAddr, DeviceConfig, Event, EventKind, EventStream, FreeSpace, KeySource,
-    ManualClock, NearbyDevice, Network, SystemFreeSpace, TransferEvent, TransferId, TransferState,
+    Clock, Device, DeviceAddr, DeviceConfig, Event, EventKind, EventStream, FreeSpace, KeySource,
+    ManualClock, NearbyDevice, Network, ProgressEvent, SystemFreeSpace, TransferEvent, TransferId,
+    TransferState,
 };
 use iroh::{Endpoint, EndpointAddr, RelayMode, TransportAddr, endpoint::presets};
 use tempfile::TempDir;
@@ -17,12 +22,17 @@ use tempfile::TempDir;
 /// How long a test waits for any single event before failing.
 const EVENT_TIMEOUT: Duration = Duration::from_secs(30);
 
+/// How long a test lets a Device take to shut down.
+const SHUTDOWN_DEADLINE: Duration = Duration::from_secs(30);
+
 pub struct TestDevice {
     pub name: String,
     pub device: Device,
     pub clock: Arc<ManualClock>,
     pub data_dir: PathBuf,
     pub save_dir: PathBuf,
+    network: Network,
+    free_space: Arc<dyn FreeSpace>,
     events: EventStream,
     /// Every event seen so far, in stream order.
     pub log: Vec<Event>,
@@ -48,32 +58,47 @@ impl TestDevice {
     }
 
     async fn start_on(name: &str, network: Network, free_space: impl FreeSpace) -> Self {
-        let tmp = tempfile::tempdir().unwrap();
+        Self::build(name, tempfile::tempdir().unwrap(), network, free_space).await
+    }
+
+    /// Starts a Device in `tmp` (`data` and `save` folders inside), which may already hold the
+    /// folders of one that ran before, as after a crash.
+    pub async fn start_in(name: &str, tmp: TempDir, free_space: impl FreeSpace) -> Self {
+        Self::build(name, tmp, Network::Localhost, free_space).await
+    }
+
+    async fn build(name: &str, tmp: TempDir, network: Network, free_space: impl FreeSpace) -> Self {
         let data_dir = tmp.path().join("data");
         let save_dir = tmp.path().join("save");
         std::fs::create_dir_all(&save_dir).unwrap();
         let clock = Arc::new(ManualClock::new(1_000_000));
-        let (device, events) = Device::start(DeviceConfig {
-            key_source: KeySource::File(data_dir.join("secret.key")),
-            data_dir: data_dir.clone(),
-            save_dir: save_dir.clone(),
-            clock: clock.clone(),
-            network,
-            free_space: Arc::new(free_space),
-        })
-        .await
-        .unwrap();
+        let free_space: Arc<dyn FreeSpace> = Arc::new(free_space);
+        let config = config(&data_dir, &save_dir, clock.clone(), network, free_space.clone());
+        let (device, events) = Device::start(config).await.unwrap();
         Self {
             name: name.to_owned(),
             device,
             clock,
             data_dir,
             save_dir,
+            network,
+            free_space,
             events,
             log: Vec::new(),
             consumed: Vec::new(),
             _tmp: tmp,
         }
+    }
+
+    /// Stops the Device cleanly and starts another on the same folders and clock, as when the
+    /// app is quit and opened again. Its events join `log` after the old ones.
+    pub async fn restart(&mut self) {
+        self.shutdown().await;
+        let clock = self.clock.clone();
+        let config = config(&self.data_dir, &self.save_dir, clock, self.network, self.free_space.clone());
+        let (device, events) = Device::start(config).await.unwrap();
+        self.device = device;
+        self.events = events;
     }
 
     /// Where other Devices dial this one: its Device ID plus its localhost addresses.
@@ -152,6 +177,45 @@ impl TestDevice {
         .await
     }
 
+    /// Waits until this Device has reported receiving at least `bytes` of the Transfer, and
+    /// returns that report. Progress reports are paced by the Device's clock, which a test
+    /// holds still, so this moves the clock along while it waits.
+    pub async fn wait_progress(&mut self, id: TransferId, bytes: u64) -> ProgressEvent {
+        let give_up = tokio::time::Instant::now() + EVENT_TIMEOUT;
+        loop {
+            let reached = self.log.iter().find_map(|e| match &e.kind {
+                EventKind::Progress(p) if p.transfer_id == id && p.bytes >= bytes => Some(p.clone()),
+                _ => None,
+            });
+            if let Some(progress) = reached {
+                return progress;
+            }
+            assert!(
+                tokio::time::Instant::now() < give_up,
+                "{}: timed out waiting for {bytes} bytes of {id}; events so far:\n{:#?}",
+                self.name,
+                self.log
+            );
+            self.clock.advance(150);
+            if let Ok(next) = tokio::time::timeout(Duration::from_millis(20), self.events.next()).await {
+                let event = next.unwrap_or_else(|| panic!("{}: event stream ended", self.name));
+                self.log.push(event);
+                self.consumed.push(false);
+            }
+        }
+    }
+
+    /// The Transfer's progress reports on this Device so far, in order.
+    pub fn progress(&self, id: TransferId) -> Vec<ProgressEvent> {
+        self.log
+            .iter()
+            .filter_map(|e| match &e.kind {
+                EventKind::Progress(p) if p.transfer_id == id => Some(p.clone()),
+                _ => None,
+            })
+            .collect()
+    }
+
     /// The state labels a Transfer went through on this Device, in order.
     pub fn history(&self, id: TransferId) -> Vec<&'static str> {
         self.log
@@ -177,11 +241,29 @@ impl TestDevice {
 
     /// Shuts the Device down, then reads the events already queued so `log` is complete.
     pub async fn shutdown(&mut self) {
-        self.device.shutdown().await;
+        self.device.shutdown(SHUTDOWN_DEADLINE).await;
         while let Some(event) = self.events.try_next() {
             self.log.push(event);
             self.consumed.push(false);
         }
+    }
+}
+
+/// The configuration of a Device that lives in `data_dir` and saves to `save_dir`.
+pub fn config(
+    data_dir: &Path,
+    save_dir: &Path,
+    clock: Arc<dyn Clock>,
+    network: Network,
+    free_space: Arc<dyn FreeSpace>,
+) -> DeviceConfig {
+    DeviceConfig {
+        key_source: KeySource::File(data_dir.join("secret.key")),
+        data_dir: data_dir.to_owned(),
+        save_dir: save_dir.to_owned(),
+        clock,
+        network,
+        free_space,
     }
 }
 
