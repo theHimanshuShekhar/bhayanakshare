@@ -84,7 +84,7 @@ export function App({ api = tauriApi }: AppProps) {
         )}
       </main>
       {sending && <SendDialog api={api} onClose={() => setSending(false)} />}
-      {offer && <OfferSheet api={api} offer={offer} saveFolder={saveFolder} />}
+      {offer && <OfferSheet key={offer.id} api={api} offer={offer} saveFolder={saveFolder} />}
     </div>
   );
 }

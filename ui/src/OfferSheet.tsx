@@ -1,7 +1,9 @@
 import { useEffect, useRef, useState } from "react";
-import type { Api } from "./api";
+import type { Api, SpaceCheck } from "./api";
 import { t } from "./i18n";
 import { fingerprint, formatSize, type TransferView } from "./transfers";
+
+const reasonOf = (e: unknown) => (e instanceof Error ? e.message : String(e));
 
 /** The Receiver's view of an Offer: who, what, how big and where it will go. */
 export function OfferSheet({
@@ -14,6 +16,11 @@ export function OfferSheet({
   saveFolder: string | null;
 }) {
   const [error, setError] = useState<string | null>(null);
+  // The folder chosen for this Offer only; null means the save folder. The sheet is keyed
+  // by Offer, so each Offer starts without one.
+  const [folder, setFolder] = useState<string | null>(null);
+  const [space, setSpace] = useState<SpaceCheck | null>(null);
+  const [folderError, setFolderError] = useState<string | null>(null);
   const heading = useRef<HTMLHeadingElement>(null);
 
   // Each new Offer starts with its heading focused, so a screen reader reads the sheet.
@@ -22,9 +29,32 @@ export function OfferSheet({
     heading.current?.focus();
   }, [offer.id]);
 
+  // The checks run again whenever the folder changes.
+  useEffect(() => {
+    let live = true;
+    setSpace(null);
+    setFolderError(null);
+    api.checkOffer(offer.id, folder).then(
+      (check) => live && setSpace(check),
+      (e) => live && setFolderError(t("offer.folderFailed", { reason: reasonOf(e) })),
+    );
+    return () => {
+      live = false;
+    };
+  }, [api, offer.id, folder]);
+
+  const short =
+    space !== null && space.free !== null && space.free < space.needed
+      ? { needed: space.needed, free: space.free }
+      : null;
+
   const answer = (command: (id: string) => Promise<unknown>) =>
-    command(offer.id).catch((e) =>
-      setError(t("offer.failed", { reason: e instanceof Error ? e.message : String(e) })),
+    command(offer.id).catch((e) => setError(t("offer.failed", { reason: reasonOf(e) })));
+
+  const changeFolder = () =>
+    api.pickFolder().then(
+      (picked) => picked !== null && setFolder(picked),
+      (e) => setError(t("offer.folderFailed", { reason: reasonOf(e) })),
     );
 
   return (
@@ -42,12 +72,25 @@ export function OfferSheet({
           <dd>{formatSize(offer.size)}</dd>
           <dt>{t("offer.saveTo")}</dt>
           <dd>
-            <code>{saveFolder ?? ""}</code>
+            <code>{folder ?? saveFolder ?? ""}</code>{" "}
+            <button type="button" aria-label={t("offer.changeFolderLabel")} onClick={changeFolder}>
+              {t("offer.changeFolder")}
+            </button>
           </dd>
         </dl>
+        {short && (
+          <p role="alert">
+            {t("offer.noRoom", { needed: formatSize(short.needed), free: formatSize(short.free) })}
+          </p>
+        )}
+        {folderError !== null && <p role="alert">{folderError}</p>}
         {error !== null && <p role="alert">{error}</p>}
         <div className="actions">
-          <button type="button" onClick={() => answer(api.acceptOffer)}>
+          <button
+            type="button"
+            disabled={short !== null || folderError !== null}
+            onClick={() => answer((id) => api.acceptOffer(id, folder))}
+          >
             {t("offer.accept")}
           </button>
           <button type="button" onClick={() => answer(api.declineOffer)}>

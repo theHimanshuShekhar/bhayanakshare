@@ -8,8 +8,8 @@
 use std::{path::PathBuf, sync::Arc, time::Duration};
 
 use bhayanakshare_core::{
-    Device, DeviceAddr, DeviceConfig, Event, EventKind, EventStream, KeySource, ManualClock,
-    Network, TransferEvent, TransferId, TransferState,
+    Device, DeviceAddr, DeviceConfig, Event, EventKind, EventStream, FreeSpace, KeySource,
+    ManualClock, Network, SystemFreeSpace, TransferEvent, TransferId, TransferState,
 };
 use iroh::{Endpoint, EndpointAddr, RelayMode, TransportAddr, endpoint::presets};
 use tempfile::TempDir;
@@ -33,6 +33,11 @@ pub struct TestDevice {
 
 impl TestDevice {
     pub async fn start(name: &str) -> Self {
+        Self::start_with_free_space(name, SystemFreeSpace).await
+    }
+
+    /// Like `start`, but the Device sees `free_space` instead of the real disk.
+    pub async fn start_with_free_space(name: &str, free_space: impl FreeSpace) -> Self {
         let tmp = tempfile::tempdir().unwrap();
         let data_dir = tmp.path().join("data");
         let save_dir = tmp.path().join("save");
@@ -44,6 +49,7 @@ impl TestDevice {
             save_dir: save_dir.clone(),
             clock: clock.clone(),
             network: Network::Localhost,
+            free_space: Arc::new(free_space),
         })
         .await
         .unwrap();

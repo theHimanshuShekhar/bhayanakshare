@@ -13,6 +13,10 @@ pub enum Error {
     InvalidName(#[from] crate::names::NameError),
     #[error("no pending Offer with Transfer ID {0}")]
     UnknownTransfer(TransferId),
+    #[error("{0} is not a folder")]
+    NotAFolder(PathBuf),
+    #[error("not enough free space: needs {needed} bytes, only {free} free")]
+    NotEnoughSpace { needed: u64, free: u64 },
     #[error("the Device is shutting down")]
     ShuttingDown,
     #[error("{context}: {source}")]

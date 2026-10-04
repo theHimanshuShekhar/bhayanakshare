@@ -4,7 +4,8 @@
 //! `Accept` and the Sender's `HashReady`, the content is fetched over iroh-blobs into a
 //! per-Transfer store under `<save folder>/.bhayanakshare-incoming/<transfer id>/` (on the
 //! save folder's filesystem, so saving is a rename), verified, moved into the save folder,
-//! fsynced, and only then is `Completed` sent and the incoming store deleted.
+//! fsynced, and only then is `Completed` sent and the incoming store deleted. The save folder
+//! is the one the Offer was accepted into, which the Receiver may choose per Offer.
 
 use std::{
     collections::hash_map::Entry,
@@ -32,7 +33,7 @@ use tokio::sync::oneshot;
 
 use crate::{
     clock::UnixMillis,
-    device::{Decision, Shared, TransferInfo},
+    device::{Decision, PendingOffer, Shared, TransferInfo},
     fsmove::rename_no_replace,
     identity::DeviceId,
     names::{numbered, validate_file_name},
@@ -52,9 +53,14 @@ const CLOSE_GRACE: Duration = Duration::from_secs(5);
 /// The least time, by the Device's clock, between two progress reports while fetching.
 const PROGRESS_INTERVAL_MS: UnixMillis = 100;
 
+/// Bytes a one-file Transfer may download beyond the file itself: the Collection's hash
+/// sequence and names, a few hundred bytes at most.
+const COLLECTION_ALLOWANCE: u64 = 4096;
+
 const BAD_OFFER: &str = "The other Device sent an invalid Offer.";
 const CANT_FETCH: &str = "Could not download the file from the sending Device.";
 const WRONG_FILE: &str = "The sending Device sent a different file than it offered.";
+const TOO_MUCH: &str = "The sending Device sent more than it offered.";
 const CANT_SAVE: &str = "Could not save the file to the save folder.";
 
 pub(crate) struct Handler {
@@ -127,7 +133,7 @@ async fn flow(
     // is seen finds it.
     let (decide, mut decision) = oneshot::channel();
     match sh.pending.lock().unwrap_or_else(|e| e.into_inner()).entry(info.id) {
-        Entry::Vacant(slot) => slot.insert(decide),
+        Entry::Vacant(slot) => slot.insert(PendingOffer { size: info.size, decide }),
         Entry::Occupied(_) => return Err(Failure::with(BAD_OFFER, "duplicate Transfer ID")),
     };
     if let Err(e) = sh.begin(&info, TransferState::Offered).await {
@@ -151,13 +157,13 @@ async fn flow(
         }
     };
 
-    if decision == Decision::Decline {
+    let Decision::Accept(save_dir) = decision else {
         write_frame(&mut send, &Message::Decline).await.map_err(fail(LOST))?;
         let _ = send.finish();
         sh.transition(&info, TransferState::Declined).await;
         let _ = tokio::time::timeout(CLOSE_GRACE, conn.closed()).await;
         return Ok(());
-    }
+    };
 
     write_frame(&mut send, &Message::Accept).await.map_err(fail(LOST))?;
     sh.transition(&info, TransferState::Accepted).await;
@@ -172,7 +178,8 @@ async fn flow(
     let root = root.expect("loop above runs until set");
 
     sh.transition(&info, TransferState::Transferring).await;
-    let dir = sh.save_dir.join(INCOMING_DIR).join(info.id.to_string());
+    // On the chosen folder's filesystem, so saving is a rename.
+    let dir = incoming_dir(&save_dir, info.id);
     let store = match store::open(&dir).await {
         Ok(store) => store,
         Err(e) => {
@@ -181,7 +188,7 @@ async fn flow(
         }
     };
 
-    match fetch_and_save(sh, &mut send, peer_endpoint, &store, &info, root, &dir).await {
+    match fetch_and_save(sh, &mut send, peer_endpoint, &store, &info, root, &save_dir).await {
         Ok(saved) => {
             let sent = write_frame(&mut send, &Message::Completed).await;
             let _ = send.finish();
@@ -203,6 +210,10 @@ async fn flow(
     }
 }
 
+fn incoming_dir(save_dir: &Path, id: TransferId) -> PathBuf {
+    save_dir.join(INCOMING_DIR).join(id.to_string())
+}
+
 /// Announces how much has arrived on our own event stream and tells the Sender, whose
 /// display it feeds. The Sender being unreachable is no reason to stop.
 async fn report_progress(sh: &Shared, send: &mut SendStream, info: &TransferInfo, bytes: u64) {
@@ -211,7 +222,7 @@ async fn report_progress(sh: &Shared, send: &mut SendStream, info: &TransferInfo
 }
 
 /// Fetches the Transfer's content into `store`, checks it is what was offered, and moves it
-/// into the save folder. Returns where it ended up.
+/// into `save_dir`. Returns where it ended up.
 async fn fetch_and_save(
     sh: &Arc<Shared>,
     send: &mut SendStream,
@@ -219,7 +230,7 @@ async fn fetch_and_save(
     store: &store::Store,
     info: &TransferInfo,
     root: Hash,
-    dir: &Path,
+    save_dir: &Path,
 ) -> Result<String, Failure> {
     let blobs: &iroh_blobs::api::Store = store;
     let content = HashAndFormat::hash_seq(root);
@@ -235,6 +246,12 @@ async fn fetch_and_save(
     while let Some(item) = fetch.next().await {
         match item {
             GetProgressItem::Progress(bytes) => {
+                // The free-space check was made for the offered size; a Sender that sends
+                // more must not fill the disk beyond it.
+                if bytes > info.size.saturating_add(COLLECTION_ALLOWANCE) {
+                    conn.close(0u32.into(), b"too much");
+                    return Err(Failure::with(TOO_MUCH, format!("{bytes} bytes, offered {}", info.size)));
+                }
                 let now = sh.now();
                 if last_report.is_none_or(|at| now - at >= PROGRESS_INTERVAL_MS) {
                     last_report = Some(now);
@@ -266,7 +283,7 @@ async fn fetch_and_save(
     }
 
     sh.transition(info, TransferState::Saving).await;
-    let staged = dir.join("out").join(&info.name);
+    let staged = incoming_dir(save_dir, info.id).join("out").join(&info.name);
     blobs
         .blobs()
         .export_with_opts(ExportOptions {
@@ -279,7 +296,7 @@ async fn fetch_and_save(
         .await
         .map_err(fail(CANT_SAVE))?;
 
-    let save_dir = sh.save_dir.clone();
+    let save_dir = save_dir.to_owned();
     let name = info.name.clone();
     let saved = tokio::task::spawn_blocking(move || move_into_save_folder(&staged, &save_dir, &name))
         .await

@@ -4,9 +4,16 @@
 
 import { open } from "@tauri-apps/plugin-dialog";
 import { revealItemInDir } from "@tauri-apps/plugin-opener";
-import { commands, events, type DeviceEvent, type MyId, type TransferId } from "./bindings";
+import {
+  commands,
+  events,
+  type DeviceEvent,
+  type MyId,
+  type SpaceCheck,
+  type TransferId,
+} from "./bindings";
 
-export type { DeviceEvent, MyId, TransferId };
+export type { DeviceEvent, MyId, SpaceCheck, TransferId };
 
 export interface Api {
   myId(): Promise<MyId>;
@@ -14,10 +21,15 @@ export interface Api {
   saveFolder(): Promise<string>;
   /** Offers the file at `path` to the Device with ID `to`; resolves to the Transfer ID. */
   sendFile(to: string, path: string): Promise<string>;
-  acceptOffer(id: TransferId): Promise<unknown>;
+  /** Whether a pending Offer fits in `folder` (the save folder when null). */
+  checkOffer(id: TransferId, folder: string | null): Promise<SpaceCheck>;
+  /** Accepts into `folder` for this Offer only (the save folder when null). */
+  acceptOffer(id: TransferId, folder: string | null): Promise<unknown>;
   declineOffer(id: TransferId): Promise<unknown>;
   /** Asks the user for a file; null if they cancel. */
   pickFile(): Promise<string | null>;
+  /** Asks the user for a folder; null if they cancel. */
+  pickFolder(): Promise<string | null>;
   showInFolder(path: string): Promise<void>;
   copyText(text: string): Promise<void>;
   /** Calls `handler` for every Device event, in order. Resolves to the unsubscribe function. */
@@ -48,10 +60,15 @@ export const tauriApi: Api = {
   myId: commands.myId,
   saveFolder: commands.saveFolder,
   sendFile: commands.sendFile,
+  checkOffer: commands.checkOffer,
   acceptOffer: commands.acceptOffer,
   declineOffer: commands.declineOffer,
   pickFile: async () => {
     const picked = await open({ multiple: false, directory: false });
+    return typeof picked === "string" ? picked : null;
+  },
+  pickFolder: async () => {
+    const picked = await open({ multiple: false, directory: true });
     return typeof picked === "string" ? picked : null;
   },
   showInFolder: revealItemInDir,

@@ -25,9 +25,13 @@ function fakeApi(overrides: Partial<Api> = {}) {
     myId: () => Promise.resolve({ id: MY_ID, fingerprint: "AAAA-AAAA" }),
     saveFolder: () => Promise.resolve("/home/me/Downloads/BhayanakShare"),
     sendFile: vi.fn(() => Promise.resolve(TRANSFER)),
-    acceptOffer: vi.fn(() => Promise.resolve(null)),
+    checkOffer: vi.fn((_id: string, _folder: string | null) =>
+      Promise.resolve({ needed: 2048, free: 1_000_000 }),
+    ),
+    acceptOffer: vi.fn((_id: string, _folder: string | null) => Promise.resolve(null)),
     declineOffer: vi.fn(() => Promise.resolve(null)),
     pickFile: vi.fn(() => Promise.resolve<string | null>("/tmp/photo.jpg")),
+    pickFolder: vi.fn(() => Promise.resolve<string | null>("/mnt/big")),
     showInFolder: vi.fn(() => Promise.resolve()),
     copyText: vi.fn(() => Promise.resolve()),
     onDeviceEvent: (h: (event: DeviceEvent) => void) => {
@@ -205,11 +209,84 @@ describe("receiving", () => {
     const device = await start();
     await device.transfer("receiver", { kind: "offered" });
     fireEvent.click(await screen.findByRole("button", { name: "Accept" }));
-    expect(device.api.acceptOffer).toHaveBeenCalledWith(TRANSFER);
+    expect(device.api.acceptOffer).toHaveBeenCalledWith(TRANSFER, null);
 
     await device.transfer("receiver", { kind: "accepted" });
     expect(screen.queryByRole("dialog")).toBeNull();
     expect(screen.getByText("Accepted. Starting…")).toBeTruthy();
+  });
+
+  it("shows how much is needed and disables Accept when the Offer does not fit", async () => {
+    const device = await start(
+      fakeApi({ checkOffer: vi.fn(() => Promise.resolve({ needed: 2048, free: 512 })) }),
+    );
+    await device.transfer("receiver", { kind: "offered" });
+
+    expect((await screen.findByRole("alert")).textContent).toBe("Needs 2 KiB, only 512 B free");
+    expect((screen.getByRole("button", { name: "Accept" }) as HTMLButtonElement).disabled).toBe(true);
+    // Declining is always possible.
+    fireEvent.click(screen.getByRole("button", { name: "Decline" }));
+    expect(device.api.declineOffer).toHaveBeenCalledWith(TRANSFER);
+  });
+
+  it("leaves Accept on when the free space is unknown", async () => {
+    const device = await start(
+      fakeApi({ checkOffer: vi.fn(() => Promise.resolve({ needed: 2048, free: null })) }),
+    );
+    await device.transfer("receiver", { kind: "offered" });
+    await waitFor(() => expect(device.api.checkOffer).toHaveBeenCalled());
+    expect(screen.queryByRole("alert")).toBeNull();
+    expect((screen.getByRole("button", { name: "Accept" }) as HTMLButtonElement).disabled).toBe(false);
+  });
+
+  it("checks again in the folder chosen for this Offer, and accepts into it", async () => {
+    const checkOffer = vi.fn((_id: string, folder: string | null) =>
+      Promise.resolve({ needed: 2048, free: folder === null ? 512 : 1_000_000 }),
+    );
+    const device = await start(fakeApi({ checkOffer }));
+    await device.transfer("receiver", { kind: "offered" });
+    await screen.findByText(/Needs 2 KiB/);
+    expect(checkOffer).toHaveBeenLastCalledWith(TRANSFER, null);
+
+    fireEvent.click(screen.getByRole("button", { name: "Change the save folder for this file" }));
+    await waitFor(() => expect(screen.queryByText(/Needs 2 KiB/)).toBeNull());
+    expect(checkOffer).toHaveBeenLastCalledWith(TRANSFER, "/mnt/big");
+    expect(screen.getByRole("dialog").textContent).toContain("/mnt/big");
+    const accept = screen.getByRole("button", { name: "Accept" }) as HTMLButtonElement;
+    expect(accept.disabled).toBe(false);
+
+    fireEvent.click(accept);
+    expect(device.api.acceptOffer).toHaveBeenCalledWith(TRANSFER, "/mnt/big");
+  });
+
+  it("keeps the save folder when the folder picker is cancelled", async () => {
+    const device = await start(fakeApi({ pickFolder: vi.fn(() => Promise.resolve(null)) }));
+    await device.transfer("receiver", { kind: "offered" });
+    fireEvent.click(await screen.findByRole("button", { name: "Change the save folder for this file" }));
+    await waitFor(() => expect(device.api.pickFolder).toHaveBeenCalled());
+    fireEvent.click(screen.getByRole("button", { name: "Accept" }));
+    expect(device.api.acceptOffer).toHaveBeenCalledWith(TRANSFER, null);
+  });
+
+  it("starts the next Offer on the save folder, not the last Offer's choice", async () => {
+    const device = await start();
+    await device.transfer("receiver", { kind: "offered" });
+    fireEvent.click(await screen.findByRole("button", { name: "Change the save folder for this file" }));
+    await screen.findByText("/mnt/big");
+    await device.transfer("receiver", { kind: "declined" });
+
+    await device.push({
+      type: "transfer",
+      transfer_id: "cd".repeat(16),
+      role: "receiver",
+      peer: PEER_ID,
+      name: "b.bin",
+      size: 1,
+      state: { kind: "offered" },
+    });
+    await waitFor(() =>
+      expect(screen.getByRole("dialog").textContent).toContain("/home/me/Downloads/BhayanakShare"),
+    );
   });
 
   it("declines the Offer", async () => {
@@ -229,7 +306,7 @@ describe("receiving", () => {
     );
     await device.transfer("receiver", { kind: "offered" });
     fireEvent.click(await screen.findByRole("button", { name: "Accept" }));
-    expect((await screen.findByRole("alert")).textContent).toContain("no longer waiting");
+    expect((await screen.findByRole("alert")).textContent).toContain("Could not answer the Offer");
   });
 
   it("shows progress while receiving and offers Show in folder when done", async () => {

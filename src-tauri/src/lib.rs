@@ -11,7 +11,8 @@ use std::{
 };
 
 use bhayanakshare_core::{
-    Device, DeviceConfig, DeviceId, Event, KeySource, Network, SystemClock, TransferId,
+    Device, DeviceConfig, DeviceId, Event, KeySource, Network, SpaceCheck, SystemClock,
+    SystemFreeSpace, TransferId,
 };
 use serde::Serialize;
 use specta::Type;
@@ -97,10 +98,28 @@ async fn send_file(device: State<'_, Device>, to: String, path: String) -> Resul
     Ok(id.to_string())
 }
 
+/// Whether a pending Offer fits in `folder` (the save folder when absent).
 #[tauri::command]
 #[specta::specta]
-async fn accept_offer(device: State<'_, Device>, transfer_id: TransferId) -> Result<(), String> {
-    device.accept(transfer_id).await.map_err(|e| e.to_string())
+async fn check_offer(
+    device: State<'_, Device>,
+    transfer_id: TransferId,
+    folder: Option<String>,
+) -> Result<SpaceCheck, String> {
+    let folder = folder.map(PathBuf::from);
+    device.check_offer(transfer_id, folder.as_deref()).await.map_err(|e| e.to_string())
+}
+
+/// Accepts a pending Offer into `folder` for this Offer only (the save folder when absent).
+#[tauri::command]
+#[specta::specta]
+async fn accept_offer(
+    device: State<'_, Device>,
+    transfer_id: TransferId,
+    folder: Option<String>,
+) -> Result<(), String> {
+    let folder = folder.map(PathBuf::from);
+    device.accept_into(transfer_id, folder.as_deref()).await.map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -124,6 +143,7 @@ pub fn specta_builder<R: Runtime>() -> Builder<R> {
             my_id,
             save_folder,
             send_file,
+            check_offer,
             accept_offer,
             decline_offer,
             events_ready
@@ -179,6 +199,7 @@ fn default_config<R: Runtime>(app: &impl Manager<R>) -> Result<DeviceConfig, tau
         save_dir,
         clock: Arc::new(SystemClock),
         network: Network::Internet,
+        free_space: Arc::new(SystemFreeSpace),
     })
 }
 
