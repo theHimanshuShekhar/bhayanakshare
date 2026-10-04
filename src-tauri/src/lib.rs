@@ -11,7 +11,7 @@ use std::{
 };
 
 use bhayanakshare_core::{
-    Device, DeviceConfig, DeviceId, Event, KeySource, Network, SpaceCheck, SystemClock,
+    Contact, Device, DeviceConfig, DeviceId, Event, KeySource, Network, SpaceCheck, SystemClock,
     SystemFreeSpace, TransferId,
 };
 use serde::Serialize;
@@ -146,6 +146,75 @@ async fn resend_transfer(
     Ok(id.to_string())
 }
 
+/// This Device's name, as other Devices see it.
+#[tauri::command]
+#[specta::specta]
+async fn device_name(device: State<'_, Device>) -> Result<String, String> {
+    Ok(device.device_name().await)
+}
+
+/// Renames this Device; resolves to the name as stored (trimmed, shortened if too long).
+#[tauri::command]
+#[specta::specta]
+async fn set_device_name(device: State<'_, Device>, name: String) -> Result<String, String> {
+    device.set_device_name(&name).await.map_err(|e| e.to_string())
+}
+
+fn parse_id(id: &str) -> Result<DeviceId, String> {
+    id.trim().parse().map_err(|e| format!("{e}"))
+}
+
+/// Every Contact, in the order they were added.
+#[tauri::command]
+#[specta::specta]
+async fn contacts(device: State<'_, Device>) -> Result<Vec<Contact>, String> {
+    device.contacts().await.map_err(|e| e.to_string())
+}
+
+/// Saves the Device with the pasted Device ID as a Contact. `device_name` is the name to show
+/// until the Contact is given a Nickname. The UI asks the user to check the Fingerprint first.
+#[tauri::command]
+#[specta::specta]
+async fn add_contact(
+    device: State<'_, Device>,
+    id: String,
+    device_name: Option<String>,
+) -> Result<Contact, String> {
+    let id = parse_id(&id)?;
+    device.add_contact(id, device_name.as_deref()).await.map_err(|e| e.to_string())
+}
+
+/// Sets a Contact's Nickname; absent or empty goes back to its Device Name.
+#[tauri::command]
+#[specta::specta]
+async fn set_nickname(
+    device: State<'_, Device>,
+    id: String,
+    nickname: Option<String>,
+) -> Result<Contact, String> {
+    let id = parse_id(&id)?;
+    device.set_nickname(id, nickname.as_deref()).await.map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+#[specta::specta]
+async fn set_auto_accept(
+    device: State<'_, Device>,
+    id: String,
+    on: bool,
+) -> Result<Contact, String> {
+    let id = parse_id(&id)?;
+    device.set_auto_accept(id, on).await.map_err(|e| e.to_string())
+}
+
+/// Forgets a Contact; its Transfer records stay.
+#[tauri::command]
+#[specta::specta]
+async fn remove_contact(device: State<'_, Device>, id: String) -> Result<(), String> {
+    let id = parse_id(&id)?;
+    device.remove_contact(id).await.map_err(|e| e.to_string())
+}
+
 /// Not a Device command: the UI calls it once it is listening for `DeviceEvent`s, and
 /// receives everything the Device emitted before that, in order.
 #[tauri::command]
@@ -166,6 +235,13 @@ pub fn specta_builder<R: Runtime>() -> Builder<R> {
             decline_offer,
             cancel_transfer,
             resend_transfer,
+            device_name,
+            set_device_name,
+            contacts,
+            add_contact,
+            set_nickname,
+            set_auto_accept,
+            remove_contact,
             events_ready
         ])
         .events(collect_events![DeviceEvent])

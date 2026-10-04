@@ -21,6 +21,22 @@ export const commands = {
 	cancelTransfer: (transferId: TransferId) => __TAURI_INVOKE<null>("cancel_transfer", { transferId }),
 	/**  Sends an expired Offer again; resolves to the new Transfer ID. */
 	resendTransfer: (transferId: TransferId) => __TAURI_INVOKE<string>("resend_transfer", { transferId }),
+	/**  This Device's name, as other Devices see it. */
+	deviceName: () => __TAURI_INVOKE<string>("device_name"),
+	/**  Renames this Device; resolves to the name as stored (trimmed, shortened if too long). */
+	setDeviceName: (name: string) => __TAURI_INVOKE<string>("set_device_name", { name }),
+	/**  Every Contact, in the order they were added. */
+	contacts: () => __TAURI_INVOKE<Contact[]>("contacts"),
+	/**
+	 *  Saves the Device with the pasted Device ID as a Contact. `device_name` is the name to show
+	 *  until the Contact is given a Nickname. The UI asks the user to check the Fingerprint first.
+	 */
+	addContact: (id: string, deviceName: string | null) => __TAURI_INVOKE<Contact>("add_contact", { id, deviceName }),
+	/**  Sets a Contact's Nickname; absent or empty goes back to its Device Name. */
+	setNickname: (id: string, nickname: string | null) => __TAURI_INVOKE<Contact>("set_nickname", { id, nickname }),
+	setAutoAccept: (id: string, on: boolean) => __TAURI_INVOKE<Contact>("set_auto_accept", { id, on }),
+	/**  Forgets a Contact; its Transfer records stay. */
+	removeContact: (id: string) => __TAURI_INVOKE<null>("remove_contact", { id }),
 	/**
 	 *  Not a Device command: the UI calls it once it is listening for `DeviceEvent`s, and
 	 *  receives everything the Device emitted before that, in order.
@@ -34,6 +50,19 @@ export const events = {
 };
 
 /* Types */
+/**  A saved Device. */
+export type Contact = {
+	id: DeviceId,
+	/**  The name this Device gave the Contact; shown instead of the Device Name. */
+	nickname: string | null,
+	/**  The Contact's own name for itself, as last learned (a share link suggests one). */
+	device_name: string | null,
+	/**  Accept this Contact's Offers without asking. Off by default. */
+	auto_accept: boolean,
+	last_known_address: KnownAddress,
+	added_at: number,
+};
+
 /**  Every event the Device emits, in order, as one UI event. */
 export type DeviceEvent = Event;
 
@@ -59,6 +88,15 @@ export type EventKind =
 {
 	type: "progress",
 } & ProgressEvent;
+
+/**
+ *  Where a Contact was last reached: its relay and the direct addresses seen on the latest
+ *  successful connection. Empty until the first one.
+ */
+export type KnownAddress = {
+	relay_url: string | null,
+	direct: string[],
+};
 
 export type MyId = {
 	/**  52-character base32 Device ID. */
@@ -97,6 +135,12 @@ export type TransferEvent = {
 	role: Role,
 	/**  The other Device. */
 	peer: DeviceId,
+	/**
+	 *  What the other Device calls itself, as it announced when connecting; absent until
+	 *  known (a Sender learns it only once it has reached the Receiver). Untrusted text: show
+	 *  it next to the Fingerprint.
+	 */
+	peer_name: string | null,
 	name: string,
 	size: number,
 	/**

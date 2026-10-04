@@ -7,6 +7,7 @@ use tokio::sync::mpsc;
 
 use crate::{
     device::{Shared, TransferInfo},
+    device_name,
     protocol::{FrameError, Message, PROTOCOL_VERSION, write_frame},
     transfer::{Role, TransferState},
 };
@@ -37,12 +38,15 @@ pub(crate) fn fail<E: Display>(reason: &'static str) -> impl Fn(E) -> Failure {
     move |cause| Failure::with(reason, cause)
 }
 
-/// Reads the peer's `Hello` and checks that the protocol versions match.
+/// Reads the peer's `Hello` and checks that the protocol versions match. Returns the peer's
+/// Device Name, cleaned, if it sent one.
 pub(crate) async fn expect_hello(
     incoming: &mut mpsc::Receiver<Result<Message, FrameError>>,
-) -> Result<(), Failure> {
+) -> Result<Option<String>, Failure> {
     match incoming.recv().await {
-        Some(Ok(Message::Hello(hello))) if hello.protocol_version == PROTOCOL_VERSION => Ok(()),
+        Some(Ok(Message::Hello(hello))) if hello.protocol_version == PROTOCOL_VERSION => {
+            Ok(device_name::sanitize(&hello.device_name))
+        }
         Some(Ok(Message::Hello(hello))) => Err(Failure::with(
             INCOMPATIBLE,
             format!(

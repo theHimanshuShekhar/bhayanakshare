@@ -56,7 +56,7 @@ type Incoming = mpsc::Receiver<Result<Message, FrameError>>;
 async fn connect(
     sh: &Shared,
     to: &DeviceAddr,
-) -> Result<(Connection, SendStream, Incoming), Failure> {
+) -> Result<(Connection, SendStream, Incoming, Option<String>), Failure> {
     let conn = sh
         .endpoint
         .connect(to.to_endpoint_addr(), protocol::ALPN)
@@ -68,11 +68,11 @@ async fn connect(
         .map_err(fail("Could not reach the receiving Device."))?;
     let mut incoming = protocol::spawn_reader(recv);
 
-    write_frame(&mut send, &Message::Hello(protocol::Hello::current()))
+    write_frame(&mut send, &Message::Hello(protocol::Hello::named(sh.device_name().await)))
         .await
         .map_err(fail(LOST))?;
-    expect_hello(&mut incoming).await?;
-    Ok((conn, send, incoming))
+    let peer_name = expect_hello(&mut incoming).await?;
+    Ok((conn, send, incoming, peer_name))
 }
 
 async fn flow(
@@ -87,11 +87,14 @@ async fn flow(
         () = cancel.cancelled() => None,
         greeted = connect(sh, to) => Some(greeted?),
     };
-    let Some((conn, mut send, mut incoming)) = greeted else {
+    let Some((conn, mut send, mut incoming, peer_name)) = greeted else {
         sh.untrack(info.id);
         sh.transition(info, TransferState::Cancelled { by: info.role }).await;
         return Ok(());
     };
+    sh.remember_peer(to.id, &conn, peer_name.clone()).await;
+    // From here on the Transfer's events carry what the Receiver calls itself.
+    let info = &TransferInfo { peer_name, ..info.clone() };
     write_frame(
         &mut send,
         &Message::Offer(Offer {

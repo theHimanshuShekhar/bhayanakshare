@@ -3,8 +3,20 @@ import type { Api } from "./api";
 import { t } from "./i18n";
 
 /** "Send to ID…": paste a Device ID, pick a file, and the Offer goes out. */
-export function SendDialog({ api, onClose }: { api: Api; onClose: () => void }) {
-  const [to, setTo] = useState("");
+export function SendDialog({
+  api,
+  to: initialTo,
+  contactName,
+  onClose,
+}: {
+  api: Api;
+  /** The Device ID to start with: a Contact's, or empty. */
+  to: string;
+  /** The Contact's name when sending to one. */
+  contactName: string | null;
+  onClose: () => void;
+}) {
+  const [to, setTo] = useState(initialTo);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const input = useRef<HTMLInputElement>(null);
@@ -40,7 +52,9 @@ export function SendDialog({ api, onClose }: { api: Api; onClose: () => void }) 
   return (
     <div className="overlay" onKeyDown={onKeyDown}>
       <div role="dialog" aria-modal="true" aria-labelledby="send-heading" className="sheet">
-        <h2 id="send-heading">{t("send.heading")}</h2>
+        <h2 id="send-heading">
+          {contactName === null ? t("send.heading") : t("send.contactHeading", { name: contactName })}
+        </h2>
         <label htmlFor="send-to">{t("send.idLabel")}</label>
         <input
           id="send-to"

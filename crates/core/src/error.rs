@@ -3,7 +3,7 @@
 
 use std::path::PathBuf;
 
-use crate::{db::DbError, store::StoreError, transfer::TransferId};
+use crate::{db::DbError, identity::DeviceId, store::StoreError, transfer::TransferId};
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
@@ -21,6 +21,16 @@ pub enum Error {
     NotRunning(TransferId),
     #[error("Transfer {0} did not expire on this Device, so there is nothing to send again")]
     NothingToResend(TransferId),
+    #[error("{} is not a Contact", .0.fingerprint())]
+    UnknownContact(DeviceId),
+    #[error("{} is already a Contact", .0.fingerprint())]
+    AlreadyContact(DeviceId),
+    #[error("That is this Device's own ID.")]
+    OwnDeviceId,
+    #[error("{0}")]
+    InvalidContactName(&'static str),
+    #[error("A Device Name cannot be empty.")]
+    EmptyDeviceName,
     #[error("the Device is shutting down")]
     ShuttingDown,
     #[error("{context}: {source}")]

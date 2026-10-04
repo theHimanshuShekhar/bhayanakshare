@@ -88,7 +88,11 @@ async fn a_peer_on_another_protocol_version_is_refused_before_any_offer() {
     let conn = peer.connect(dial_addr(&bob), protocol::ALPN).await.unwrap();
     let (mut send, mut recv) = conn.open_bi().await.unwrap();
 
-    let hello = Hello { protocol_version: protocol::PROTOCOL_VERSION + 1, app_version: "9.9.9".into() };
+    let hello = Hello {
+        protocol_version: protocol::PROTOCOL_VERSION + 1,
+        app_version: "9.9.9".into(),
+        device_name: String::new(),
+    };
     write_frame(&mut send, &Message::Hello(hello)).await.unwrap();
     write_frame(
         &mut send,

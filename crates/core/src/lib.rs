@@ -2,8 +2,10 @@
 //! through the [`Device`] API: commands in, one ordered [`EventStream`] out.
 
 pub mod clock;
+mod contacts;
 mod db;
 mod device;
+mod device_name;
 mod error;
 mod event;
 mod fsmove;
@@ -19,6 +21,7 @@ pub mod store;
 mod transfer;
 
 pub use clock::{Clock, ManualClock, SystemClock, UnixMillis};
+pub use contacts::{Contact, KnownAddress, MAX_NAME_CHARS};
 pub use db::{DbError, TransferRecord};
 pub use device::{Device, DeviceAddr, DeviceConfig, Network};
 pub use error::Error;

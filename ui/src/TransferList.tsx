@@ -1,20 +1,20 @@
 import { useState } from "react";
-import type { Api } from "./api";
+import type { Api, Contact } from "./api";
+import { peerName } from "./contacts";
 import { t, type MessageKey } from "./i18n";
 import {
   canCancel,
   canResend,
-  fingerprint,
   formatSize,
   percent,
   type TransferView,
 } from "./transfers";
 
-/** Sentence for a Transfer's current state, e.g. "Waiting for K3QF-7XNA…". */
-function statusText(x: TransferView): string {
+/** Sentence for a Transfer's current state, e.g. "Waiting for Mum…" (or a Fingerprint). */
+function statusText(x: TransferView, peer: string): string {
   const side = x.role === "sender" ? "sending" : "receiving";
   const params = {
-    peer: fingerprint(x.peer),
+    peer,
     reason: x.state.kind === "failed" ? x.state.reason : "",
   };
   if (x.state.kind === "cancelled") {
@@ -24,22 +24,38 @@ function statusText(x: TransferView): string {
 }
 
 /** The Transfers of this session, newest first: what is happening and how it ended. */
-export function TransferList({ api, transfers }: { api: Api; transfers: TransferView[] }) {
+export function TransferList({
+  api,
+  contacts,
+  transfers,
+}: {
+  api: Api;
+  contacts: Contact[];
+  transfers: TransferView[];
+}) {
   return (
     <ul className="transfers">
       {transfers.map((x) => (
-        <TransferRow key={x.id} api={api} transfer={x} />
+        <TransferRow key={x.id} api={api} contacts={contacts} transfer={x} />
       ))}
     </ul>
   );
 }
 
-function TransferRow({ api, transfer: x }: { api: Api; transfer: TransferView }) {
+function TransferRow({
+  api,
+  contacts,
+  transfer: x,
+}: {
+  api: Api;
+  contacts: Contact[];
+  transfer: TransferView;
+}) {
   const [showFailed, setShowFailed] = useState(false);
   const [problem, setProblem] = useState<string | null>(null);
   // An expired Offer can be sent again once; the new Offer is a row of its own.
   const [resent, setResent] = useState(false);
-  const peer = fingerprint(x.peer);
+  const peer = peerName(x.peer, contacts, x.peerName);
   const title = t(x.role === "sender" ? "transfer.to" : "transfer.from", { name: x.name, peer });
   const moving = x.state.kind === "transferring" || (x.state.kind === "accepted" && x.bytes > 0);
   const savedTo = x.state.kind === "completed" ? x.state.saved_to : null;
@@ -48,7 +64,7 @@ function TransferRow({ api, transfer: x }: { api: Api; transfer: TransferView })
     <li>
       <strong>{title}</strong>
       {/* Announced when the state changes; the progress below is not, so it stays quiet. */}
-      <p aria-live="polite">{statusText(x)}</p>
+      <p aria-live="polite">{statusText(x, peer)}</p>
       {moving && (
         <p>
           <progress

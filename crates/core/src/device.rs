@@ -19,7 +19,9 @@ use tokio_util::{sync::CancellationToken, task::TaskTracker};
 
 use crate::{
     clock::{Clock, UnixMillis},
+    contacts::{Contact, KnownAddress, clean_name},
     db::{Db, TransferRecord},
+    device_name,
     error::Error,
     event::{EventKind, EventSink, EventStream, ProgressEvent, TransferEvent},
     gate::Gate,
@@ -97,6 +99,8 @@ pub(crate) struct TransferInfo {
     pub id: TransferId,
     pub role: Role,
     pub peer: DeviceId,
+    /// What the peer called itself in its Hello, once known.
+    pub peer_name: Option<String>,
     pub name: String,
     pub size: u64,
     /// When the Offer lapses if nobody has answered it, by this Device's clock.
@@ -146,6 +150,54 @@ impl Shared {
         self.cancels.lock().unwrap_or_else(|e| e.into_inner()).remove(&id);
     }
 
+    /// What an Offer of `needed` bytes would take from `folder`.
+    pub async fn space_check(&self, needed: u64, folder: &Path) -> Result<SpaceCheck, Error> {
+        let probe = self.free_space.clone();
+        let dir = folder.to_owned();
+        // The probe is a blocking call into the operating system.
+        let free = tokio::task::spawn_blocking(move || {
+            if !dir.is_dir() {
+                return Err(Error::NotAFolder(dir));
+            }
+            match probe.available(&dir) {
+                Ok(free) => Ok(Some(free)),
+                Err(e) if e.kind() == std::io::ErrorKind::Unsupported => Ok(None),
+                Err(e) => Err(Error::io(format!("checking free space in {}", dir.display()), e)),
+            }
+        })
+        .await
+        .map_err(|e| Error::io("checking free space", std::io::Error::other(e)))??;
+        Ok(SpaceCheck { needed, free })
+    }
+
+    /// This Device's name as it is announced to others: the stored Device Name, else the
+    /// hostname.
+    pub async fn device_name(&self) -> String {
+        match self.db.setting(device_name::SETTING).await {
+            Ok(Some(name)) => device_name::sanitize(&name),
+            Ok(None) => None,
+            Err(e) => {
+                tracing::warn!("could not read the Device Name: {e}");
+                None
+            }
+        }
+        .unwrap_or_else(device_name::default_name)
+    }
+
+    /// Notes how a connection to `peer` is reaching it and what it calls itself, if `peer` is a
+    /// Contact. A failure to save it is logged: it is not worth failing a Transfer for.
+    pub async fn remember_peer(
+        &self,
+        peer: DeviceId,
+        conn: &iroh::endpoint::Connection,
+        peer_name: Option<String>,
+    ) {
+        let seen = KnownAddress::of_connection(conn);
+        if let Err(e) = self.db.update_contact_connection(peer, seen, peer_name).await {
+            tracing::warn!("could not record a Contact's address and name: {e}");
+        }
+    }
+
     /// Records a new Transfer and announces it.
     pub async fn begin(&self, t: &TransferInfo, state: TransferState) -> Result<(), Error> {
         let now = self.now();
@@ -188,6 +240,7 @@ impl Shared {
                 transfer_id: t.id,
                 role: t.role,
                 peer: t.peer,
+                peer_name: t.peer_name.clone(),
                 name: t.name.clone(),
                 size: t.size,
                 expires_at: t.expires_at,
@@ -311,6 +364,7 @@ impl Device {
             id: TransferId::random(),
             role: Role::Sender,
             peer: to.id,
+            peer_name: None,
             name,
             size: meta.len(),
             expires_at: sh.now() + OFFER_TTL_MS,
@@ -398,22 +452,8 @@ impl Device {
             Some(folder) => std::path::absolute(folder).map_err(|e| Error::io("resolving the folder", e))?,
             None => sh.save_dir.clone(),
         };
-        let probe = sh.free_space.clone();
-        let dir = folder.clone();
-        // The probe is a blocking call into the operating system.
-        let free = tokio::task::spawn_blocking(move || {
-            if !dir.is_dir() {
-                return Err(Error::NotAFolder(dir));
-            }
-            match probe.available(&dir) {
-                Ok(free) => Ok(Some(free)),
-                Err(e) if e.kind() == std::io::ErrorKind::Unsupported => Ok(None),
-                Err(e) => Err(Error::io(format!("checking free space in {}", dir.display()), e)),
-            }
-        })
-        .await
-        .map_err(|e| Error::io("checking free space", std::io::Error::other(e)))??;
-        Ok((folder, SpaceCheck { needed, free }))
+        let check = sh.space_check(needed, &folder).await?;
+        Ok((folder, check))
     }
 
     /// Declines a pending Offer. Nothing is saved.
@@ -432,6 +472,80 @@ impl Device {
             .ok_or(Error::UnknownTransfer(id))?;
         // The Offer's task may have just ended (the Sender went away); treat it as gone.
         offer.decide.send(decision).map_err(|_| Error::UnknownTransfer(id))
+    }
+
+    /// This Device's name as other Devices see it: the Device Name if set, else the hostname.
+    pub async fn device_name(&self) -> String {
+        self.inner.shared.device_name().await
+    }
+
+    /// Renames this Device. The new name is announced from the next connection on. Returns the
+    /// name as stored (trimmed, and shortened if it was too long).
+    pub async fn set_device_name(&self, name: &str) -> Result<String, Error> {
+        let name = device_name::sanitize(name).ok_or(Error::EmptyDeviceName)?;
+        self.inner.shared.db.set_setting(device_name::SETTING, &name).await?;
+        Ok(name)
+    }
+
+    /// Saves the Device with ID `id` as a Contact. `device_name` is the name it goes by, as far
+    /// as the user knows it (a share link suggests one). The caller is expected to have had
+    /// the user check the Fingerprint with the owner first.
+    pub async fn add_contact(
+        &self,
+        id: DeviceId,
+        device_name: Option<&str>,
+    ) -> Result<Contact, Error> {
+        let sh = &self.inner.shared;
+        if id == sh.id {
+            return Err(Error::OwnDeviceId);
+        }
+        let contact = Contact {
+            id,
+            nickname: None,
+            device_name: clean_name(device_name).map_err(Error::InvalidContactName)?,
+            auto_accept: false,
+            last_known_address: KnownAddress::default(),
+            added_at: sh.now(),
+        };
+        if !sh.db.insert_contact(contact.clone()).await? {
+            return Err(Error::AlreadyContact(id));
+        }
+        Ok(contact)
+    }
+
+    /// Every Contact, in the order they were added.
+    pub async fn contacts(&self) -> Result<Vec<Contact>, Error> {
+        Ok(self.inner.shared.db.contacts().await?)
+    }
+
+    /// Sets the name this Device shows for a Contact; `None` (or an empty name) goes back to
+    /// the Contact's own Device Name.
+    pub async fn set_nickname(&self, id: DeviceId, nickname: Option<&str>) -> Result<Contact, Error> {
+        let nickname = clean_name(nickname).map_err(Error::InvalidContactName)?;
+        if !self.inner.shared.db.set_contact_nickname(id, nickname).await? {
+            return Err(Error::UnknownContact(id));
+        }
+        self.contact(id).await
+    }
+
+    /// Turns Auto-accept on or off for a Contact.
+    pub async fn set_auto_accept(&self, id: DeviceId, on: bool) -> Result<Contact, Error> {
+        if !self.inner.shared.db.set_contact_auto_accept(id, on).await? {
+            return Err(Error::UnknownContact(id));
+        }
+        self.contact(id).await
+    }
+
+    /// Forgets a Contact. Its Transfers stay in the Transfer records.
+    pub async fn remove_contact(&self, id: DeviceId) -> Result<(), Error> {
+        if !self.inner.shared.db.delete_contact(id).await? {
+            return Err(Error::UnknownContact(id));
+        }
+        Ok(())
+    }
+
+    async fn contact(&self, id: DeviceId) -> Result<Contact, Error> {
+        self.inner.shared.db.contact(id).await?.ok_or(Error::UnknownContact(id))
     }
 
     /// A persisted setting, if it has been set.

@@ -121,3 +121,72 @@ progress {
   gap: 0.5rem;
   justify-content: flex-end;
 }
+
+.tile {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 0.25rem;
+}
+
+/* A badge is a word in a box, so it does not rely on colour. */
+.badge {
+  border: 1px solid currentColor;
+  border-radius: 0.25rem;
+  padding: 0 0.35rem;
+  font-size: 0.75rem;
+  font-weight: 400;
+}
+
+.contacts {
+  list-style: none;
+  padding: 0;
+  display: grid;
+  gap: 0.75rem;
+}
+
+.contacts li {
+  border: 1px solid currentColor;
+  border-radius: 0.5rem;
+  padding: 0.5rem 0.75rem;
+}
+
+.contacts h3 {
+  margin: 0 0 0.25rem;
+}
+
+.contacts dl {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: 0.1rem 0.75rem;
+  margin: 0 0 0.5rem;
+}
+
+.contacts dt {
+  font-weight: 700;
+}
+
+.contacts dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.contacts label.inline {
+  display: inline;
+}
+
+.row {
+  display: flex;
+  gap: 0.5rem;
+}
+
+.row input {
+  flex: 1;
+}
+
+.fingerprint {
+  font-size: 1.5rem;
+  letter-spacing: 0.1em;
+  text-align: center;
+}
