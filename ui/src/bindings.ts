@@ -208,7 +208,7 @@ export type TransferState = { kind: "offered" } | { kind: "accepted" } | { kind:
 export type Visibility = 
 /**  A plain announcement with the Device Name: anyone on the LAN sees it. */
 "everyone" | 
-/**  Only Devices that hold this Device's ID. Announces nothing until the beacon exists. */
+/**  Only Devices that hold this Device's ID: a blinded beacon only they can recognise. */
 "id_holders" | 
 /**  Nobody. Announces nothing until the responder exists. */
 "hidden";

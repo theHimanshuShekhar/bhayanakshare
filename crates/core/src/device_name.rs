@@ -20,6 +20,15 @@ pub(crate) fn sanitize(name: &str) -> Option<String> {
     (!cut.is_empty()).then(|| cut.to_owned())
 }
 
+/// `name` cut to at most `max` bytes, on a character boundary.
+pub(crate) fn truncate_bytes(name: &str, max: usize) -> &str {
+    let mut end = name.len().min(max);
+    while !name.is_char_boundary(end) {
+        end -= 1;
+    }
+    &name[..end]
+}
+
 /// What a new install calls itself: the machine's hostname.
 pub(crate) fn default_name() -> String {
     hostname().as_deref().and_then(sanitize).unwrap_or_else(|| FALLBACK.to_owned())

@@ -437,6 +437,8 @@ dependencies = [
 name = "bhayanakshare-core"
 version = "0.1.0"
 dependencies = [
+ "aes-gcm",
+ "blake3",
  "data-encoding",
  "iroh",
  "iroh-blobs",

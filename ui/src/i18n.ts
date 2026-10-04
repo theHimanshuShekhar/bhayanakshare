@@ -68,7 +68,8 @@ const en = {
   "visibility.everyone": "Everyone",
   "visibility.everyoneHint": "Anyone on your network can see this Device and its name.",
   "visibility.idHolders": "People who have my ID",
-  "visibility.idHoldersHint": "Only Devices that already have your Device ID can see it.",
+  "visibility.idHoldersHint":
+    "Only Devices that already have your Device ID can see it and its name.",
   "visibility.hidden": "Hidden",
   "visibility.hiddenHint":
     "No one sees this Device on your network. People with your ID can still send to it.",

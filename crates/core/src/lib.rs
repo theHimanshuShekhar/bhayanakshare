@@ -1,6 +1,7 @@
 //! BhayanakShare core: everything except the windows. The Tauri shell and every test drive it
 //! through the [`Device`] API: commands in, one ordered [`EventStream`] out.
 
+mod beacon;
 pub mod clock;
 mod contacts;
 mod db;
