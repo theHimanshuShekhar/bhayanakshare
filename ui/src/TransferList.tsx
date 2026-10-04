@@ -37,6 +37,8 @@ export function TransferList({ api, transfers }: { api: Api; transfers: Transfer
 function TransferRow({ api, transfer: x }: { api: Api; transfer: TransferView }) {
   const [showFailed, setShowFailed] = useState(false);
   const [problem, setProblem] = useState<string | null>(null);
+  // An expired Offer can be sent again once; the new Offer is a row of its own.
+  const [resent, setResent] = useState(false);
   const peer = fingerprint(x.peer);
   const title = t(x.role === "sender" ? "transfer.to" : "transfer.from", { name: x.name, peer });
   const moving = x.state.kind === "transferring" || (x.state.kind === "accepted" && x.bytes > 0);
@@ -86,16 +88,18 @@ function TransferRow({ api, transfer: x }: { api: Api; transfer: TransferView })
           {t("transfer.cancel")}
         </button>
       )}
-      {canResend(x) && (
+      {canResend(x) && !resent && (
         <button
           type="button"
           aria-label={t("transfer.resendLabel", { name: x.name })}
           onClick={() => {
             setProblem(null);
-            api.resendTransfer(x.id).catch((e) =>
-              setProblem(
-                t("transfer.resendFailed", { reason: e instanceof Error ? e.message : String(e) }),
-              ),
+            api.resendTransfer(x.id).then(
+              () => setResent(true),
+              (e) =>
+                setProblem(
+                  t("transfer.resendFailed", { reason: e instanceof Error ? e.message : String(e) }),
+                ),
             );
           }}
         >

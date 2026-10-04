@@ -296,6 +296,7 @@ describe("receiving", () => {
       peer: PEER_ID,
       name: "b.bin",
       size: 1,
+      expires_at: EXPIRES_AT,
       state: { kind: "offered" },
     });
     await waitFor(() =>
@@ -427,7 +428,9 @@ describe("cancelling, expiry and the Offer countdown", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "Send photo.jpg again" }));
     expect(device.api.resendTransfer).toHaveBeenCalledWith(TRANSFER);
-    await waitFor(() => expect(screen.queryByRole("alert")).toBeNull());
+    // Once sent again, the expired row no longer offers it.
+    await waitFor(() => expect(screen.queryByRole("button", { name: "Send photo.jpg again" })).toBeNull());
+    expect(screen.queryByRole("alert")).toBeNull();
   });
 
   it("gives the Receiver of an expired Offer no resend, and closes the sheet", async () => {
