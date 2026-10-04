@@ -11,6 +11,7 @@ use bhayanakshare_core::{
     Device, DeviceAddr, DeviceConfig, Event, EventKind, EventStream, KeySource, ManualClock,
     Network, TransferEvent, TransferId, TransferState,
 };
+use iroh::{Endpoint, EndpointAddr, RelayMode, TransportAddr, endpoint::presets};
 use tempfile::TempDir;
 
 /// How long a test waits for any single event before failing.
@@ -154,4 +155,24 @@ pub fn list_dir(dir: &std::path::Path) -> Vec<String> {
         .collect();
     names.sort();
     names
+}
+
+/// A bare QUIC peer that speaks (or breaks) the control protocol by hand.
+pub async fn raw_peer() -> Endpoint {
+    Endpoint::builder(presets::Minimal)
+        .relay_mode(RelayMode::Disabled)
+        .clear_ip_transports()
+        .bind_addr("127.0.0.1:0")
+        .unwrap()
+        .bind()
+        .await
+        .unwrap()
+}
+
+pub fn dial_addr(target: &TestDevice) -> EndpointAddr {
+    let addr = target.addr();
+    EndpointAddr::from_parts(
+        iroh::EndpointId::from_bytes(addr.id.as_bytes()).unwrap(),
+        addr.direct.into_iter().map(TransportAddr::Ip),
+    )
 }

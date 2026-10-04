@@ -22,6 +22,7 @@ use crate::{
     db::{Db, TransferRecord},
     error::Error,
     event::{EventKind, EventSink, EventStream, TransferEvent},
+    gate::Gate,
     identity::{DeviceId, KeySource},
     names::validate_file_name,
     protocol, receiver, sender, store,
@@ -93,6 +94,8 @@ pub(crate) struct Shared {
     pub id: DeviceId,
     pub endpoint: Endpoint,
     pub blobs: iroh_blobs::api::Store,
+    /// Decides who the blobs provider serves.
+    pub gate: Arc<Gate>,
     pub db: Db,
     pub clock: Arc<dyn Clock>,
     pub save_dir: PathBuf,
@@ -200,10 +203,12 @@ impl Device {
         .map_err(|e| Error::network("binding the network endpoint", e))?;
 
         let (events, stream) = EventSink::new();
+        let gate = Arc::new(Gate::default());
         let shared = Arc::new(Shared {
             id: DeviceId::from_endpoint_id(endpoint.id()),
             endpoint: endpoint.clone(),
             blobs: blobs.clone(),
+            gate: gate.clone(),
             db,
             clock,
             save_dir,
@@ -214,7 +219,7 @@ impl Device {
         });
         let router = Router::builder(endpoint)
             .accept(protocol::ALPN, receiver::Handler::new(shared.clone()))
-            .accept(iroh_blobs::ALPN, BlobsProtocol::new(&blobs, None))
+            .accept(iroh_blobs::ALPN, BlobsProtocol::new(&blobs, Some(gate.events())))
             .spawn();
 
         let inner = Inner { shared, router, store: Mutex::new(Some(store)) };

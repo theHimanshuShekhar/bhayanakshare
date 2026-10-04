@@ -29,7 +29,9 @@ pub enum Message {
     Accept,
     /// Receiver to Sender. Carries no reason.
     Decline,
-    /// Sender to Receiver, once the content is hashed; may arrive before or after `Accept`.
+    /// Sender to Receiver, once the content is hashed and the Receiver has accepted: the
+    /// go-ahead to fetch. This Sender sends it only after `Accept`, having already allowed
+    /// that Receiver to fetch; a Receiver must still cope with it arriving before `Accept`.
     HashReady { collection_hash: [u8; 32] },
     /// Receiver to Sender, after the file is verified, in the save folder and fsynced.
     Completed,

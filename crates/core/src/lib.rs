@@ -7,6 +7,7 @@ mod device;
 mod error;
 mod event;
 mod fsmove;
+mod gate;
 mod identity;
 mod names;
 pub mod protocol;

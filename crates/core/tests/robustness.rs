@@ -8,28 +8,7 @@ use bhayanakshare_core::{
     Device, DeviceConfig, KeySource, ManualClock, Network, TransferState,
     protocol::{self, FrameError, Hello, Message, Offer, read_frame, write_frame},
 };
-use iroh::{Endpoint, EndpointAddr, RelayMode, TransportAddr, endpoint::presets};
-use support::{TestDevice, list_dir};
-
-/// A bare QUIC peer that speaks (or breaks) the control protocol by hand.
-async fn raw_peer() -> Endpoint {
-    Endpoint::builder(presets::Minimal)
-        .relay_mode(RelayMode::Disabled)
-        .clear_ip_transports()
-        .bind_addr("127.0.0.1:0")
-        .unwrap()
-        .bind()
-        .await
-        .unwrap()
-}
-
-fn dial_addr(target: &TestDevice) -> EndpointAddr {
-    let addr = target.addr();
-    EndpointAddr::from_parts(
-        iroh::EndpointId::from_bytes(addr.id.as_bytes()).unwrap(),
-        addr.direct.into_iter().map(TransportAddr::Ip),
-    )
-}
+use support::{TestDevice, dial_addr, list_dir, raw_peer};
 
 #[tokio::test]
 async fn identity_settings_and_history_survive_a_restart() {
