@@ -6,13 +6,16 @@
 //! save folder's filesystem, so saving is a rename), verified, moved into the save folder,
 //! fsynced, and only then is `Completed` sent and the incoming store deleted. The save folder
 //! is the one the Offer was accepted into, which the Receiver may choose per Offer.
+//!
+//! Until the move into the save folder starts, either side can cancel (the incoming store is
+//! deleted), and an Offer nobody answers expires. A Sender that already has 5 Offers waiting
+//! gets `Busy` instead of a new one.
 
 use std::{
     collections::hash_map::Entry,
     io,
     path::{Path, PathBuf},
     sync::Arc,
-    time::Duration,
 };
 
 use iroh::{
@@ -29,26 +32,26 @@ use iroh_blobs::{
     format::collection::Collection,
 };
 use n0_future::StreamExt;
-use tokio::sync::oneshot;
+use tokio::sync::{mpsc, oneshot};
+use tokio_util::sync::CancellationToken;
 
 use crate::{
-    clock::UnixMillis,
+    clock::{UnixMillis, sleep_until},
     device::{Decision, PendingOffer, Shared, TransferInfo},
     fsmove::rename_no_replace,
     identity::DeviceId,
     names::{numbered, validate_file_name},
-    protocol::{self, Message, spawn_reader, write_frame},
-    session::{Failure, LOST, UNEXPECTED, expect_hello, fail},
+    protocol::{self, FrameError, Message, spawn_reader, write_frame},
+    session::{CLOSE_GRACE, Failure, LOST, Stop, UNEXPECTED, expect_hello, fail, stop},
     store,
-    transfer::{Role, TransferId, TransferState},
+    transfer::{OFFER_TTL_MS, Role, TransferId, TransferState},
 };
 
 /// Directory inside the save folder that holds in-progress downloads.
 pub const INCOMING_DIR: &str = ".bhayanakshare-incoming";
 
-/// How long to wait for the Sender to close the connection after our last frame, so the
-/// frame is not cut off by us hanging up first.
-const CLOSE_GRACE: Duration = Duration::from_secs(5);
+/// How many Offers one Sender may have waiting for an answer before the next gets `Busy`.
+const MAX_PENDING_OFFERS: usize = 5;
 
 /// The least time, by the Device's clock, between two progress reports while fetching.
 const PROGRESS_INTERVAL_MS: UnixMillis = 100;
@@ -96,6 +99,7 @@ async fn run(sh: Arc<Shared>, conn: Connection) {
     };
     let Some(info) = info else { return };
     sh.pending.lock().unwrap_or_else(|e| e.into_inner()).remove(&info.id);
+    sh.untrack(info.id);
     if let Some(Err(Failure(reason))) = outcome {
         sh.transition(&info, TransferState::Failed { reason }).await;
     }
@@ -127,33 +131,73 @@ async fn flow(
         peer: DeviceId::from_endpoint_id(peer_endpoint),
         name: offer.name,
         size: offer.size,
+        expires_at: sh.now() + OFFER_TTL_MS,
     };
 
     // Register for a decision before announcing, so a command sent the moment the event
-    // is seen finds it.
+    // is seen finds it. The same lock settles whether this Sender already has too many
+    // Offers waiting.
     let (decide, mut decision) = oneshot::channel();
-    match sh.pending.lock().unwrap_or_else(|e| e.into_inner()).entry(info.id) {
-        Entry::Vacant(slot) => slot.insert(PendingOffer { size: info.size, decide }),
-        Entry::Occupied(_) => return Err(Failure::with(BAD_OFFER, "duplicate Transfer ID")),
+    let busy = {
+        let mut pending = sh.pending.lock().unwrap_or_else(|e| e.into_inner());
+        let waiting = pending.values().filter(|p| p.peer == info.peer).count();
+        if waiting >= MAX_PENDING_OFFERS {
+            true
+        } else {
+            match pending.entry(info.id) {
+                Entry::Vacant(slot) => slot.insert(PendingOffer { peer: info.peer, size: info.size, decide }),
+                Entry::Occupied(_) => return Err(Failure::with(BAD_OFFER, "duplicate Transfer ID")),
+            };
+            false
+        }
     };
+    if busy {
+        // Not shown to the user and not recorded: it is as if the Offer had never come.
+        tracing::debug!(peer = %info.peer.fingerprint(), "Offer refused: too many waiting");
+        write_frame(&mut send, &Message::Busy).await.map_err(fail(LOST))?;
+        let _ = send.finish();
+        let _ = tokio::time::timeout(CLOSE_GRACE, conn.closed()).await;
+        return Ok(());
+    }
     if let Err(e) = sh.begin(&info, TransferState::Offered).await {
         sh.pending.lock().unwrap_or_else(|e| e.into_inner()).remove(&info.id);
         return Err(Failure::with("Could not record the Offer.", e));
     }
     *announced = Some(info.clone());
+    let cancel = sh.track(info.id);
+    let mut expiry = Box::pin(sleep_until(&*sh.clock, info.expires_at));
 
     let mut root: Option<Hash> = None;
     let decision = loop {
         tokio::select! {
+            // The user's answer, then what the Sender has said, count before our own clock
+            // and cancel, so both sides end the Transfer the same way.
+            biased;
             decided = &mut decision => break decided.map_err(|_| Failure::with(LOST, "Offer withdrawn"))?,
             msg = incoming.recv() => match msg {
                 Some(Ok(Message::HashReady { collection_hash })) if root.is_none() => {
                     root = Some(collection_hash.into());
                 }
+                Some(Ok(Message::Cancel)) => {
+                    stop(sh, &info, conn, &mut send, Stop::PeerCancelled).await;
+                    return Ok(());
+                }
+                Some(Ok(Message::Expired)) => {
+                    stop(sh, &info, conn, &mut send, Stop::PeerExpired).await;
+                    return Ok(());
+                }
                 Some(Ok(_)) => return Err(Failure::with(UNEXPECTED, "message while deciding")),
                 Some(Err(e)) => return Err(Failure::with(LOST, e)),
                 None => return Err(Failure::with(LOST, "stream ended while deciding")),
             },
+            () = cancel.cancelled() => {
+                stop(sh, &info, conn, &mut send, Stop::Cancelled).await;
+                return Ok(());
+            }
+            () = &mut expiry => {
+                stop(sh, &info, conn, &mut send, Stop::Expired).await;
+                return Ok(());
+            }
         }
     };
 
@@ -168,11 +212,29 @@ async fn flow(
     write_frame(&mut send, &Message::Accept).await.map_err(fail(LOST))?;
     sh.transition(&info, TransferState::Accepted).await;
     while root.is_none() {
-        match incoming.recv().await {
-            Some(Ok(Message::HashReady { collection_hash })) => root = Some(collection_hash.into()),
-            Some(Ok(_)) => return Err(Failure::with(UNEXPECTED, "message before HashReady")),
-            Some(Err(e)) => return Err(Failure::with(LOST, e)),
-            None => return Err(Failure::with(LOST, "stream ended before HashReady")),
+        tokio::select! {
+            biased;
+            msg = incoming.recv() => match msg {
+                Some(Ok(Message::HashReady { collection_hash })) => {
+                    root = Some(collection_hash.into());
+                }
+                Some(Ok(Message::Cancel)) => {
+                    stop(sh, &info, conn, &mut send, Stop::PeerCancelled).await;
+                    return Ok(());
+                }
+                // The Sender's clock ran out just before it read our answer.
+                Some(Ok(Message::Expired)) => {
+                    stop(sh, &info, conn, &mut send, Stop::PeerExpired).await;
+                    return Ok(());
+                }
+                Some(Ok(_)) => return Err(Failure::with(UNEXPECTED, "message before HashReady")),
+                Some(Err(e)) => return Err(Failure::with(LOST, e)),
+                None => return Err(Failure::with(LOST, "stream ended before HashReady")),
+            },
+            () = cancel.cancelled() => {
+                stop(sh, &info, conn, &mut send, Stop::Cancelled).await;
+                return Ok(());
+            }
         }
     }
     let root = root.expect("loop above runs until set");
@@ -188,8 +250,9 @@ async fn flow(
         }
     };
 
-    match fetch_and_save(sh, &mut send, peer_endpoint, &store, &info, root, &save_dir).await {
-        Ok(saved) => {
+    let control = Control { send: &mut send, incoming: &mut incoming, cancel: &cancel };
+    match fetch_and_save(sh, control, peer_endpoint, &store, &info, root, &save_dir).await {
+        Ok(Fetched::Saved(saved)) => {
             let sent = write_frame(&mut send, &Message::Completed).await;
             let _ = send.finish();
             spawn_cleanup(sh, store, dir);
@@ -203,6 +266,12 @@ async fn flow(
             }
             Ok(())
         }
+        // Whatever was received so far is deleted with the store.
+        Ok(Fetched::Stopped(how)) => {
+            spawn_cleanup(sh, store, dir);
+            stop(sh, &info, conn, &mut send, how).await;
+            Ok(())
+        }
         Err(failure) => {
             spawn_cleanup(sh, store, dir);
             Err(failure)
@@ -212,6 +281,23 @@ async fn flow(
 
 fn incoming_dir(save_dir: &Path, id: TransferId) -> PathBuf {
     save_dir.join(INCOMING_DIR).join(id.to_string())
+}
+
+type Incoming = mpsc::Receiver<Result<Message, FrameError>>;
+
+/// The control stream to the Sender and the user's cancel signal, which a download has to
+/// watch while it runs.
+struct Control<'a> {
+    send: &'a mut SendStream,
+    incoming: &'a mut Incoming,
+    cancel: &'a CancellationToken,
+}
+
+enum Fetched {
+    /// The file is in the save folder, at this path.
+    Saved(String),
+    /// Cancelled before anything was saved.
+    Stopped(Stop),
 }
 
 /// Announces how much has arrived on our own event stream and tells the Sender, whose
@@ -225,25 +311,44 @@ async fn report_progress(sh: &Shared, send: &mut SendStream, info: &TransferInfo
 /// into `save_dir`. Returns where it ended up.
 async fn fetch_and_save(
     sh: &Arc<Shared>,
-    send: &mut SendStream,
+    control: Control<'_>,
     sender: iroh::EndpointId,
     store: &store::Store,
     info: &TransferInfo,
     root: Hash,
     save_dir: &Path,
-) -> Result<String, Failure> {
+) -> Result<Fetched, Failure> {
+    let Control { send, incoming, cancel } = control;
     let blobs: &iroh_blobs::api::Store = store;
     let content = HashAndFormat::hash_seq(root);
 
-    let conn = sh
-        .endpoint
-        .connect(EndpointAddr::new(sender), iroh_blobs::ALPN)
-        .await
-        .map_err(fail(CANT_FETCH))?;
+    let conn = tokio::select! {
+        biased;
+        () = cancel.cancelled() => return Ok(Fetched::Stopped(Stop::Cancelled)),
+        conn = sh.endpoint.connect(EndpointAddr::new(sender), iroh_blobs::ALPN) => {
+            conn.map_err(fail(CANT_FETCH))?
+        }
+    };
     // iroh-blobs checks every chunk against its BLAKE3 hash as it arrives.
     let mut fetch = Box::pin(blobs.remote().fetch(conn.clone(), content).stream());
     let mut last_report: Option<UnixMillis> = None;
-    while let Some(item) = fetch.next().await {
+    // The Sender's stream ending is not a cancel; if it has really gone, the fetch fails.
+    let mut sender_talking = true;
+    loop {
+        let item = tokio::select! {
+            biased;
+            msg = incoming.recv(), if sender_talking => match msg {
+                Some(Ok(Message::Cancel)) => return Ok(Fetched::Stopped(Stop::PeerCancelled)),
+                Some(Ok(_)) => return Err(Failure::with(UNEXPECTED, "message while fetching")),
+                Some(Err(_)) | None => {
+                    sender_talking = false;
+                    continue;
+                }
+            },
+            () = cancel.cancelled() => return Ok(Fetched::Stopped(Stop::Cancelled)),
+            item = fetch.next() => item,
+        };
+        let Some(item) = item else { break };
         match item {
             GetProgressItem::Progress(bytes) => {
                 // The free-space check was made for the offered size; a Sender that sends
@@ -282,6 +387,8 @@ async fn fetch_and_save(
         return Err(Failure::with(WRONG_FILE, format!("{size} bytes, offered {}", info.size)));
     }
 
+    // From here the file is moved into the save folder, which cannot be taken back.
+    sh.untrack(info.id);
     sh.transition(info, TransferState::Saving).await;
     let staged = incoming_dir(save_dir, info.id).join("out").join(&info.name);
     blobs
@@ -302,7 +409,7 @@ async fn fetch_and_save(
         .await
         .map_err(fail(CANT_SAVE))?
         .map_err(fail(CANT_SAVE))?;
-    Ok(saved.to_string_lossy().into_owned())
+    Ok(Fetched::Saved(saved.to_string_lossy().into_owned()))
 }
 
 /// Makes the staged file durable, moves it into `save_dir` under a name that is not taken

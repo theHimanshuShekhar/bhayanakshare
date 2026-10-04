@@ -8,7 +8,7 @@ mod support;
 use std::time::Duration;
 
 use bhayanakshare_core::{
-    DeviceAddr, DeviceId, TransferId,
+    DeviceAddr, DeviceId, OFFER_TTL_MS, Role, TransferId, TransferState,
     protocol::{self, FrameError, Hello, Message, spawn_reader, write_frame},
     store,
 };
@@ -121,6 +121,10 @@ impl RawReceiver {
 
     async fn decline(&mut self) {
         write_frame(&mut self.send, &Message::Decline).await.unwrap();
+    }
+
+    async fn cancel(&mut self) {
+        write_frame(&mut self.send, &Message::Cancel).await.unwrap();
     }
 
     /// Says the file arrived, then waits for Alice to hang up.
@@ -384,4 +388,56 @@ async fn a_blob_pushed_at_the_sender_never_reaches_its_store() {
         assert!(matches!(status, BlobStatus::NotFound), "{hash} was pushed in: {status:?}");
     }
     store.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn content_cannot_be_fetched_after_the_sender_cancels() {
+    let mut alice = TestDevice::start("alice").await;
+    let bytes = pseudo_random_bytes(100_000, 12);
+    let mut bob = RawReceiver::offered(&alice, "plans.bin", &bytes).await;
+    bob.accept().await;
+    let before = bob.blobs_conn().await;
+    bob.fetch_and_check(&before, "plans.bin", &bytes).await;
+
+    alice.device.cancel(bob.id).await.unwrap();
+
+    let cancelled = alice.wait_state(bob.id, "cancelled").await;
+    assert_eq!(cancelled.state, TransferState::Cancelled { by: Role::Sender });
+    assert_eq!(next(&mut bob.incoming).await, Message::Cancel);
+    assert_refused(&before, get(bob.root), "GET on a connection opened before the cancel").await;
+    assert_refused(&bob.blobs_conn().await, get(bob.root), "GET on a new connection").await;
+    alice.shutdown().await;
+}
+
+#[tokio::test]
+async fn content_cannot_be_fetched_after_the_receiver_cancels() {
+    let mut alice = TestDevice::start("alice").await;
+    let bytes = pseudo_random_bytes(100_000, 13);
+    let mut bob = RawReceiver::offered(&alice, "plans.bin", &bytes).await;
+    bob.accept().await;
+    let before = bob.blobs_conn().await;
+    bob.fetch_and_check(&before, "plans.bin", &bytes).await;
+
+    bob.cancel().await;
+
+    let cancelled = alice.wait_state(bob.id, "cancelled").await;
+    assert_eq!(cancelled.state, TransferState::Cancelled { by: Role::Receiver });
+    assert_refused(&before, get(bob.root), "GET on a connection opened before the cancel").await;
+    assert_refused(&bob.blobs_conn().await, get(bob.root), "GET on a new connection").await;
+    alice.shutdown().await;
+}
+
+#[tokio::test]
+async fn an_expired_offers_content_cannot_be_fetched_and_the_receiver_is_told() {
+    let mut alice = TestDevice::start("alice").await;
+    let bytes = pseudo_random_bytes(100_000, 14);
+    already_delivered(&mut alice, "plans.bin", &bytes).await;
+    let mut bob = RawReceiver::offered(&alice, "plans.bin", &bytes).await;
+
+    alice.clock.advance(OFFER_TTL_MS);
+
+    alice.wait_state(bob.id, "expired").await;
+    assert_eq!(next(&mut bob.incoming).await, Message::Expired);
+    assert_refused(&bob.blobs_conn().await, get(bob.root), "GET of an expired Offer's root").await;
+    alice.shutdown().await;
 }

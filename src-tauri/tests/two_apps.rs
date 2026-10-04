@@ -174,3 +174,35 @@ fn a_declined_offer_and_bad_input_are_reported_to_the_ui() {
         tauri::async_runtime::block_on(shell.device().shutdown());
     }
 }
+
+#[test]
+fn cancelling_goes_through_the_commands_and_the_other_ui_hears_who_cancelled() {
+    let alice = start_shell();
+    let bob = start_shell();
+    for shell in [&alice, &bob] {
+        shell.invoke("events_ready", json!({})).unwrap();
+    }
+    let src = tempfile::tempdir().unwrap();
+    let path = src.path().join("a.txt");
+    std::fs::write(&path, "x").unwrap();
+    tauri::async_runtime::block_on(alice.device().send_file(bob.device().addr(), &path)).unwrap();
+
+    let offer = bob.wait_event("the Offer", is_transfer("offered"));
+    assert!(offer["expires_at"].as_i64().unwrap() > 0, "the Offer says when it lapses");
+    alice.invoke("cancel_transfer", json!({ "transferId": offer["transfer_id"] })).unwrap();
+
+    let there = bob.wait_event("the cancel", is_transfer("cancelled"));
+    assert_eq!(there["state"]["by"], "sender");
+    let here = alice.wait_event("the cancel", is_transfer("cancelled"));
+    assert_eq!(here["state"]["by"], "sender");
+
+    // It is over: nothing to cancel, and nothing expired to send again.
+    let again = alice.invoke("cancel_transfer", json!({ "transferId": offer["transfer_id"] }));
+    assert!(again.unwrap_err().as_str().unwrap().contains("not running"));
+    let resend = alice.invoke("resend_transfer", json!({ "transferId": offer["transfer_id"] }));
+    assert!(resend.unwrap_err().as_str().unwrap().contains("did not expire"));
+
+    for shell in [&alice, &bob] {
+        tauri::async_runtime::block_on(shell.device().shutdown());
+    }
+}

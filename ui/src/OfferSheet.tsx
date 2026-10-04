@@ -1,7 +1,17 @@
 import { useEffect, useRef, useState } from "react";
 import type { Api, SpaceCheck } from "./api";
 import { t } from "./i18n";
-import { fingerprint, formatSize, type TransferView } from "./transfers";
+import { fingerprint, formatCountdown, formatSize, type TransferView } from "./transfers";
+
+/** The time left to answer, counting down each second. Not announced: it changes constantly. */
+function Countdown({ expiresAt }: { expiresAt: number }) {
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    const tick = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(tick);
+  }, []);
+  return <p role="timer">{t("offer.expiresIn", { time: formatCountdown(expiresAt - now) })}</p>;
+}
 
 const reasonOf = (e: unknown) => (e instanceof Error ? e.message : String(e));
 
@@ -78,6 +88,7 @@ export function OfferSheet({
             </button>
           </dd>
         </dl>
+        <Countdown expiresAt={offer.expiresAt} />
         {short && (
           <p role="alert">
             {t("offer.noRoom", { needed: formatSize(short.needed), free: formatSize(short.free) })}

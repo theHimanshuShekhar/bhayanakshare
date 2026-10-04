@@ -17,6 +17,10 @@ export const commands = {
 	/**  Accepts a pending Offer into `folder` for this Offer only (the save folder when absent). */
 	acceptOffer: (transferId: TransferId, folder: string | null) => __TAURI_INVOKE<null>("accept_offer", { transferId, folder }),
 	declineOffer: (transferId: TransferId) => __TAURI_INVOKE<null>("decline_offer", { transferId }),
+	/**  Stops a Transfer, on either side, until it starts saving. */
+	cancelTransfer: (transferId: TransferId) => __TAURI_INVOKE<null>("cancel_transfer", { transferId }),
+	/**  Sends an expired Offer again; resolves to the new Transfer ID. */
+	resendTransfer: (transferId: TransferId) => __TAURI_INVOKE<string>("resend_transfer", { transferId }),
 	/**
 	 *  Not a Device command: the UI calls it once it is listening for `DeviceEvent`s, and
 	 *  receives everything the Device emitted before that, in order.
@@ -95,6 +99,11 @@ export type TransferEvent = {
 	peer: DeviceId,
 	name: string,
 	size: number,
+	/**
+	 *  When the Offer lapses if nobody answers it, by this Device's clock. The same on every
+	 *  event of the Transfer, so a late subscriber can show the countdown.
+	 */
+	expires_at: number,
 	state: TransferState,
 };
 
@@ -111,7 +120,11 @@ export type TransferState = { kind: "offered" } | { kind: "accepted" } | { kind:
 /**  The Receiver has everything and is moving it into the save folder. */
 { kind: "saving" } | 
 /**  `saved_to` is set on the Receiver only. */
-{ kind: "completed"; saved_to: string | null } | { kind: "failed"; reason: string };
+{ kind: "completed"; saved_to: string | null } | { kind: "failed"; reason: string } | 
+/**  Nobody answered the Offer within 10 minutes ([`OFFER_TTL_MS`]). */
+{ kind: "expired" } | 
+/**  One side stopped the Transfer before it completed; `by` is which. */
+{ kind: "cancelled"; by: Role };
 
 /* Tauri Specta runtime */
 type EventEmit<T> = [T] extends [null] ? () => Promise<void> : (payload: T) => Promise<void>;

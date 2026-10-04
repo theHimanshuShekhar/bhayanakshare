@@ -128,6 +128,24 @@ async fn decline_offer(device: State<'_, Device>, transfer_id: TransferId) -> Re
     device.decline(transfer_id).await.map_err(|e| e.to_string())
 }
 
+/// Stops a Transfer, on either side, until it starts saving.
+#[tauri::command]
+#[specta::specta]
+async fn cancel_transfer(device: State<'_, Device>, transfer_id: TransferId) -> Result<(), String> {
+    device.cancel(transfer_id).await.map_err(|e| e.to_string())
+}
+
+/// Sends an expired Offer again; resolves to the new Transfer ID.
+#[tauri::command]
+#[specta::specta]
+async fn resend_transfer(
+    device: State<'_, Device>,
+    transfer_id: TransferId,
+) -> Result<String, String> {
+    let id = device.resend(transfer_id).await.map_err(|e| e.to_string())?;
+    Ok(id.to_string())
+}
+
 /// Not a Device command: the UI calls it once it is listening for `DeviceEvent`s, and
 /// receives everything the Device emitted before that, in order.
 #[tauri::command]
@@ -146,6 +164,8 @@ pub fn specta_builder<R: Runtime>() -> Builder<R> {
             check_offer,
             accept_offer,
             decline_offer,
+            cancel_transfer,
+            resend_transfer,
             events_ready
         ])
         .events(collect_events![DeviceEvent])

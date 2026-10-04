@@ -1,7 +1,14 @@
 import { useState } from "react";
 import type { Api } from "./api";
 import { t, type MessageKey } from "./i18n";
-import { fingerprint, formatSize, percent, type TransferView } from "./transfers";
+import {
+  canCancel,
+  canResend,
+  fingerprint,
+  formatSize,
+  percent,
+  type TransferView,
+} from "./transfers";
 
 /** Sentence for a Transfer's current state, e.g. "Waiting for K3QF-7XNA…". */
 function statusText(x: TransferView): string {
@@ -10,6 +17,9 @@ function statusText(x: TransferView): string {
     peer: fingerprint(x.peer),
     reason: x.state.kind === "failed" ? x.state.reason : "",
   };
+  if (x.state.kind === "cancelled") {
+    return t(x.state.by === x.role ? "transfer.cancelledByYou" : "transfer.cancelledByPeer", params);
+  }
   return t(`transfer.${side}.${x.state.kind}` as MessageKey, params);
 }
 
@@ -26,6 +36,9 @@ export function TransferList({ api, transfers }: { api: Api; transfers: Transfer
 
 function TransferRow({ api, transfer: x }: { api: Api; transfer: TransferView }) {
   const [showFailed, setShowFailed] = useState(false);
+  const [problem, setProblem] = useState<string | null>(null);
+  // An expired Offer can be sent again once; the new Offer is a row of its own.
+  const [resent, setResent] = useState(false);
   const peer = fingerprint(x.peer);
   const title = t(x.role === "sender" ? "transfer.to" : "transfer.from", { name: x.name, peer });
   const moving = x.state.kind === "transferring" || (x.state.kind === "accepted" && x.bytes > 0);
@@ -63,6 +76,37 @@ function TransferRow({ api, transfer: x }: { api: Api; transfer: TransferView })
         </p>
       )}
       {showFailed && <p role="alert">{t("transfer.showInFolderFailed")}</p>}
+      {canCancel(x) && (
+        <button
+          type="button"
+          aria-label={t("transfer.cancelLabel", { name: x.name })}
+          onClick={() => {
+            setProblem(null);
+            api.cancelTransfer(x.id).catch(() => setProblem(t("transfer.cancelFailed")));
+          }}
+        >
+          {t("transfer.cancel")}
+        </button>
+      )}
+      {canResend(x) && !resent && (
+        <button
+          type="button"
+          aria-label={t("transfer.resendLabel", { name: x.name })}
+          onClick={() => {
+            setProblem(null);
+            api.resendTransfer(x.id).then(
+              () => setResent(true),
+              (e) =>
+                setProblem(
+                  t("transfer.resendFailed", { reason: e instanceof Error ? e.message : String(e) }),
+                ),
+            );
+          }}
+        >
+          {t("transfer.resend")}
+        </button>
+      )}
+      {problem !== null && <p role="alert">{problem}</p>}
     </li>
   );
 }
