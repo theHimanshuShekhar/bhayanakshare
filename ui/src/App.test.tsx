@@ -249,4 +249,20 @@ describe("receiving", () => {
     fireEvent.click(screen.getByRole("button", { name: "Show photo.jpg in folder" }));
     expect(device.api.showInFolder).toHaveBeenCalledWith("/home/me/Downloads/BhayanakShare/photo.jpg");
   });
+
+  it("says so when no file manager can show the folder, and clears it on the next try", async () => {
+    const showInFolder = vi
+      .fn<Api["showInFolder"]>()
+      .mockRejectedValueOnce("ServiceUnknown")
+      .mockResolvedValueOnce();
+    const device = await start(fakeApi({ showInFolder }));
+    await device.transfer("receiver", { kind: "completed", saved_to: "/home/me/Downloads/photo.jpg" });
+
+    const button = screen.getByRole("button", { name: "Show photo.jpg in folder" });
+    fireEvent.click(button);
+    expect((await screen.findByRole("alert")).textContent).toContain("Could not open the folder");
+
+    fireEvent.click(button);
+    await waitFor(() => expect(screen.queryByRole("alert")).toBeNull());
+  });
 });

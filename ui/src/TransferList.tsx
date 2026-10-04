@@ -1,3 +1,4 @@
+import { useState } from "react";
 import type { Api } from "./api";
 import { t, type MessageKey } from "./i18n";
 import { fingerprint, formatSize, percent, type TransferView } from "./transfers";
@@ -24,6 +25,7 @@ export function TransferList({ api, transfers }: { api: Api; transfers: Transfer
 }
 
 function TransferRow({ api, transfer: x }: { api: Api; transfer: TransferView }) {
+  const [showFailed, setShowFailed] = useState(false);
   const peer = fingerprint(x.peer);
   const title = t(x.role === "sender" ? "transfer.to" : "transfer.from", { name: x.name, peer });
   const moving = x.state.kind === "transferring" || (x.state.kind === "accepted" && x.bytes > 0);
@@ -51,14 +53,16 @@ function TransferRow({ api, transfer: x }: { api: Api; transfer: TransferView })
           <button
             type="button"
             aria-label={t("transfer.showInFolderLabel", { name: x.name })}
-            // Revealing a folder is a convenience; if the file manager will not open there is
-            // nothing more useful to tell the user than the path shown above.
-            onClick={() => api.showInFolder(savedTo).catch(() => {})}
+            onClick={() => {
+              setShowFailed(false);
+              api.showInFolder(savedTo).catch(() => setShowFailed(true));
+            }}
           >
             {t("transfer.showInFolder")}
           </button>
         </p>
       )}
+      {showFailed && <p role="alert">{t("transfer.showInFolderFailed")}</p>}
     </li>
   );
 }

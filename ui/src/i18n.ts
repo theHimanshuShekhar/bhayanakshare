@@ -60,6 +60,7 @@ const en = {
   "transfer.savedTo": "Saved to {path}",
   "transfer.showInFolder": "Show in folder",
   "transfer.showInFolderLabel": "Show {name} in folder",
+  "transfer.showInFolderFailed": "Could not open the folder. The path is shown above.",
   "transfer.progress": "{percent}% of {size}",
   "transfer.progressLabel": "Progress of {name}",
   "transfer.rate": "{size}/s",

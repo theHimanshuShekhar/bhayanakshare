@@ -91,6 +91,15 @@ progress {
   color: CanvasText;
 }
 
+.sheet label {
+  display: block;
+  margin-bottom: 0.25rem;
+}
+
+.sheet .note {
+  margin: 0.25rem 0 0.75rem;
+}
+
 .sheet input {
   display: block;
   box-sizing: border-box;
