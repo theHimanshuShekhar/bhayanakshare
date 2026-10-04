@@ -12,7 +12,10 @@ export const commands = {
 	 *  Transfer ID.
 	 */
 	sendFile: (to: string, path: string) => __TAURI_INVOKE<string>("send_file", { to, path }),
-	acceptOffer: (transferId: TransferId) => __TAURI_INVOKE<null>("accept_offer", { transferId }),
+	/**  Whether a pending Offer fits in `folder` (the save folder when absent). */
+	checkOffer: (transferId: TransferId, folder: string | null) => __TAURI_INVOKE<SpaceCheck>("check_offer", { transferId, folder }),
+	/**  Accepts a pending Offer into `folder` for this Offer only (the save folder when absent). */
+	acceptOffer: (transferId: TransferId, folder: string | null) => __TAURI_INVOKE<null>("accept_offer", { transferId, folder }),
 	declineOffer: (transferId: TransferId) => __TAURI_INVOKE<null>("decline_offer", { transferId }),
 	/**
 	 *  Not a Device command: the UI calls it once it is listening for `DeviceEvent`s, and
@@ -75,6 +78,14 @@ export type ProgressEvent = {
 
 /**  Which side of a Transfer a Device plays. */
 export type Role = "sender" | "receiver";
+
+/**  What an Offer needs, against what its save folder has. */
+export type SpaceCheck = {
+	/**  The Offer's total size in bytes. */
+	needed: number,
+	/**  Bytes free in the save folder; `None` when the platform cannot say. */
+	free: number | null,
+};
 
 export type TransferEvent = {
 	transfer_id: TransferId,

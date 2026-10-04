@@ -9,7 +9,7 @@ use std::{
     time::Duration,
 };
 
-use bhayanakshare_core::{Device, DeviceConfig, KeySource, Network, SystemClock};
+use bhayanakshare_core::{Device, DeviceConfig, KeySource, Network, SystemClock, SystemFreeSpace};
 use bhayanakshare_lib::{specta_builder, start_device};
 use serde_json::{Value, json};
 use tauri::{
@@ -40,6 +40,7 @@ fn start_shell() -> Shell {
         save_dir: save_dir.clone(),
         clock: Arc::new(SystemClock),
         network: Network::Localhost,
+        free_space: Arc::new(SystemFreeSpace),
     };
 
     // What `run` does in its `setup` hook, which only fires once an event loop runs.

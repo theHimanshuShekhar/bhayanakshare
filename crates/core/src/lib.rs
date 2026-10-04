@@ -14,6 +14,7 @@ pub mod protocol;
 mod receiver;
 mod sender;
 mod session;
+mod space;
 pub mod store;
 mod transfer;
 
@@ -25,4 +26,5 @@ pub use event::{Event, EventKind, EventStream, ProgressEvent, TransferEvent};
 pub use identity::{DEVICE_ID_LEN, DeviceId, DeviceIdError, KeySource};
 pub use names::{NameError, validate_file_name};
 pub use receiver::INCOMING_DIR;
+pub use space::{FreeSpace, SpaceCheck, SystemFreeSpace};
 pub use transfer::{Role, TransferId, TransferState};

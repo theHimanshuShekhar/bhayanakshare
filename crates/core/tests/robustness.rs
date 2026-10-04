@@ -5,7 +5,7 @@ mod support;
 use std::time::Duration;
 
 use bhayanakshare_core::{
-    Device, DeviceConfig, KeySource, ManualClock, Network, TransferState,
+    Device, DeviceConfig, KeySource, ManualClock, Network, SystemFreeSpace, TransferState,
     protocol::{self, FrameError, Hello, Message, Offer, read_frame, write_frame},
 };
 use support::{TestDevice, dial_addr, list_dir, raw_peer};
@@ -19,6 +19,7 @@ async fn identity_settings_and_history_survive_a_restart() {
         key_source: KeySource::File(tmp.path().join("data").join("secret.key")),
         clock: std::sync::Arc::new(ManualClock::new(42)),
         network: Network::Localhost,
+        free_space: std::sync::Arc::new(SystemFreeSpace),
     };
 
     let (first, _events) = Device::start(config()).await.unwrap();
@@ -43,6 +44,7 @@ async fn two_live_devices_cannot_share_a_data_folder() {
         key_source: KeySource::File(tmp.path().join("secret.key")),
         clock: std::sync::Arc::new(ManualClock::new(0)),
         network: Network::Localhost,
+        free_space: std::sync::Arc::new(SystemFreeSpace),
     };
     let (first, _events) = Device::start(config()).await.unwrap();
     // The store registry refuses the second open instead of hanging inside iroh-blobs.

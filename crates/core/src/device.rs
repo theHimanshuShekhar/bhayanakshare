@@ -25,7 +25,9 @@ use crate::{
     gate::Gate,
     identity::{DeviceId, KeySource},
     names::validate_file_name,
-    protocol, receiver, sender, store,
+    protocol, receiver, sender,
+    space::{FreeSpace, SpaceCheck},
+    store,
     transfer::{Role, TransferId, TransferState},
 };
 
@@ -47,6 +49,8 @@ pub struct DeviceConfig {
     pub key_source: KeySource,
     pub clock: Arc<dyn Clock>,
     pub network: Network,
+    /// How much room a save folder has; [`crate::SystemFreeSpace`] outside tests.
+    pub free_space: Arc<dyn FreeSpace>,
 }
 
 /// How to reach a Device: its ID, plus direct socket addresses if they are known. The ID alone
@@ -73,10 +77,17 @@ impl DeviceAddr {
 }
 
 /// The answer a Receiver gives to an Offer.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum Decision {
-    Accept,
+    /// Save into this folder, which has already been checked for room.
+    Accept(PathBuf),
     Decline,
+}
+
+/// An Offer waiting for the user.
+pub(crate) struct PendingOffer {
+    pub size: u64,
+    pub decide: oneshot::Sender<Decision>,
 }
 
 /// Who and what a running Transfer is about; carried by every event it emits.
@@ -98,10 +109,12 @@ pub(crate) struct Shared {
     pub gate: Arc<Gate>,
     pub db: Db,
     pub clock: Arc<dyn Clock>,
+    /// The folder an Offer is saved to unless the Receiver picks another.
     pub save_dir: PathBuf,
+    pub free_space: Arc<dyn FreeSpace>,
     pub events: EventSink,
     /// Offers waiting for the user, by Transfer ID.
-    pub pending: Mutex<HashMap<TransferId, oneshot::Sender<Decision>>>,
+    pub pending: Mutex<HashMap<TransferId, PendingOffer>>,
     pub tasks: TaskTracker,
     /// Cancelled on shutdown; Transfer tasks stop, cleanup tasks run to the end.
     pub cancel: CancellationToken,
@@ -179,7 +192,7 @@ impl Device {
     /// Starts a Device: opens its database and blob store, loads (or creates) its key, binds
     /// the network endpoint and starts accepting.
     pub async fn start(config: DeviceConfig) -> Result<(Self, EventStream), Error> {
-        let DeviceConfig { data_dir, save_dir, key_source, clock, network } = config;
+        let DeviceConfig { data_dir, save_dir, key_source, clock, network, free_space } = config;
         let io = |what: &'static str, dir: &Path| {
             let ctx = format!("{what} {}", dir.display());
             move |e| Error::io(ctx, e)
@@ -218,6 +231,7 @@ impl Device {
             db,
             clock,
             save_dir,
+            free_space,
             events,
             pending: Mutex::default(),
             tasks: TaskTracker::new(),
@@ -283,9 +297,65 @@ impl Device {
         Ok(id)
     }
 
-    /// Accepts a pending Offer; the content is then fetched and saved.
+    /// Whether a pending Offer fits in `folder` (the save folder when `None`).
+    pub async fn check_offer(
+        &self,
+        id: TransferId,
+        folder: Option<&Path>,
+    ) -> Result<SpaceCheck, Error> {
+        self.check_space(id, folder).await.map(|(_, check)| check)
+    }
+
+    /// Accepts a pending Offer into the save folder; the content is then fetched and saved.
+    /// Fails, leaving the Offer pending, if it does not fit there.
     pub async fn accept(&self, id: TransferId) -> Result<(), Error> {
-        self.decide(id, Decision::Accept)
+        self.accept_into(id, None).await
+    }
+
+    /// Accepts a pending Offer into `folder` for this Transfer only (the save folder when
+    /// `None`). Fails, leaving the Offer pending, if it does not fit there.
+    pub async fn accept_into(&self, id: TransferId, folder: Option<&Path>) -> Result<(), Error> {
+        let (folder, check) = self.check_space(id, folder).await?;
+        if let Some(free) = check.free.filter(|_| !check.fits()) {
+            return Err(Error::NotEnoughSpace { needed: check.needed, free });
+        }
+        self.decide(id, Decision::Accept(folder))
+    }
+
+    /// The absolute `folder` and what a pending Offer would need from it.
+    async fn check_space(
+        &self,
+        id: TransferId,
+        folder: Option<&Path>,
+    ) -> Result<(PathBuf, SpaceCheck), Error> {
+        let sh = &self.inner.shared;
+        let needed = sh
+            .pending
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(&id)
+            .map(|offer| offer.size)
+            .ok_or(Error::UnknownTransfer(id))?;
+        let folder = match folder {
+            Some(folder) => std::path::absolute(folder).map_err(|e| Error::io("resolving the folder", e))?,
+            None => sh.save_dir.clone(),
+        };
+        let probe = sh.free_space.clone();
+        let dir = folder.clone();
+        // The probe is a blocking call into the operating system.
+        let free = tokio::task::spawn_blocking(move || {
+            if !dir.is_dir() {
+                return Err(Error::NotAFolder(dir));
+            }
+            match probe.available(&dir) {
+                Ok(free) => Ok(Some(free)),
+                Err(e) if e.kind() == std::io::ErrorKind::Unsupported => Ok(None),
+                Err(e) => Err(Error::io(format!("checking free space in {}", dir.display()), e)),
+            }
+        })
+        .await
+        .map_err(|e| Error::io("checking free space", std::io::Error::other(e)))??;
+        Ok((folder, SpaceCheck { needed, free }))
     }
 
     /// Declines a pending Offer. Nothing is saved.
@@ -294,7 +364,7 @@ impl Device {
     }
 
     fn decide(&self, id: TransferId, decision: Decision) -> Result<(), Error> {
-        let tx = self
+        let offer = self
             .inner
             .shared
             .pending
@@ -303,7 +373,7 @@ impl Device {
             .remove(&id)
             .ok_or(Error::UnknownTransfer(id))?;
         // The Offer's task may have just ended (the Sender went away); treat it as gone.
-        tx.send(decision).map_err(|_| Error::UnknownTransfer(id))
+        offer.decide.send(decision).map_err(|_| Error::UnknownTransfer(id))
     }
 
     /// A persisted setting, if it has been set.
