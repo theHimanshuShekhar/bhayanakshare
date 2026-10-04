@@ -16,7 +16,8 @@ pub const DEVICE_ID_LEN: usize = 52;
 
 /// The permanent, shareable identifier of a Device: the iroh `EndpointId`, shown as
 /// 52-character base32.
-#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash, specta::Type)]
+#[specta(type = String)] // serialized as its base32 text
 pub struct DeviceId(EndpointId);
 
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]

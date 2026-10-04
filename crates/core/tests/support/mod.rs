@@ -74,7 +74,7 @@ impl TestDevice {
     ) -> TransferEvent {
         loop {
             for (i, event) in self.log.iter().enumerate() {
-                let EventKind::Transfer(t) = &event.kind;
+                let EventKind::Transfer(t) = &event.kind else { continue };
                 if !self.consumed[i] && pred(t) {
                     self.consumed[i] = true;
                     return t.clone();
@@ -114,9 +114,9 @@ impl TestDevice {
     pub fn history(&self, id: TransferId) -> Vec<&'static str> {
         self.log
             .iter()
-            .map(|e| {
-                let EventKind::Transfer(t) = &e.kind;
-                t
+            .filter_map(|e| match &e.kind {
+                EventKind::Transfer(t) => Some(t),
+                EventKind::Progress(_) => None,
             })
             .filter(|t| t.transfer_id == id)
             .map(|t| t.state.label())

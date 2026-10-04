@@ -21,7 +21,7 @@ use crate::{
     clock::{Clock, UnixMillis},
     db::{Db, TransferRecord},
     error::Error,
-    event::{EventKind, EventSink, EventStream, TransferEvent},
+    event::{EventKind, EventSink, EventStream, ProgressEvent, TransferEvent},
     gate::Gate,
     identity::{DeviceId, KeySource},
     names::validate_file_name,
@@ -141,6 +141,12 @@ impl Shared {
         self.announce(t, state, now);
     }
 
+    /// Announces how many bytes of the Transfer's file have been received.
+    pub fn progress(&self, t: &TransferInfo, bytes: u64) {
+        let progress = ProgressEvent { transfer_id: t.id, bytes: bytes.min(t.size), total: t.size };
+        self.events.emit(self.now(), EventKind::Progress(progress));
+    }
+
     fn announce(&self, t: &TransferInfo, state: TransferState, now: UnixMillis) {
         self.events.emit(
             now,
@@ -229,7 +235,6 @@ impl Device {
     pub fn device_id(&self) -> DeviceId {
         self.inner.shared.id
     }
-
     /// This Device's ID plus the direct addresses it is listening on.
     pub fn addr(&self) -> DeviceAddr {
         let endpoint = &self.inner.shared.endpoint;

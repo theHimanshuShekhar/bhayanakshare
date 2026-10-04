@@ -21,7 +21,7 @@ pub use clock::{Clock, ManualClock, SystemClock, UnixMillis};
 pub use db::{DbError, TransferRecord};
 pub use device::{Device, DeviceAddr, DeviceConfig, Network};
 pub use error::Error;
-pub use event::{Event, EventKind, EventStream, TransferEvent};
+pub use event::{Event, EventKind, EventStream, ProgressEvent, TransferEvent};
 pub use identity::{DEVICE_ID_LEN, DeviceId, DeviceIdError, KeySource};
 pub use names::{NameError, validate_file_name};
 pub use receiver::INCOMING_DIR;

@@ -6,7 +6,8 @@ use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 /// A random 128-bit Transfer ID, chosen by the Sender. Hex in text and JSON, raw bytes on
 /// the wire.
-#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash, specta::Type)]
+#[specta(type = String)] // serialized as hex in JSON
 pub struct TransferId([u8; 16]);
 
 impl TransferId {
@@ -62,7 +63,7 @@ impl<'de> Deserialize<'de> for TransferId {
 }
 
 /// Which side of a Transfer a Device plays.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, specta::Type)]
 #[serde(rename_all = "snake_case")]
 pub enum Role {
     Sender,
@@ -91,7 +92,7 @@ impl FromStr for Role {
 }
 
 /// Where a Transfer is in its lifecycle (spec section 4, the part the skeleton covers).
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, specta::Type)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum TransferState {
     Offered,
