@@ -1,0 +1,11 @@
+[workspace]
+resolver = "3"
+members = ["crates/core", "src-tauri"]
+# Plain `cargo test` / `cargo check` cover the core only (fast, no system libraries);
+# the Tauri shell is built with `--workspace` (see README).
+default-members = ["crates/core"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "MIT"

@@ -1,0 +1,18 @@
+[package]
+name = "bhayanakshare"
+description = "BhayanakShare desktop shell: a thin Tauri layer over bhayanakshare-core."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lib]
+name = "bhayanakshare_lib"
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+bhayanakshare-core = { path = "../crates/core" }
+serde = { version = "1", features = ["derive"] }
+tauri = { version = "2", features = [] }
+tracing = "0.1"
