@@ -1,9 +1,10 @@
 //! The Sender side of a Transfer.
 //!
 //! Dial the Receiver, say Hello, send the Offer straight away, and hash the file while the
-//! Receiver decides (the file is imported by reference, so nothing is copied). When hashing
-//! is done send `HashReady`; the Receiver then pulls the content over iroh-blobs from this
-//! Device's global store. The Transfer ends with the Receiver's `Decline` or `Completed`.
+//! Receiver decides (the file is imported by reference, so nothing is copied). Once hashing
+//! is done and the Receiver has accepted, allow that Receiver to fetch (see `gate`) and send
+//! `HashReady`; the Receiver then pulls the content over iroh-blobs from this Device's global
+//! store. The Transfer ends with the Receiver's `Decline` or `Completed`.
 
 use std::{path::PathBuf, sync::Arc};
 
@@ -70,9 +71,26 @@ async fn flow(
     // The temp tags keep the imported blobs alive for as long as the Transfer runs.
     let mut _keep_alive = Vec::new();
     let mut accepted = false;
+    let mut root = None;
     let mut hash_sent = false;
+    // Lets the Receiver fetch once it has accepted and the content is hashed. Released when
+    // the Transfer completes, and on every other way out of this function.
+    let mut grant = None;
+    let peer = to.id.endpoint_id();
 
     loop {
+        // `HashReady` is sent only once the Receiver has accepted, and only after the grant is
+        // taken. Sent earlier, a Receiver holding the hash could dial the provider the moment
+        // it says yes, before this loop has read that yes, and be turned away.
+        if accepted && !hash_sent {
+            if let Some(root) = root {
+                grant = Some(sh.gate.allow(peer, root));
+                write_frame(&mut send, &Message::HashReady { collection_hash: *root.as_bytes() })
+                    .await
+                    .map_err(fail(LOST))?;
+                hash_sent = true;
+            }
+        }
         tokio::select! {
             msg = incoming.recv() => match msg {
                 Some(Ok(Message::Accept)) if !accepted => {
@@ -84,6 +102,8 @@ async fn flow(
                     break;
                 }
                 Some(Ok(Message::Completed)) if accepted && hash_sent => {
+                    // Nothing may be fetched once the Transfer is reported finished.
+                    drop(grant.take());
                     sh.transition(info, TransferState::Completed { saved_to: None }).await;
                     break;
                 }
@@ -97,13 +117,7 @@ async fn flow(
                 import = None;
                 let (hash, tags) = done?;
                 _keep_alive = tags;
-                write_frame(
-                    &mut send,
-                    &Message::HashReady { collection_hash: *hash.as_bytes() },
-                )
-                .await
-                .map_err(fail(LOST))?;
-                hash_sent = true;
+                root = Some(hash);
             }
         }
     }
