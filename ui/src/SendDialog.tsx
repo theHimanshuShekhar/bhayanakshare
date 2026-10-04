@@ -10,9 +10,10 @@ export function SendDialog({
   onClose,
 }: {
   api: Api;
-  /** The Device ID to start with: a Contact's, or empty. */
+  /** The Device ID to start with: a tile's, or empty. */
   to: string;
-  /** The Contact's name when sending to one. */
+  /** What the tile calls the Device (a Contact's name, or a Nearby Device's name and
+   * Fingerprint); null when the ID is typed. */
   contactName: string | null;
   onClose: () => void;
 }) {

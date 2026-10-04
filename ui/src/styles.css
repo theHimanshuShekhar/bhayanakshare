@@ -49,6 +49,17 @@ code {
   font-size: 1rem;
 }
 
+/* A Nearby tile with the button that saves it as a Contact underneath. */
+.tile-group {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+}
+
+.tile-group .tile {
+  flex: 1;
+}
+
 .transfers {
   list-style: none;
   padding: 0;

@@ -12,7 +12,7 @@ use std::{
 
 use bhayanakshare_core::{
     Contact, Device, DeviceConfig, DeviceId, Event, KeySource, Network, SpaceCheck, SystemClock,
-    SystemFreeSpace, TransferId,
+    SystemFreeSpace, TransferId, Visibility,
 };
 use serde::Serialize;
 use specta::Type;
@@ -160,6 +160,20 @@ async fn set_device_name(device: State<'_, Device>, name: String) -> Result<Stri
     device.set_device_name(&name).await.map_err(|e| e.to_string())
 }
 
+/// Who can see this Device as a Nearby Device.
+#[tauri::command]
+#[specta::specta]
+async fn visibility(device: State<'_, Device>) -> Result<Visibility, String> {
+    Ok(device.visibility().await)
+}
+
+/// Changes who can see this Device as a Nearby Device; it takes effect at once.
+#[tauri::command]
+#[specta::specta]
+async fn set_visibility(device: State<'_, Device>, visibility: Visibility) -> Result<(), String> {
+    device.set_visibility(visibility).await.map_err(|e| e.to_string())
+}
+
 fn parse_id(id: &str) -> Result<DeviceId, String> {
     id.trim().parse().map_err(|e| format!("{e}"))
 }
@@ -237,6 +251,8 @@ pub fn specta_builder<R: Runtime>() -> Builder<R> {
             resend_transfer,
             device_name,
             set_device_name,
+            visibility,
+            set_visibility,
             contacts,
             add_contact,
             set_nickname,

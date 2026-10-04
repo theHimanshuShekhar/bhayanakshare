@@ -51,3 +51,5 @@ Copy the Device ID from one instance's "My ID", choose "Send to ID…" in the ot
 ## Tests
 
 Integration tests drive Devices through the Device API only. `crates/core/tests/support` starts 2 or 3 Devices in one process on localhost, with relays and address lookup off; a test hands one Device another's address (`TestDevice::addr`) and reads each Device's event stream. Every Device gets its own temp folders and a `ManualClock`. Start new integration tests from that harness.
+
+LAN discovery is its own seam, `crates/core/tests/discovery.rs`: Devices started with `TestDevice::start_discovering` use real mDNS multicast on the loopback interface (UDP port 5353, shared with anything else on the machine, so a test looks for one specific Device and never expects an exact list). Each test first probes whether multicast works here; if not it says so on stderr (`--nocapture`) and returns without testing anything. Set `BHAYANAKSHARE_REQUIRE_MULTICAST=1` to make that a failure instead. When Nearby Devices do not show up on a real network, see [`docs/firewall.md`](docs/firewall.md), which the Home screen links to.

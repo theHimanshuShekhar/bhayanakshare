@@ -22,6 +22,7 @@ use crate::{
     contacts::{Contact, KnownAddress, clean_name},
     db::{Db, TransferRecord},
     device_name,
+    discovery::{Discovery, NearbyDevice, Visibility},
     error::Error,
     event::{EventKind, EventSink, EventStream, ProgressEvent, TransferEvent},
     gate::Gate,
@@ -38,9 +39,12 @@ use crate::{
 pub enum Network {
     /// Production: n0's public relays and address lookup.
     Internet,
-    /// Tests: bind to 127.0.0.1 only, no relays, no address lookup. Other Devices are
-    /// reached only through the addresses handed to the sender.
+    /// Tests: bind to 127.0.0.1 only, no relays, no address lookup, no LAN discovery. Other
+    /// Devices are reached only through the addresses handed to the sender.
     Localhost,
+    /// LAN discovery tests: like `Localhost`, but Devices also find each other over multicast
+    /// on the loopback interface, as Devices on a real LAN do.
+    LocalhostLan,
 }
 
 pub struct DeviceConfig {
@@ -114,6 +118,8 @@ pub(crate) struct Shared {
     pub blobs: iroh_blobs::api::Store,
     /// Decides who the blobs provider serves.
     pub gate: Arc<Gate>,
+    /// Finds Nearby Devices and announces this one on the LAN.
+    pub discovery: Discovery,
     pub db: Db,
     pub clock: Arc<dyn Clock>,
     /// The folder an Offer is saved to unless the Receiver picks another.
@@ -250,6 +256,13 @@ impl Shared {
     }
 }
 
+/// The direct addresses an endpoint is listening on, falling back to what it is bound to
+/// while it has not learned any yet.
+pub(crate) fn direct_addrs(endpoint: &Endpoint) -> Vec<SocketAddr> {
+    let direct: Vec<SocketAddr> = endpoint.addr().ip_addrs().copied().collect();
+    if direct.is_empty() { endpoint.bound_sockets() } else { direct }
+}
+
 struct Inner {
     shared: Arc<Shared>,
     router: Router,
@@ -285,7 +298,7 @@ impl Device {
 
         let endpoint = match network {
             Network::Internet => Endpoint::builder(presets::N0),
-            Network::Localhost => Endpoint::builder(presets::Minimal)
+            Network::Localhost | Network::LocalhostLan => Endpoint::builder(presets::Minimal)
                 .relay_mode(RelayMode::Disabled)
                 .clear_ip_transports()
                 .bind_addr("127.0.0.1:0")
@@ -303,6 +316,7 @@ impl Device {
             endpoint: endpoint.clone(),
             blobs: blobs.clone(),
             gate: gate.clone(),
+            discovery: Discovery::new(network, &endpoint),
             db,
             clock,
             save_dir,
@@ -318,6 +332,9 @@ impl Device {
             .accept(protocol::ALPN, receiver::Handler::new(shared.clone()))
             .accept(iroh_blobs::ALPN, BlobsProtocol::new(&blobs, Some(gate.events())))
             .spawn();
+        if network != Network::Localhost {
+            shared.discovery.start(&shared).await;
+        }
 
         let inner = Inner { shared, router, store: Mutex::new(Some(store)) };
         Ok((Self { inner: Arc::new(inner) }, stream))
@@ -328,12 +345,7 @@ impl Device {
     }
     /// This Device's ID plus the direct addresses it is listening on.
     pub fn addr(&self) -> DeviceAddr {
-        let endpoint = &self.inner.shared.endpoint;
-        let mut direct: Vec<SocketAddr> = endpoint.addr().ip_addrs().copied().collect();
-        if direct.is_empty() {
-            direct = endpoint.bound_sockets();
-        }
-        DeviceAddr { id: self.device_id(), direct }
+        DeviceAddr { id: self.device_id(), direct: direct_addrs(&self.inner.shared.endpoint) }
     }
 
     /// Offers the file at `path` to the Device at `to`. Returns once the Transfer exists;
@@ -479,12 +491,38 @@ impl Device {
         self.inner.shared.device_name().await
     }
 
-    /// Renames this Device. The new name is announced from the next connection on. Returns the
-    /// name as stored (trimmed, and shortened if it was too long).
+    /// Renames this Device. The new name is announced from the next connection on, and on the
+    /// LAN straight away if the Visibility announces it. Returns the name as stored (trimmed,
+    /// and shortened if it was too long).
     pub async fn set_device_name(&self, name: &str) -> Result<String, Error> {
         let name = device_name::sanitize(name).ok_or(Error::EmptyDeviceName)?;
-        self.inner.shared.db.set_setting(device_name::SETTING, &name).await?;
+        let sh = &self.inner.shared;
+        sh.db.set_setting(device_name::SETTING, &name).await?;
+        sh.discovery.refresh(sh).await;
         Ok(name)
+    }
+
+    /// Who can see this Device as a Nearby Device. People who have its ID until changed.
+    pub async fn visibility(&self) -> Visibility {
+        Visibility::load(&self.inner.shared.db).await
+    }
+
+    /// Changes who can see this Device as a Nearby Device, and applies it straight away. It
+    /// governs discovery only: anyone with the Device ID can still send to it.
+    pub async fn set_visibility(&self, visibility: Visibility) -> Result<(), Error> {
+        let sh = &self.inner.shared;
+        if sh.cancel.is_cancelled() {
+            return Err(Error::ShuttingDown);
+        }
+        visibility.store(&sh.db).await?;
+        sh.discovery.refresh(sh).await;
+        Ok(())
+    }
+
+    /// The Devices found on the LAN right now, whether or not they are Contacts. Changes
+    /// arrive on the event stream as `Nearby` events, each holding the whole list.
+    pub fn nearby(&self) -> Vec<NearbyDevice> {
+        self.inner.shared.discovery.nearby()
     }
 
     /// Saves the Device with ID `id` as a Contact. `device_name` is the name it goes by, as far
@@ -569,6 +607,7 @@ impl Device {
         sh.cancel.cancel();
         sh.tasks.close();
         sh.tasks.wait().await;
+        sh.discovery.shutdown().await;
         if let Err(e) = self.inner.router.shutdown().await {
             tracing::warn!("network shutdown: {e}");
         }

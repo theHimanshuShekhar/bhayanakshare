@@ -63,6 +63,7 @@ export function applyEvent(transfers: Transfers, event: DeviceEvent): Transfers 
     return next;
   }
 
+  if (event.type !== "progress") return next;
   const known = transfers.byId[event.transfer_id];
   if (!known) return next;
   const elapsed = known.progressAt === null ? 0 : event.at - known.progressAt;
