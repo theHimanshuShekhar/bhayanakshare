@@ -12,7 +12,7 @@ Created in [T3 Code](https://t3.codes).
 |---|---|
 | `crates/core` | The Rust core, with no Tauri dependency: Device API, control protocol, blob stores, SQLite persistence. All integration tests live here. |
 | `src-tauri` | The Tauri 2 shell: starts a core `Device`, exposes its commands to the UI, forwards its event stream. |
-| `ui` | React + TypeScript + Vite front end (placeholders for now). |
+| `ui` | React + TypeScript + Vite front end. `ui/src/bindings.ts` is generated from the Rust types and committed; every UI string is in `ui/src/i18n.ts`. |
 
 The core's public seam is `Device`: it is created from a data folder, a save folder, a key source and an injected clock; commands go in as methods and everything that happens comes back, in order, on one `EventStream`. The shell and every test use only that.
 
@@ -24,13 +24,29 @@ Requirements: a Rust toolchain, Node 22+ and pnpm. Building the Tauri shell on L
 pnpm install
 
 pnpm typecheck   # cargo check --workspace --all-targets (core + shell), then tsc for the UI
-pnpm test        # cargo test (core: unit + integration tests), then the UI tests (vitest)
+pnpm test        # cargo test --workspace (core + shell), then the UI tests (vitest)
+pnpm bindings    # regenerate ui/src/bindings.ts after changing a command or an event type
 
 pnpm dev         # run the desktop app with hot reload
 pnpm build       # build installers
 ```
 
 Plain `cargo check` and `cargo test` at the repository root cover only the core (the workspace's `default-members`), so they need no system libraries. Add `--workspace` to include the shell.
+
+The UI's TypeScript types for commands and events are generated from the Rust types with [specta](https://github.com/specta-rs/tauri-specta). `cargo test --workspace` fails if `ui/src/bindings.ts` is stale; `pnpm bindings` rewrites it.
+
+### Running two instances on one machine
+
+Each instance needs its own data folder (it holds the Device ID) and, to tell them apart, its own save folder:
+
+```sh
+# terminal 1: the first instance, and the dev server both instances load
+BHAYANAKSHARE_DATA_DIR=/tmp/bhs-a/data BHAYANAKSHARE_SAVE_DIR=/tmp/bhs-a/save pnpm dev
+# terminal 2: a second instance, started from the debug binary terminal 1 built
+BHAYANAKSHARE_DATA_DIR=/tmp/bhs-b/data BHAYANAKSHARE_SAVE_DIR=/tmp/bhs-b/save target/debug/bhayanakshare
+```
+
+Copy the Device ID from one instance's "My ID", choose "Send to ID…" in the other, and paste it. Without the variables the data lives in the platform's app data folder and files are saved to `~/Downloads/BhayanakShare`.
 
 ## Tests
 

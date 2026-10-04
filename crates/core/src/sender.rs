@@ -101,6 +101,9 @@ async fn flow(
                     sh.transition(info, TransferState::Declined).await;
                     break;
                 }
+                Some(Ok(Message::Progress { bytes })) if accepted && hash_sent => {
+                    sh.progress(info, bytes);
+                }
                 Some(Ok(Message::Completed)) if accepted && hash_sent => {
                     // Nothing may be fetched once the Transfer is reported finished.
                     drop(grant.take());

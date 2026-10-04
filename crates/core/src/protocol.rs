@@ -35,6 +35,8 @@ pub enum Message {
     HashReady { collection_hash: [u8; 32] },
     /// Receiver to Sender, after the file is verified, in the save folder and fsynced.
     Completed,
+    /// Receiver to Sender, while fetching: bytes received so far. For display only.
+    Progress { bytes: u64 },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -145,6 +147,7 @@ mod tests {
             Message::Decline,
             Message::HashReady { collection_hash: [3; 32] },
             Message::Completed,
+            Message::Progress { bytes: 1 << 33 },
         ]
     }
 
@@ -164,7 +167,7 @@ mod tests {
             .iter()
             .map(|m| postcard::to_stdvec(m).unwrap()[0])
             .collect();
-        assert_eq!(tags, [0, 1, 2, 3, 4, 5]);
+        assert_eq!(tags, [0, 1, 2, 3, 4, 5, 6]);
     }
 
     #[tokio::test]

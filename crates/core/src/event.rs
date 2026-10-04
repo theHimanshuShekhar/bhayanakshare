@@ -11,7 +11,7 @@ use crate::{
     transfer::{Role, TransferId, TransferState},
 };
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, specta::Type)]
 pub struct Event {
     /// Position in the stream, counting from 0 with no gaps.
     pub seq: u64,
@@ -21,14 +21,28 @@ pub struct Event {
     pub kind: EventKind,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, specta::Type)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum EventKind {
     /// A Transfer was created or moved to a new state, on either side.
     Transfer(TransferEvent),
+    /// How much of a Transfer's content a Receiver has downloaded so far.
+    Progress(ProgressEvent),
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+/// Download progress of an accepted Transfer, reported by its Receiver while it is
+/// Transferring. The first report and the last (`bytes == total`) are always sent; the ones
+/// between are spaced out by the Device's clock.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, specta::Type)]
+pub struct ProgressEvent {
+    pub transfer_id: TransferId,
+    /// Bytes of the file received so far.
+    pub bytes: u64,
+    /// The file's size, as offered.
+    pub total: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, specta::Type)]
 pub struct TransferEvent {
     pub transfer_id: TransferId,
     /// This Device's role in the Transfer.

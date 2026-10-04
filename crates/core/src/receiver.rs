@@ -16,17 +16,22 @@ use std::{
 
 use iroh::{
     EndpointAddr,
-    endpoint::Connection,
+    endpoint::{Connection, SendStream},
     protocol::{AcceptError, ProtocolHandler},
 };
 use iroh_blobs::{
     Hash, HashAndFormat,
-    api::blobs::{ExportMode, ExportOptions},
+    api::{
+        blobs::{ExportMode, ExportOptions},
+        remote::GetProgressItem,
+    },
     format::collection::Collection,
 };
+use n0_future::StreamExt;
 use tokio::sync::oneshot;
 
 use crate::{
+    clock::UnixMillis,
     device::{Decision, Shared, TransferInfo},
     fsmove::rename_no_replace,
     identity::DeviceId,
@@ -43,6 +48,9 @@ pub const INCOMING_DIR: &str = ".bhayanakshare-incoming";
 /// How long to wait for the Sender to close the connection after our last frame, so the
 /// frame is not cut off by us hanging up first.
 const CLOSE_GRACE: Duration = Duration::from_secs(5);
+
+/// The least time, by the Device's clock, between two progress reports while fetching.
+const PROGRESS_INTERVAL_MS: UnixMillis = 100;
 
 const BAD_OFFER: &str = "The other Device sent an invalid Offer.";
 const CANT_FETCH: &str = "Could not download the file from the sending Device.";
@@ -173,7 +181,7 @@ async fn flow(
         }
     };
 
-    match fetch_and_save(sh, peer_endpoint, &store, &info, root, &dir).await {
+    match fetch_and_save(sh, &mut send, peer_endpoint, &store, &info, root, &dir).await {
         Ok(saved) => {
             let sent = write_frame(&mut send, &Message::Completed).await;
             let _ = send.finish();
@@ -195,10 +203,18 @@ async fn flow(
     }
 }
 
+/// Announces how much has arrived on our own event stream and tells the Sender, whose
+/// display it feeds. The Sender being unreachable is no reason to stop.
+async fn report_progress(sh: &Shared, send: &mut SendStream, info: &TransferInfo, bytes: u64) {
+    sh.progress(info, bytes);
+    let _ = write_frame(send, &Message::Progress { bytes: bytes.min(info.size) }).await;
+}
+
 /// Fetches the Transfer's content into `store`, checks it is what was offered, and moves it
 /// into the save folder. Returns where it ended up.
 async fn fetch_and_save(
     sh: &Arc<Shared>,
+    send: &mut SendStream,
     sender: iroh::EndpointId,
     store: &store::Store,
     info: &TransferInfo,
@@ -214,11 +230,27 @@ async fn fetch_and_save(
         .await
         .map_err(fail(CANT_FETCH))?;
     // iroh-blobs checks every chunk against its BLAKE3 hash as it arrives.
-    blobs.remote().fetch(conn.clone(), content).await.map_err(fail(CANT_FETCH))?;
+    let mut fetch = Box::pin(blobs.remote().fetch(conn.clone(), content).stream());
+    let mut last_report: Option<UnixMillis> = None;
+    while let Some(item) = fetch.next().await {
+        match item {
+            GetProgressItem::Progress(bytes) => {
+                let now = sh.now();
+                if last_report.is_none_or(|at| now - at >= PROGRESS_INTERVAL_MS) {
+                    last_report = Some(now);
+                    report_progress(sh, send, info, bytes).await;
+                }
+            }
+            GetProgressItem::Done(_) => break,
+            GetProgressItem::Error(e) => return Err(Failure::with(CANT_FETCH, e)),
+        }
+    }
     conn.close(0u32.into(), b"done");
     if !blobs.remote().local(content).await.map_err(fail(CANT_FETCH))?.is_complete() {
         return Err(Failure::with(CANT_FETCH, "fetch ended incomplete"));
     }
+    // The count above includes the Collection's own few bytes, so only now is it exact.
+    report_progress(sh, send, info, info.size).await;
 
     // The Collection must be exactly the one file that was offered.
     let collection = Collection::load(root, blobs).await.map_err(fail(WRONG_FILE))?;
