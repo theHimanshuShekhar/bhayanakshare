@@ -1,0 +1,8 @@
+/target
+node_modules
+/ui/dist
+/src-tauri/gen
+*.log
+.DS_Store
+# Agent worktrees live inside the main checkout
+/.claude/worktrees/

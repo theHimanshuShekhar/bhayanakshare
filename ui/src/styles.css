@@ -1,0 +1,34 @@
+:root {
+  color-scheme: light dark;
+  font-family: system-ui, sans-serif;
+}
+
+body {
+  margin: 0;
+}
+
+.app {
+  padding: 1rem 1.5rem;
+}
+
+header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+}
+
+nav {
+  display: flex;
+  gap: 0.5rem;
+}
+
+/* The current tab is marked by weight and an underline, not by colour alone. */
+nav button[aria-current="page"] {
+  font-weight: 700;
+  text-decoration: underline;
+}
+
+code {
+  overflow-wrap: anywhere;
+}
