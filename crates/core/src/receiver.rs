@@ -10,7 +10,7 @@ use std::{
     collections::hash_map::Entry,
     io,
     path::{Path, PathBuf},
-    sync::{Arc, Mutex},
+    sync::Arc,
     time::Duration,
 };
 
@@ -28,6 +28,7 @@ use tokio::sync::oneshot;
 
 use crate::{
     device::{Decision, Shared, TransferInfo},
+    fsmove::rename_no_replace,
     identity::DeviceId,
     names::{numbered, validate_file_name},
     protocol::{self, Message, spawn_reader, write_frame},
@@ -255,25 +256,23 @@ async fn fetch_and_save(
     Ok(saved.to_string_lossy().into_owned())
 }
 
-/// Serialises the check-then-rename below across the process, so two Transfers of the same
-/// name cannot both pick the same free spot.
-static SAVE_LOCK: Mutex<()> = Mutex::new(());
-
-/// Makes the staged file durable, renames it into `save_dir` under a name that is not taken
-/// (`a.txt`, `a (1).txt`, ...; an existing file is never replaced), and fsyncs the folder so
-/// the rename survives a power cut.
+/// Makes the staged file durable, moves it into `save_dir` under a name that is not taken
+/// (`a.txt`, `a (1).txt`, ...), and fsyncs the folder so the rename survives a power cut.
+/// The move fails rather than replaces, so a file that appears at the chosen name at any
+/// moment, even from another program, is never overwritten: the next name is tried.
 fn move_into_save_folder(staged: &Path, save_dir: &Path, name: &str) -> io::Result<PathBuf> {
     std::fs::OpenOptions::new().write(true).open(staged)?.sync_all()?;
-    let _lock = SAVE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     for n in 0u32.. {
         let candidate = if n == 0 { name.to_owned() } else { numbered(name, n) };
         let dest = save_dir.join(candidate);
-        if dest.symlink_metadata().is_ok() {
-            continue;
+        match rename_no_replace(staged, &dest) {
+            Ok(()) => {
+                sync_dir(save_dir)?;
+                return Ok(dest);
+            }
+            Err(e) if e.kind() == io::ErrorKind::AlreadyExists => continue,
+            Err(e) => return Err(e),
         }
-        std::fs::rename(staged, &dest)?;
-        sync_dir(save_dir)?;
-        return Ok(dest);
     }
     unreachable!("the loop above only ends by returning")
 }
