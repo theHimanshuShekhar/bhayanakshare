@@ -53,13 +53,21 @@ pub enum Message {
 pub struct Hello {
     pub protocol_version: u32,
     pub app_version: String,
+    /// The sender's Device Name; empty if it has none to show. Untrusted text.
+    pub device_name: String,
 }
 
 impl Hello {
+    /// A Hello for this build with no Device Name, as a hand-written peer sends it.
     pub fn current() -> Self {
+        Self::named(String::new())
+    }
+
+    pub fn named(device_name: String) -> Self {
         Self {
             protocol_version: PROTOCOL_VERSION,
             app_version: env!("CARGO_PKG_VERSION").to_owned(),
+            device_name,
         }
     }
 }
@@ -151,7 +159,11 @@ mod tests {
 
     fn sample_messages() -> Vec<Message> {
         vec![
-            Message::Hello(Hello { protocol_version: 1, app_version: "0.1.0".into() }),
+            Message::Hello(Hello {
+                protocol_version: 1,
+                app_version: "0.1.0".into(),
+                device_name: "Mum's laptop".into(),
+            }),
             Message::Offer(Offer { transfer_id: [9; 16], name: "photo.jpg".into(), size: 1 << 40 }),
             Message::Accept,
             Message::Decline,

@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
-import type { Api, SpaceCheck } from "./api";
+import type { Api, Contact, SpaceCheck } from "./api";
+import { contactName, findContact } from "./contacts";
 import { t } from "./i18n";
 import { fingerprint, formatCountdown, formatSize, type TransferView } from "./transfers";
 
@@ -19,10 +20,12 @@ const reasonOf = (e: unknown) => (e instanceof Error ? e.message : String(e));
 export function OfferSheet({
   api,
   offer,
+  contacts,
   saveFolder,
 }: {
   api: Api;
   offer: TransferView;
+  contacts: Contact[];
   saveFolder: string | null;
 }) {
   const [error, setError] = useState<string | null>(null);
@@ -32,6 +35,7 @@ export function OfferSheet({
   const [space, setSpace] = useState<SpaceCheck | null>(null);
   const [folderError, setFolderError] = useState<string | null>(null);
   const heading = useRef<HTMLHeadingElement>(null);
+  const contact = findContact(contacts, offer.peer);
 
   // Each new Offer starts with its heading focused, so a screen reader reads the sheet.
   useEffect(() => {
@@ -75,6 +79,20 @@ export function OfferSheet({
         </h2>
         <dl>
           <dt>{t("offer.from")}</dt>
+          <dd>
+            {contact ? (
+              <>
+                {contactName(contact) ?? offer.peerName ?? fingerprint(offer.peer)}{" "}
+                <span className="badge">{t("contacts.badge")}</span>
+              </>
+            ) : (
+              <>
+                {offer.peerName !== null && <>{offer.peerName} · </>}
+                {t("offer.notContact")}
+              </>
+            )}
+          </dd>
+          <dt>{t("offer.fingerprint")}</dt>
           <dd>{fingerprint(offer.peer)}</dd>
           <dt>{t("offer.file")}</dt>
           <dd>{offer.name}</dd>

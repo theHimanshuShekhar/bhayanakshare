@@ -206,3 +206,41 @@ fn cancelling_goes_through_the_commands_and_the_other_ui_hears_who_cancelled() {
         tauri::async_runtime::block_on(shell.device().shutdown());
     }
 }
+
+#[test]
+fn contacts_are_managed_through_commands() {
+    let alice = start_shell();
+    let bob = start_shell();
+    let bob_id = bob.invoke("my_id", json!({})).unwrap()["id"].as_str().unwrap().to_owned();
+
+    assert_eq!(alice.invoke("contacts", json!({})).unwrap(), json!([]));
+    let added = alice
+        .invoke("add_contact", json!({ "id": format!(" {bob_id} "), "deviceName": "Bob's laptop" }))
+        .unwrap();
+    assert_eq!(added["id"], bob_id);
+    assert_eq!(added["device_name"], "Bob's laptop");
+    assert_eq!(added["nickname"], Value::Null);
+    assert_eq!(added["auto_accept"], false);
+    assert_eq!(added["last_known_address"], json!({ "relay_url": null, "direct": [] }));
+
+    let named = alice.invoke("set_nickname", json!({ "id": bob_id, "nickname": "Bob" })).unwrap();
+    assert_eq!(named["nickname"], "Bob");
+    let trusted = alice.invoke("set_auto_accept", json!({ "id": bob_id, "on": true })).unwrap();
+    assert_eq!(trusted["auto_accept"], true);
+    assert_eq!(alice.invoke("contacts", json!({})).unwrap(), json!([trusted]));
+
+    // Bad input is refused with a sentence, and nothing changes.
+    let bad = alice.invoke("add_contact", json!({ "id": "not an id", "deviceName": null }));
+    assert!(bad.unwrap_err().as_str().unwrap().contains("52 characters"));
+    let twice = alice.invoke("add_contact", json!({ "id": bob_id, "deviceName": null }));
+    assert!(twice.unwrap_err().as_str().unwrap().contains("already a Contact"));
+
+    alice.invoke("remove_contact", json!({ "id": bob_id })).unwrap();
+    assert_eq!(alice.invoke("contacts", json!({})).unwrap(), json!([]));
+    let gone = alice.invoke("remove_contact", json!({ "id": bob_id }));
+    assert!(gone.unwrap_err().as_str().unwrap().contains("not a Contact"));
+
+    for shell in [&alice, &bob] {
+        tauri::async_runtime::block_on(shell.device().shutdown());
+    }
+}

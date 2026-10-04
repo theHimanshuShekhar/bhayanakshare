@@ -7,13 +7,14 @@ import { revealItemInDir } from "@tauri-apps/plugin-opener";
 import {
   commands,
   events,
+  type Contact,
   type DeviceEvent,
   type MyId,
   type SpaceCheck,
   type TransferId,
 } from "./bindings";
 
-export type { DeviceEvent, MyId, SpaceCheck, TransferId };
+export type { Contact, DeviceEvent, MyId, SpaceCheck, TransferId };
 
 export interface Api {
   myId(): Promise<MyId>;
@@ -30,6 +31,15 @@ export interface Api {
   cancelTransfer(id: TransferId): Promise<unknown>;
   /** Sends an expired Offer again; resolves to the new Transfer ID. */
   resendTransfer(id: TransferId): Promise<string>;
+  /** Every Contact, in the order they were added. */
+  contacts(): Promise<Contact[]>;
+  /** Saves a Device as a Contact; `deviceName` is the name it goes by, if known. */
+  addContact(id: string, deviceName: string | null): Promise<Contact>;
+  /** Sets the Nickname; null or empty goes back to the Device Name. */
+  setNickname(id: string, nickname: string | null): Promise<Contact>;
+  setAutoAccept(id: string, on: boolean): Promise<Contact>;
+  /** Forgets a Contact; its Transfer records stay. */
+  removeContact(id: string): Promise<unknown>;
   /** Asks the user for a file; null if they cancel. */
   pickFile(): Promise<string | null>;
   /** Asks the user for a folder; null if they cancel. */
@@ -69,6 +79,11 @@ export const tauriApi: Api = {
   declineOffer: commands.declineOffer,
   cancelTransfer: commands.cancelTransfer,
   resendTransfer: commands.resendTransfer,
+  contacts: commands.contacts,
+  addContact: commands.addContact,
+  setNickname: commands.setNickname,
+  setAutoAccept: commands.setAutoAccept,
+  removeContact: commands.removeContact,
   pickFile: async () => {
     const picked = await open({ multiple: false, directory: false });
     return typeof picked === "string" ? picked : null;

@@ -113,10 +113,11 @@ async fn flow(
     let peer_endpoint = conn.remote_id();
     let (mut send, recv) = conn.accept_bi().await.map_err(fail(LOST))?;
     let mut incoming = spawn_reader(recv);
-    write_frame(&mut send, &Message::Hello(protocol::Hello::current()))
+    write_frame(&mut send, &Message::Hello(protocol::Hello::named(sh.device_name().await)))
         .await
         .map_err(fail(LOST))?;
-    expect_hello(&mut incoming).await?;
+    let peer_name = expect_hello(&mut incoming).await?;
+    sh.remember_peer(DeviceId::from_endpoint_id(peer_endpoint), conn, peer_name.clone()).await;
 
     let offer = match incoming.recv().await {
         Some(Ok(Message::Offer(offer))) => offer,
@@ -129,26 +130,36 @@ async fn flow(
         id: TransferId::from_bytes(offer.transfer_id),
         role: Role::Receiver,
         peer: DeviceId::from_endpoint_id(peer_endpoint),
+        peer_name,
         name: offer.name,
         size: offer.size,
         expires_at: sh.now() + OFFER_TTL_MS,
     };
 
+    let (decide, mut decision) = oneshot::channel();
+    let auto = auto_accept_folder(sh, &info).await;
     // Register for a decision before announcing, so a command sent the moment the event
     // is seen finds it. The same lock settles whether this Sender already has too many
     // Offers waiting.
-    let (decide, mut decision) = oneshot::channel();
-    let busy = {
-        let mut pending = sh.pending.lock().unwrap_or_else(|e| e.into_inner());
-        let waiting = pending.values().filter(|p| p.peer == info.peer).count();
-        if waiting >= MAX_PENDING_OFFERS {
-            true
-        } else {
-            match pending.entry(info.id) {
-                Entry::Vacant(slot) => slot.insert(PendingOffer { peer: info.peer, size: info.size, decide }),
-                Entry::Occupied(_) => return Err(Failure::with(BAD_OFFER, "duplicate Transfer ID")),
-            };
+    let busy = match &auto {
+        // A trusted Contact whose Offer passed the checks: nobody is asked, so it neither waits
+        // for an answer nor counts against the Sender's pending Offers.
+        Some(folder) => {
+            let _ = decide.send(Decision::Accept(folder.clone()));
             false
+        }
+        None => {
+            let mut pending = sh.pending.lock().unwrap_or_else(|e| e.into_inner());
+            let waiting = pending.values().filter(|p| p.peer == info.peer).count();
+            if waiting >= MAX_PENDING_OFFERS {
+                true
+            } else {
+                match pending.entry(info.id) {
+                    Entry::Vacant(slot) => slot.insert(PendingOffer { peer: info.peer, size: info.size, decide }),
+                    Entry::Occupied(_) => return Err(Failure::with(BAD_OFFER, "duplicate Transfer ID")),
+                };
+                false
+            }
         }
     };
     if busy {
@@ -159,7 +170,9 @@ async fn flow(
         let _ = tokio::time::timeout(CLOSE_GRACE, conn.closed()).await;
         return Ok(());
     }
-    if let Err(e) = sh.begin(&info, TransferState::Offered).await {
+    // An auto-accepted Transfer starts out Accepted, so the Offer sheet never appears.
+    let first = if auto.is_some() { TransferState::Accepted } else { TransferState::Offered };
+    if let Err(e) = sh.begin(&info, first).await {
         sh.pending.lock().unwrap_or_else(|e| e.into_inner()).remove(&info.id);
         return Err(Failure::with("Could not record the Offer.", e));
     }
@@ -210,7 +223,9 @@ async fn flow(
     };
 
     write_frame(&mut send, &Message::Accept).await.map_err(fail(LOST))?;
-    sh.transition(&info, TransferState::Accepted).await;
+    if auto.is_none() {
+        sh.transition(&info, TransferState::Accepted).await;
+    }
     while root.is_none() {
         tokio::select! {
             biased;
@@ -275,6 +290,28 @@ async fn flow(
         Err(failure) => {
             spawn_cleanup(sh, store, dir);
             Err(failure)
+        }
+    }
+}
+
+/// The save folder to accept `info` into without asking, if its Sender is a Contact with
+/// Auto-accept on and the Offer passes the Receiver's checks. Any failed check (or a failure to
+/// run one) returns `None`, and the Offer is shown as a normal prompt with its warning.
+async fn auto_accept_folder(sh: &Shared, info: &TransferInfo) -> Option<PathBuf> {
+    match sh.db.contact(info.peer).await {
+        Ok(Some(contact)) if contact.auto_accept => {}
+        Ok(_) => return None,
+        Err(e) => {
+            tracing::warn!("could not look up the Sender as a Contact: {e}");
+            return None;
+        }
+    }
+    match sh.space_check(info.size, &sh.save_dir).await {
+        Ok(check) if check.fits() => Some(sh.save_dir.clone()),
+        Ok(_) => None,
+        Err(e) => {
+            tracing::warn!("Auto-accept held back, the save folder cannot be checked: {e}");
+            None
         }
     }
 }

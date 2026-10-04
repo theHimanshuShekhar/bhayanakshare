@@ -8,6 +8,8 @@ export interface TransferView {
   role: Role;
   /** The other Device's ID. */
   peer: string;
+  /** What the other Device calls itself, as it announced; null until known. Untrusted text. */
+  peerName: string | null;
   name: string;
   size: number;
   state: TransferState;
@@ -42,11 +44,12 @@ export function applyEvent(transfers: Transfers, event: DeviceEvent): Transfers 
   if (event.type === "transfer") {
     const known = transfers.byId[event.transfer_id];
     const view: TransferView = known
-      ? { ...known, state: event.state }
+      ? { ...known, state: event.state, peerName: event.peer_name ?? known.peerName }
       : {
           id: event.transfer_id,
           role: event.role,
           peer: event.peer,
+          peerName: event.peer_name,
           name: event.name,
           size: event.size,
           state: event.state,

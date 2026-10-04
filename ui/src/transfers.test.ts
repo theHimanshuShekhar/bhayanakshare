@@ -25,6 +25,7 @@ function transfer(seq: number, state: TransferState, extra: Partial<{ id: string
     transfer_id: extra.id ?? ID,
     role: extra.role ?? "receiver",
     peer: PEER,
+    peer_name: null,
     name: "photo.jpg",
     size: 1000,
     expires_at: 601_000,
@@ -132,7 +133,7 @@ describe("formatting", () => {
   });
 
   it("counts whole percent, and an empty file as complete", () => {
-    const base = { id: ID, role: "receiver", peer: PEER, name: "x", state: { kind: "transferring" }, expiresAt: 0, rate: null, progressAt: null } as const;
+    const base = { id: ID, role: "receiver", peer: PEER, peerName: null, name: "x", state: { kind: "transferring" }, expiresAt: 0, rate: null, progressAt: null } as const;
     expect(percent({ ...base, size: 1000, bytes: 999 })).toBe(99);
     expect(percent({ ...base, size: 1000, bytes: 1000 })).toBe(100);
     expect(percent({ ...base, size: 0, bytes: 0 })).toBe(100);

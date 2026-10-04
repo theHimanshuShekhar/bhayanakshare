@@ -49,6 +49,10 @@ pub struct TransferEvent {
     pub role: Role,
     /// The other Device.
     pub peer: DeviceId,
+    /// What the other Device calls itself, as it announced when connecting; absent until
+    /// known (a Sender learns it only once it has reached the Receiver). Untrusted text: show
+    /// it next to the Fingerprint.
+    pub peer_name: Option<String>,
     pub name: String,
     pub size: u64,
     /// When the Offer lapses if nobody answers it, by this Device's clock. The same on every
@@ -104,6 +108,7 @@ mod tests {
             transfer_id: TransferId::from_bytes([1; 16]),
             role: Role::Sender,
             peer: DeviceId::from_endpoint_id(iroh::SecretKey::generate().public()),
+            peer_name: None,
             name: format!("f{i}"),
             size: i,
             expires_at: 0,
