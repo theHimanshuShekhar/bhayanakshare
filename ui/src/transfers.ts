@@ -221,7 +221,7 @@ export function listItems(transfers: Transfers): ListItem[] {
 }
 
 /** "2 of 3 delivered, 1 declined": how a Batch stands, counting its Receivers by outcome. */
-export function batchStatus(batch: BatchView): string {
+export function batchStatus(batch: { members: Pick<TransferView, "state">[] }): string {
   const count = (matches: (state: TransferState) => boolean) =>
     batch.members.filter((m) => matches(m.state)).length;
   const kinds = (...wanted: TransferState["kind"][]) => count((s) => wanted.includes(s.kind));
@@ -237,7 +237,8 @@ export function batchStatus(batch: BatchView): string {
   return parts.join(", ");
 }
 
-function isOver(state: TransferState): boolean {
+/** Whether a Transfer in this state has ended, one way or another. */
+export function isOver(state: TransferState): boolean {
   return ["declined", "completed", "failed", "expired", "cancelled"].includes(state.kind);
 }
 
@@ -255,7 +256,7 @@ export function percent(view: TransferView): number {
 }
 
 /** What a Transfer holds, for a sentence: "photo.jpg", or "photo.jpg and 2 more". */
-export function transferName(view: TransferView): string {
+export function transferName(view: Pick<TransferView, "kind" | "name" | "items">): string {
   if (view.kind === "text") return t("transfer.textName");
   return view.items.length > 1
     ? t("transfer.nameMore", { name: view.name, count: view.items.length - 1 })

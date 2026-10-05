@@ -19,7 +19,7 @@ import {
 } from "./transfers";
 
 /** Sentence for a Transfer's current state, e.g. "Waiting for Mum…" (or a Fingerprint). */
-function statusText(x: TransferView, peer: string): string {
+export function statusText(x: Pick<TransferView, "role" | "state">, peer: string, preparing = false): string {
   const side = x.role === "sender" ? "sending" : "receiving";
   const params = {
     peer,
@@ -28,11 +28,11 @@ function statusText(x: TransferView, peer: string): string {
   if (x.state.kind === "cancelled") {
     return t(x.state.by === x.role ? "transfer.cancelledByYou" : "transfer.cancelledByPeer", params);
   }
-  const state = isPreparing(x) ? "preparing" : x.state.kind;
+  const state = preparing ? "preparing" : x.state.kind;
   return t(`transfer.${side}.${state}` as MessageKey, params);
 }
 
-function errorText(e: unknown): string {
+export function errorText(e: unknown): string {
   return e instanceof Error ? e.message : String(e);
 }
 
@@ -107,15 +107,15 @@ function BatchRow({ api, contacts, batch }: { api: Api; contacts: Contact[]; bat
   );
 }
 
-/** A text that arrived: shown as plain text, with a button to copy it. */
-function ReceivedText({ api, text, peer }: { api: Api; text: string; peer: string }) {
+/** A text, shown as plain text, with a button to copy it. `label` says which text, for the button. */
+export function CopyableText({ api, text, label }: { api: Api; text: string; label: string }) {
   const [copy, setCopy] = useState<"idle" | "copied" | "failed">("idle");
   return (
     <>
       <PlainText text={text} />
       <button
         type="button"
-        aria-label={t("transfer.copyLabel", { peer })}
+        aria-label={label}
         onClick={() =>
           api.copyText(text).then(
             () => setCopy("copied"),
@@ -159,7 +159,7 @@ function TransferRow({
     <li>
       <strong>{title}</strong>
       {/* Announced when the state changes; the progress below is not, so it stays quiet. */}
-      <p aria-live="polite">{statusText(x, peer)}</p>
+      <p aria-live="polite">{statusText(x, peer, isPreparing(x))}</p>
       {x.role === "sender" && x.skippedLinks > 0 && (
         <p>
           {x.skippedLinks === 1
@@ -196,7 +196,7 @@ function TransferRow({
       )}
       {showFailed && <p role="alert">{t("transfer.showInFolderFailed")}</p>}
       {x.role === "receiver" && x.kind === "text" && x.state.kind === "completed" && (
-        <ReceivedText api={api} text={x.text ?? ""} peer={peer} />
+        <CopyableText api={api} text={x.text ?? ""} label={t("transfer.copyLabel", { peer })} />
       )}
       {canCancel(x) && (
         <button

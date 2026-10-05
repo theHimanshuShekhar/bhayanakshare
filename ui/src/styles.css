@@ -110,6 +110,19 @@ progress {
   vertical-align: middle;
 }
 
+/* The History filters: each is a label over its control, side by side while there is room. */
+.filters {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+  margin-block: 0.5rem;
+}
+
+.filters label {
+  display: block;
+  margin-bottom: 0.25rem;
+}
+
 /* Sheets sit over the page; the border keeps them apart without relying on colour. */
 .overlay {
   position: fixed;

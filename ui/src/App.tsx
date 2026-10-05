@@ -1,7 +1,9 @@
 import { useCallback, useEffect, useReducer, useState } from "react";
 import { AddContactDialog } from "./AddContactDialog";
 import { tauriApi, type Api, type Contact, type TransferId } from "./api";
+import { ClearHistoryDialog } from "./ClearHistoryDialog";
 import { ContactsScreen } from "./ContactsScreen";
+import { HistoryScreen } from "./HistoryScreen";
 import { MyDeviceId } from "./MyDeviceId";
 import { OfferSheet } from "./OfferSheet";
 import { QuitDialog } from "./QuitDialog";
@@ -40,6 +42,11 @@ export function App({ api = tauriApi }: AppProps) {
   // A Nearby Device being saved as a Contact: its ID is already known.
   const [saving, setSaving] = useState<{ id: string; name: string | null } | null>(null);
   const [removing, setRemoving] = useState<Contact | null>(null);
+  // History is narrowed to this Device (from a Contact's History link, or the filter).
+  const [historyDevice, setHistoryDevice] = useState<string | null>(null);
+  const [clearing, setClearing] = useState(false);
+  // Counts how often History was cleared, so the History tab reads it again.
+  const [cleared, setCleared] = useState(0);
   const [transfers, dispatch] = useReducer(applyEvent, noTransfers);
   const [nearby, dispatchNearby] = useReducer(applyNearby, []);
   // Set once Home has waited long enough for a Nearby Device to show up.
@@ -59,6 +66,7 @@ export function App({ api = tauriApi }: AppProps) {
     adding ||
     saving !== null ||
     removing !== null ||
+    clearing ||
     offer !== undefined ||
     quit !== null;
 
@@ -146,7 +154,7 @@ export function App({ api = tauriApi }: AppProps) {
         </nav>
       </header>
       <main inert={inert}>
-        {tab !== "contacts" && tab !== "settings" && <p>{t(current.placeholder)}</p>}
+        {tab === "home" && <p>{t(current.placeholder)}</p>}
         {tab === "home" && (
           <>
             <MyDeviceId api={api} />
@@ -258,6 +266,24 @@ export function App({ api = tauriApi }: AppProps) {
             onChanged={loadContacts}
             onAdd={() => setAdding(true)}
             onRemove={setRemoving}
+            onShowHistory={(c) => {
+              setHistoryDevice(c.id);
+              setTab("history");
+            }}
+          />
+        )}
+        {tab === "history" && (
+          <HistoryScreen
+            api={api}
+            contacts={contacts}
+            device={historyDevice}
+            onDevice={setHistoryDevice}
+            // History lists what is going on too: read it again as Transfers change state.
+            stamp={Object.values(transfers.byId)
+              .map((x) => `${x.id}:${x.state.kind}`)
+              .join()}
+            version={cleared}
+            onClear={() => setClearing(true)}
           />
         )}
         {tab === "settings" && <SettingsScreen api={api} />}
@@ -290,6 +316,13 @@ export function App({ api = tauriApi }: AppProps) {
           contact={removing}
           onRemoved={loadContacts}
           onClose={() => setRemoving(null)}
+        />
+      )}
+      {clearing && (
+        <ClearHistoryDialog
+          api={api}
+          onCleared={() => setCleared((n) => n + 1)}
+          onClose={() => setClearing(false)}
         />
       )}
       {quit && (

@@ -13,6 +13,7 @@ export function ContactsScreen({
   onChanged,
   onAdd,
   onRemove,
+  onShowHistory,
 }: {
   api: Api;
   contacts: Contact[];
@@ -20,6 +21,8 @@ export function ContactsScreen({
   onChanged: () => void;
   onAdd: () => void;
   onRemove: (contact: Contact) => void;
+  /** Open the Transfer History with a Contact. */
+  onShowHistory: (contact: Contact) => void;
 }) {
   return (
     <section aria-labelledby="contacts-heading">
@@ -34,7 +37,14 @@ export function ContactsScreen({
       ) : (
         <ul className="contacts">
           {sortedContacts(contacts).map((c) => (
-            <ContactRow key={c.id} api={api} contact={c} onChanged={onChanged} onRemove={onRemove} />
+            <ContactRow
+              key={c.id}
+              api={api}
+              contact={c}
+              onChanged={onChanged}
+              onRemove={onRemove}
+              onShowHistory={onShowHistory}
+            />
           ))}
         </ul>
       )}
@@ -47,11 +57,13 @@ function ContactRow({
   contact,
   onChanged,
   onRemove,
+  onShowHistory,
 }: {
   api: Api;
   contact: Contact;
   onChanged: () => void;
   onRemove: (contact: Contact) => void;
+  onShowHistory: (contact: Contact) => void;
 }) {
   const print = fingerprint(contact.id);
   const name = contactName(contact) ?? print;
@@ -118,6 +130,9 @@ function ContactRow({
       </p>
       {error !== null && <p role="alert">{error}</p>}
       <p>
+        <button type="button" aria-label={t("contacts.historyLabel", { name })} onClick={() => onShowHistory(contact)}>
+          {t("contacts.history")}
+        </button>{" "}
         <button type="button" aria-label={t("contacts.removeLabel", { name })} onClick={() => onRemove(contact)}>
           {t("contacts.remove")}
         </button>
