@@ -224,11 +224,29 @@ impl TestDevice {
             .iter()
             .filter_map(|e| match &e.kind {
                 EventKind::Transfer(t) => Some(t),
-                EventKind::Progress(_) | EventKind::Nearby(_) => None,
+                EventKind::Progress(_) | EventKind::Preparing(_) | EventKind::Nearby(_) => None,
             })
             .filter(|t| t.transfer_id == id)
             .map(|t| t.state.label())
             .collect()
+    }
+
+    /// Whether the Transfer is Preparing, as each of its reports on this Device said, in order.
+    pub fn preparing(&self, id: TransferId) -> Vec<bool> {
+        self.log
+            .iter()
+            .filter_map(|e| match &e.kind {
+                EventKind::Preparing(p) if p.transfer_id == id => Some(p.preparing),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// Waits until this Device has reported the Transfer as Preparing (or no longer).
+    pub async fn wait_preparing(&mut self, id: TransferId, preparing: bool) {
+        while !self.preparing(id).contains(&preparing) {
+            self.read_next(&format!("{id} preparing: {preparing}")).await;
+        }
     }
 
     /// Keeps reading events for `real_time`, so a test can then assert that something did

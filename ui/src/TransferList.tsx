@@ -10,6 +10,7 @@ import {
   canResend,
   canRetry,
   formatSize,
+  isPreparing,
   percent,
   transferName,
   type BatchView,
@@ -27,7 +28,8 @@ function statusText(x: TransferView, peer: string): string {
   if (x.state.kind === "cancelled") {
     return t(x.state.by === x.role ? "transfer.cancelledByYou" : "transfer.cancelledByPeer", params);
   }
-  return t(`transfer.${side}.${x.state.kind}` as MessageKey, params);
+  const state = isPreparing(x) ? "preparing" : x.state.kind;
+  return t(`transfer.${side}.${state}` as MessageKey, params);
 }
 
 function errorText(e: unknown): string {

@@ -10,6 +10,7 @@ import {
   fingerprint,
   formatCountdown,
   formatSize,
+  isPreparing,
   listItems,
   newestFirst,
   noTransfers,
@@ -100,6 +101,26 @@ describe("applyEvent", () => {
     expect(adjustedNamesText(1500)).toBe("1500 names adjusted");
   });
 
+  it("shows Preparing while the files are hashed, over Offered and Accepted only", () => {
+    const preparing = (seq: number, on: boolean): DeviceEvent =>
+      ({ seq, at: 1_000 + seq, type: "preparing", transfer_id: ID, preparing: on }) as DeviceEvent;
+    const at = (state: TransferState, role: "sender" | "receiver", ...more: DeviceEvent[]) =>
+      run([transfer(0, { kind: "offered" }, { role }), preparing(1, true), ...more, transfer(9, state, { role })]).byId[ID];
+
+    // The Sender is preparing from its Offer on; the Receiver, once it has accepted.
+    expect(isPreparing(at({ kind: "offered" }, "sender"))).toBe(true);
+    expect(isPreparing(at({ kind: "accepted" }, "sender"))).toBe(true);
+    expect(isPreparing(at({ kind: "offered" }, "receiver"))).toBe(false);
+    expect(isPreparing(at({ kind: "accepted" }, "receiver"))).toBe(true);
+    // Done hashing, or past Accepted: nothing left to prepare.
+    expect(isPreparing(at({ kind: "accepted" }, "sender", preparing(2, false)))).toBe(false);
+    expect(isPreparing(at({ kind: "transferring" }, "sender"))).toBe(false);
+    expect(isPreparing(at({ kind: "waiting" }, "sender"))).toBe(false);
+    // A report for a Transfer not known is ignored, and no Transfer starts out preparing.
+    expect(run([preparing(0, true)]).order).toEqual([]);
+    expect(run([transfer(0, { kind: "offered" })]).byId[ID].preparing).toBe(false);
+  });
+
   it("ignores an event it has already seen", () => {
     const once = run([transfer(0, { kind: "offered" }), transfer(1, { kind: "accepted" })]);
     expect(applyEvent(once, transfer(1, { kind: "declined" }))).toBe(once);
@@ -186,7 +207,7 @@ describe("formatting", () => {
   });
 
   it("counts whole percent, and an empty file as complete", () => {
-    const base = { id: ID, role: "receiver", batch: null, peer: PEER, peerName: null, kind: "files", text: null, name: "x", items: ["x"] as string[], fileCount: 1, skippedLinks: 0, adjustedNames: 0, state: { kind: "transferring" }, expiresAt: 0, rate: null, progressAt: null } as const;
+    const base = { id: ID, role: "receiver", batch: null, peer: PEER, peerName: null, kind: "files", text: null, name: "x", items: ["x"] as string[], fileCount: 1, skippedLinks: 0, adjustedNames: 0, state: { kind: "transferring" }, preparing: false, expiresAt: 0, rate: null, progressAt: null } as const;
     expect(percent({ ...base, size: 1000, bytes: 999 })).toBe(99);
     expect(percent({ ...base, size: 1000, bytes: 1000 })).toBe(100);
     expect(percent({ ...base, size: 0, bytes: 0 })).toBe(100);

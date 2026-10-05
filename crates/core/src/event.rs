@@ -29,8 +29,22 @@ pub enum EventKind {
     Transfer(TransferEvent),
     /// How much of a Transfer's content a Receiver has downloaded so far.
     Progress(ProgressEvent),
+    /// A Transfer's files started or finished being hashed.
+    Preparing(PreparingEvent),
     /// The list of Nearby Devices changed.
     Nearby(NearbyEvent),
+}
+
+/// Whether a Transfer is Preparing: the Sender is hashing the files, which it does while the
+/// Receiver decides (spec section 4). It overlays the Offered and Accepted states, which are
+/// announced as before; once the Transfer is in any other state there is nothing to prepare.
+/// Sent for Transfers of files only, never for text.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, specta::Type)]
+pub struct PreparingEvent {
+    pub transfer_id: TransferId,
+    /// True when hashing starts on the Sender or the Offer arrives on the Receiver; false once
+    /// the Sender is done, or the Receiver has been told so (`HashReady`).
+    pub preparing: bool,
 }
 
 /// The Devices found on the LAN, after a change: one appeared, left, or announced a new name.

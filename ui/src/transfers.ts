@@ -29,6 +29,11 @@ export interface TransferView {
   adjustedNames: number;
   size: number;
   state: TransferState;
+  /**
+   * Whether the Sender is still hashing the files. It overlays Offered and Accepted (see
+   * `isPreparing`); false for text, which has nothing to hash.
+   */
+  preparing: boolean;
   /** When an unanswered Offer lapses, by the Device's clock (Unix milliseconds). */
   expiresAt: number;
   /** Bytes of the file received so far. */
@@ -76,6 +81,7 @@ export function applyEvent(transfers: Transfers, event: DeviceEvent): Transfers 
           adjustedNames: event.adjusted_names,
           size: event.size,
           state: event.state,
+          preparing: false,
           expiresAt: event.expires_at,
           bytes: 0,
           rate: null,
@@ -83,6 +89,12 @@ export function applyEvent(transfers: Transfers, event: DeviceEvent): Transfers 
         };
     next.byId = { ...transfers.byId, [view.id]: event.state.kind === "completed" ? done(view) : view };
     next.order = known ? transfers.order : [...transfers.order, view.id];
+    return next;
+  }
+
+  if (event.type === "preparing") {
+    const known = transfers.byId[event.transfer_id];
+    if (known) next.byId = { ...transfers.byId, [known.id]: { ...known, preparing: event.preparing } };
     return next;
   }
 
@@ -140,6 +152,16 @@ export function canCancel(view: TransferView): boolean {
     default:
       return false;
   }
+}
+
+/**
+ * Whether to show Preparing (spec section 4): the files are still being hashed, and the
+ * Transfer is Offered or Accepted. A Receiver shows it only once it has accepted; before that
+ * it is deciding, which is what the Offer sheet is for.
+ */
+export function isPreparing(view: TransferView): boolean {
+  if (!view.preparing) return false;
+  return view.state.kind === "accepted" || (view.state.kind === "offered" && view.role === "sender");
 }
 
 /** A Sender can send an Offer nobody answered again in one step. */
