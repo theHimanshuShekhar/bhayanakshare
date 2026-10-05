@@ -43,7 +43,7 @@ async fn an_offer_larger_than_the_free_space_cannot_be_accepted() {
     bob.wait_offer().await;
 
     let check = bob.device.check_offer(id, None).await.unwrap();
-    assert_eq!(check, SpaceCheck { needed: 4096, free: Some(SMALL_DISK) });
+    assert_eq!(check, SpaceCheck { needed: 4096, free: Some(SMALL_DISK), paths_too_long: false });
     assert!(!check.fits());
     let refused = bob.device.accept(id).await.unwrap_err();
     assert!(
@@ -72,7 +72,7 @@ async fn the_checks_run_again_for_another_folder_and_the_offer_goes_there() {
     bob.wait_offer().await;
     assert!(!bob.device.check_offer(id, None).await.unwrap().fits());
     let elsewhere = bob.device.check_offer(id, Some(roomy.path())).await.unwrap();
-    assert_eq!(elsewhere, SpaceCheck { needed: 4096, free: Some(1 << 40) });
+    assert_eq!(elsewhere, SpaceCheck { needed: 4096, free: Some(1 << 40), paths_too_long: false });
     assert!(elsewhere.fits());
 
     // The folder applies to this Offer only, and the incoming store is made inside it.

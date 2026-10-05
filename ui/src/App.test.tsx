@@ -50,7 +50,7 @@ function fakeApi(overrides: Partial<Api> = {}, initialContacts: Contact[] = []) 
     saveFolder: () => Promise.resolve("/home/me/Downloads/BhayanakShare"),
     sendFiles: vi.fn((_to: string, _paths: string[]) => Promise.resolve(TRANSFER)),
     checkOffer: vi.fn((_id: string, _folder: string | null) =>
-      Promise.resolve({ needed: 2048, free: 1_000_000 }),
+      Promise.resolve({ needed: 2048, free: 1_000_000, paths_too_long: false }),
     ),
     acceptOffer: vi.fn((_id: string, _folder: string | null) => Promise.resolve(null)),
     declineOffer: vi.fn(() => Promise.resolve(null)),
@@ -100,8 +100,15 @@ function fakeApi(overrides: Partial<Api> = {}, initialContacts: Contact[] = []) 
   const shell = (event: ShellEvent) => act(() => shellHandler(event));
   const push = (event: Unstamped) =>
     act(() => handler({ seq: seq++, at: 1_000 * seq, ...event } as DeviceEvent));
-  /** What an Offer holds when it is not just `photo.jpg`: a folder, several files, links skipped. */
-  type Contents = Partial<{ name: string; items: string[]; file_count: number; skipped_links: number }>;
+  /** What an Offer holds when it is not just `photo.jpg`: a folder, several files, links skipped,
+   * names adjusted. */
+  type Contents = Partial<{
+    name: string;
+    items: string[];
+    file_count: number;
+    skipped_links: number;
+    adjusted_names: number;
+  }>;
   const transfer = (
     role: "sender" | "receiver",
     state: TransferState,
@@ -118,6 +125,7 @@ function fakeApi(overrides: Partial<Api> = {}, initialContacts: Contact[] = []) 
       items: ["photo.jpg"],
       file_count: 1,
       skipped_links: 0,
+      adjusted_names: 0,
       size: 2048,
       expires_at: EXPIRES_AT,
       state,
@@ -256,6 +264,7 @@ describe("sending", () => {
       items: ["pack"],
       file_count: 2,
       skipped_links: 1,
+      adjusted_names: 0,
       size: 1,
       expires_at: EXPIRES_AT,
       state: { kind: "offered" },
@@ -334,6 +343,7 @@ describe("sending", () => {
       items: ["b.bin"],
       file_count: 1,
       skipped_links: 0,
+      adjusted_names: 0,
       size: 1,
       expires_at: EXPIRES_AT,
       state: { kind: "failed", reason: "The other Device went away." },
@@ -402,7 +412,7 @@ describe("receiving", () => {
 
   it("shows how much is needed and disables Accept when the Offer does not fit", async () => {
     const device = await start(
-      fakeApi({ checkOffer: vi.fn(() => Promise.resolve({ needed: 2048, free: 512 })) }),
+      fakeApi({ checkOffer: vi.fn(() => Promise.resolve({ needed: 2048, free: 512, paths_too_long: false })) }),
     );
     await device.transfer("receiver", { kind: "offered" });
 
@@ -413,9 +423,53 @@ describe("receiving", () => {
     expect(device.api.declineOffer).toHaveBeenCalledWith(TRANSFER);
   });
 
+  it("disables Accept with a warning when the paths are too long for the folder, until another folder is chosen", async () => {
+    const checkOffer = vi.fn((_id: string, folder: string | null) =>
+      Promise.resolve({ needed: 2048, free: 1_000_000, paths_too_long: folder === null }),
+    );
+    const device = await start(fakeApi({ checkOffer }));
+    await device.transfer("receiver", { kind: "offered" });
+
+    expect((await screen.findByRole("alert")).textContent).toBe(
+      "Some paths are too long for this save folder",
+    );
+    expect((screen.getByRole("button", { name: "Accept" }) as HTMLButtonElement).disabled).toBe(true);
+
+    fireEvent.click(screen.getByRole("button", { name: "Change the save folder for this file" }));
+    await waitFor(() => expect(screen.queryByRole("alert")).toBeNull());
+    expect((screen.getByRole("button", { name: "Accept" }) as HTMLButtonElement).disabled).toBe(false);
+  });
+
+  it("tells the Receiver how many names were adjusted, on the Offer and on the Transfer, and not the Sender", async () => {
+    const device = await start();
+    await device.transfer("receiver", { kind: "offered" }, null, { adjusted_names: 7 });
+    // The Offer sheet, and the Transfer's row behind it. Accept stays possible: it is no error.
+    expect(await screen.findAllByText("7 names adjusted")).toHaveLength(2);
+    expect((screen.getByRole("button", { name: "Accept" }) as HTMLButtonElement).disabled).toBe(false);
+
+    cleanup();
+
+    const one = await start();
+    await one.transfer("receiver", { kind: "completed", saved_to: "/home/me/photo.jpg" }, null, {
+      adjusted_names: 1,
+    });
+    expect(screen.getByText("1 name adjusted")).toBeTruthy();
+    cleanup();
+
+    const plain = await start();
+    await plain.transfer("receiver", { kind: "offered" });
+    await screen.findByRole("dialog");
+    expect(screen.queryByText(/adjusted/)).toBeNull();
+    cleanup();
+
+    const sent = await start();
+    await sent.transfer("sender", { kind: "offered" }, null, { adjusted_names: 3 });
+    expect(screen.queryByText(/adjusted/)).toBeNull();
+  });
+
   it("leaves Accept on when the free space is unknown", async () => {
     const device = await start(
-      fakeApi({ checkOffer: vi.fn(() => Promise.resolve({ needed: 2048, free: null })) }),
+      fakeApi({ checkOffer: vi.fn(() => Promise.resolve({ needed: 2048, free: null, paths_too_long: false })) }),
     );
     await device.transfer("receiver", { kind: "offered" });
     await waitFor(() => expect(device.api.checkOffer).toHaveBeenCalled());
@@ -425,7 +479,7 @@ describe("receiving", () => {
 
   it("checks again in the folder chosen for this Offer, and accepts into it", async () => {
     const checkOffer = vi.fn((_id: string, folder: string | null) =>
-      Promise.resolve({ needed: 2048, free: folder === null ? 512 : 1_000_000 }),
+      Promise.resolve({ needed: 2048, free: folder === null ? 512 : 1_000_000, paths_too_long: false }),
     );
     const device = await start(fakeApi({ checkOffer }));
     await device.transfer("receiver", { kind: "offered" });
@@ -469,6 +523,7 @@ describe("receiving", () => {
       items: ["b.bin"],
       file_count: 1,
       skipped_links: 0,
+      adjusted_names: 0,
       size: 1,
       expires_at: EXPIRES_AT,
       state: { kind: "offered" },
@@ -656,6 +711,7 @@ describe("cancelling, expiry and the Offer countdown", () => {
       items: ["photo.jpg"],
       file_count: 1,
       skipped_links: 0,
+      adjusted_names: 0,
       size: 2048,
       expires_at: EXPIRES_AT,
       state: { kind: "failed", reason: "The other Device already has too many Offers from you." },
@@ -815,6 +871,7 @@ describe("Contacts", () => {
       items: ["b.bin"],
       file_count: 1,
       skipped_links: 0,
+      adjusted_names: 0,
       size: 1,
       expires_at: EXPIRES_AT,
       state: { kind: "offered" },
@@ -1209,6 +1266,7 @@ describe("a clicked notification", () => {
       items: ["older.txt"],
       file_count: 1,
       skipped_links: 0,
+      adjusted_names: 0,
       size: 1,
       expires_at: EXPIRES_AT,
       state: { kind: "offered" },

@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { DeviceEvent, TransferState } from "./bindings";
 import {
+  adjustedNamesText,
   applyEvent,
   canCancel,
   canResend,
@@ -31,6 +32,7 @@ function transfer(seq: number, state: TransferState, extra: Partial<{ id: string
     items: ["photo.jpg"],
     file_count: 1,
     skipped_links: 0,
+    adjusted_names: 0,
     size: 1000,
     expires_at: 601_000,
     state,
@@ -63,6 +65,19 @@ describe("applyEvent", () => {
     expect(view).toMatchObject({ items: ["album", "notes.txt"], fileCount: 7, skippedLinks: 2 });
     expect(transferName(view)).toBe("album and 1 more");
     expect(transferName({ ...view, items: ["album"] })).toBe("album");
+  });
+
+  it("keeps how many names the Receiver adjusted", () => {
+    const event = { ...transfer(0, { kind: "offered" }), adjusted_names: 4 } as DeviceEvent;
+    const view = run([event, transfer(1, { kind: "accepted" })]).byId[ID];
+    expect(view.adjustedNames).toBe(4);
+    expect(run([transfer(0, { kind: "offered" })]).byId[ID].adjustedNames).toBe(0);
+  });
+
+  it("says how many names were adjusted", () => {
+    expect(adjustedNamesText(1)).toBe("1 name adjusted");
+    expect(adjustedNamesText(2)).toBe("2 names adjusted");
+    expect(adjustedNamesText(1500)).toBe("1500 names adjusted");
   });
 
   it("ignores an event it has already seen", () => {
@@ -151,7 +166,7 @@ describe("formatting", () => {
   });
 
   it("counts whole percent, and an empty file as complete", () => {
-    const base = { id: ID, role: "receiver", peer: PEER, peerName: null, name: "x", items: ["x"] as string[], fileCount: 1, skippedLinks: 0, state: { kind: "transferring" }, expiresAt: 0, rate: null, progressAt: null } as const;
+    const base = { id: ID, role: "receiver", peer: PEER, peerName: null, name: "x", items: ["x"] as string[], fileCount: 1, skippedLinks: 0, adjustedNames: 0, state: { kind: "transferring" }, expiresAt: 0, rate: null, progressAt: null } as const;
     expect(percent({ ...base, size: 1000, bytes: 999 })).toBe(99);
     expect(percent({ ...base, size: 1000, bytes: 1000 })).toBe(100);
     expect(percent({ ...base, size: 0, bytes: 0 })).toBe(100);

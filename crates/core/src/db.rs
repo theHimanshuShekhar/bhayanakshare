@@ -16,7 +16,7 @@ use crate::{
     transfer::{Role, TransferId, TransferState},
 };
 
-const SCHEMA_VERSION: i32 = 4;
+const SCHEMA_VERSION: i32 = 5;
 
 #[derive(Debug, thiserror::Error)]
 pub enum DbError {
@@ -45,6 +45,8 @@ pub struct TransferRecord {
     pub file_count: u64,
     /// Symlinks the Sender left out.
     pub skipped_links: u32,
+    /// Names a Receiver changed to make them safe to write (spec section 6).
+    pub adjusted_names: u32,
     pub state: TransferState,
     pub created_at: UnixMillis,
     pub updated_at: UnixMillis,
@@ -237,8 +239,8 @@ impl Db {
             c.execute(
                 "INSERT INTO transfers
                  (id, role, peer, name, size, state, saved_to, error, created_at, updated_at,
-                  progress_at, items, file_count, skipped_links)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?9, ?11, ?12, ?13)",
+                  progress_at, items, file_count, skipped_links, adjusted_names)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?9, ?11, ?12, ?13, ?14)",
                 params![
                     t.id.to_string(),
                     t.role.as_str(),
@@ -252,7 +254,8 @@ impl Db {
                     t.updated_at,
                     t.items.join("\n"),
                     t.file_count as i64,
-                    t.skipped_links
+                    t.skipped_links,
+                    t.adjusted_names
                 ],
             )?;
             Ok(())
@@ -317,9 +320,9 @@ impl Db {
             let rows = stmt.query_map([], |r| {
                 Ok((
                     read_row(r)?,
-                    r.get::<_, i64>(13)?,
-                    r.get::<_, Option<String>>(14)?,
+                    r.get::<_, i64>(14)?,
                     r.get::<_, Option<String>>(15)?,
+                    r.get::<_, Option<String>>(16)?,
                 ))
             })?;
             let mut out = Vec::new();
@@ -473,7 +476,7 @@ impl Db {
     }
 }
 
-const COLUMNS: &str = "id, role, peer, name, size, state, saved_to, error, created_at, updated_at, items, file_count, skipped_links";
+const COLUMNS: &str = "id, role, peer, name, size, state, saved_to, error, created_at, updated_at, items, file_count, skipped_links, adjusted_names";
 
 type TransferRow = (
     String,
@@ -488,6 +491,7 @@ type TransferRow = (
     i64,
     String,
     i64,
+    u32,
     u32,
 );
 
@@ -506,12 +510,27 @@ fn read_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<TransferRow> {
         r.get(10)?,
         r.get(11)?,
         r.get(12)?,
+        r.get(13)?,
     ))
 }
 
 fn record(row: TransferRow) -> Result<TransferRecord, DbError> {
-    let (id, role, peer, name, size, state, saved_to, error, created_at, updated_at, items, file_count, skipped_links) =
-        row;
+    let (
+        id,
+        role,
+        peer,
+        name,
+        size,
+        state,
+        saved_to,
+        error,
+        created_at,
+        updated_at,
+        items,
+        file_count,
+        skipped_links,
+        adjusted_names,
+    ) = row;
     let corrupt = |what: &str, v: &str| DbError::Corrupt(format!("{what} {v:?}"));
     Ok(TransferRecord {
         id: id.parse().map_err(|_| corrupt("transfer id", &id))?,
@@ -522,6 +541,7 @@ fn record(row: TransferRow) -> Result<TransferRecord, DbError> {
         items: items.split('\n').filter(|item| !item.is_empty()).map(str::to_owned).collect(),
         file_count: file_count as u64,
         skipped_links,
+        adjusted_names,
         state: TransferState::from_parts(&state, saved_to, error)
             .ok_or_else(|| corrupt("state", &state))?,
         created_at,
@@ -652,6 +672,15 @@ fn migrate(conn: &Connection) -> Result<(), DbError> {
              COMMIT;",
         )?;
     }
+    if version < 5 {
+        // Received names: how many names a Receiver adjusted (none were, before).
+        conn.execute_batch(
+            "BEGIN;
+             ALTER TABLE transfers ADD COLUMN adjusted_names INTEGER NOT NULL DEFAULT 0;
+             PRAGMA user_version = 5;
+             COMMIT;",
+        )?;
+    }
     Ok(())
 }
 
@@ -669,6 +698,7 @@ mod tests {
             items: vec!["a.txt".into(), "photos".into()],
             file_count: 3,
             skipped_links: 2,
+            adjusted_names: 4,
             state,
             created_at: 100,
             updated_at: 100,
@@ -913,6 +943,7 @@ mod tests {
         // named as the file is.
         let old = db.transfer(id).await.unwrap().unwrap();
         assert_eq!((old.items, old.file_count, old.skipped_links), (vec!["a.txt".to_owned()], 1, 0));
+        assert_eq!(old.adjusted_names, 0);
         let source = Source { path: "/src/a.txt".into(), size: 7, mtime_ns: 99, name: "a.txt".into() };
         assert_eq!(db.sources(id).await.unwrap(), [source]);
 
@@ -935,7 +966,7 @@ mod tests {
         db.insert_transfer(record(6, TransferState::Offered)).await.unwrap();
         let back = db.transfer(TransferId::from_bytes([6; 16])).await.unwrap().unwrap();
         assert_eq!(back.items, ["a.txt", "photos"]);
-        assert_eq!((back.file_count, back.skipped_links), (3, 2));
+        assert_eq!((back.file_count, back.skipped_links, back.adjusted_names), (3, 2, 4));
     }
 
     #[tokio::test]

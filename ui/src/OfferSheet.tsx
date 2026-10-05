@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import type { Api, Contact, SpaceCheck } from "./api";
 import { contactName, findContact } from "./contacts";
 import { t } from "./i18n";
-import { fingerprint, formatCountdown, formatSize, type TransferView } from "./transfers";
+import { adjustedNamesText, fingerprint, formatCountdown, formatSize, type TransferView } from "./transfers";
 
 /** How many top-level items the sheet lists before it says how many more there are: an Offer
  * can name any number of them, and the sheet has to stay usable. */
@@ -66,6 +66,8 @@ export function OfferSheet({
       ? { needed: space.needed, free: space.free }
       : null;
 
+  const tooLong = space !== null && space.paths_too_long;
+
   const answer = (command: (id: string) => Promise<unknown>) =>
     command(offer.id).catch((e) => setError(t("offer.failed", { reason: reasonOf(e) })));
 
@@ -127,12 +129,14 @@ export function OfferSheet({
             {t("offer.noRoom", { needed: formatSize(short.needed), free: formatSize(short.free) })}
           </p>
         )}
+        {tooLong && <p role="alert">{t("offer.pathsTooLong")}</p>}
+        {offer.adjustedNames > 0 && <p>{adjustedNamesText(offer.adjustedNames)}</p>}
         {folderError !== null && <p role="alert">{folderError}</p>}
         {error !== null && <p role="alert">{error}</p>}
         <div className="actions">
           <button
             type="button"
-            disabled={short !== null || folderError !== null}
+            disabled={short !== null || tooLong || folderError !== null}
             onClick={() => answer((id) => api.acceptOffer(id, folder))}
           >
             {t("offer.accept")}
