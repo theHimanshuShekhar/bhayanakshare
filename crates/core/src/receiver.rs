@@ -6,7 +6,9 @@
 //! save folder's filesystem, so saving is a rename), verified against the Offer's manifest,
 //! built into a staging tree next to the store, and only when all of it is right is each
 //! top-level item moved into the save folder, fsynced, and only then is `Completed` sent and the
-//! incoming store deleted. The save folder is the one the Offer was accepted into, which the
+//! incoming store deleted. The names are the Sender's, made safe to write on any system (spec
+//! section 6) before the tree is built; an item whose name is taken in the save folder arrives
+//! under a numbered one instead. The save folder is the one the Offer was accepted into, which the
 //! Receiver may choose per Offer.
 //!
 //! Until the move into the save folder starts, either side can cancel (the incoming store is
@@ -52,7 +54,7 @@ use crate::{
     fsmove::rename_no_replace,
     identity::DeviceId,
     manifest::{self, Manifest},
-    names::numbered,
+    names::{adjust_names, numbered},
     protocol::{self, FrameError, Message, spawn_reader, write_frame},
     session::{
         CLOSE_GRACE, FORGOTTEN, Failure, LOST, STALLED, Session, Stall, Stop, UNEXPECTED,
@@ -64,6 +66,9 @@ use crate::{
 
 /// Directory inside the save folder that holds in-progress downloads.
 pub const INCOMING_DIR: &str = ".bhayanakshare-incoming";
+
+/// Where, inside a Transfer's incoming directory, its tree is built before it is moved.
+const OUT_DIR: &str = "out";
 
 /// How many Offers one Sender may have waiting for an answer before the next gets `Busy`.
 const MAX_PENDING_OFFERS: usize = 5;
@@ -83,6 +88,12 @@ fn collection_allowance(manifest: &Manifest) -> u64 {
     let names: u64 = manifest.files().map(|(path, _)| path.len() as u64).sum();
     COLLECTION_SLACK + PER_ENTRY * (manifest.file_count() + 1) + names
 }
+
+/// The longest path the platform's filesystems take, in bytes, counting everything from the
+/// root. Linux's `PATH_MAX` and macOS's include the terminating NUL. Windows is not limited to
+/// this (the app uses `\\?\` paths there, untested) but is held to it too, for want of a
+/// better number, since an Offer's own paths are far shorter.
+const MAX_PATH: usize = if cfg!(target_os = "linux") { 4095 } else { 1023 };
 
 /// How long one try to reach the Sender may take before the next is made.
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
@@ -226,6 +237,8 @@ async fn flow(
         return Ok(());
     }
     let items = offer.manifest.top_level_items();
+    let adjusted = adjust_names(&offer.manifest, INCOMING_DIR);
+    let longest_path = adjusted.manifest.entries.iter().map(|entry| entry.path().len()).max().unwrap_or(0);
     let manifest = Arc::new(offer.manifest);
     let info = TransferInfo {
         id: TransferId::from_bytes(offer.transfer_id),
@@ -237,11 +250,12 @@ async fn flow(
         items,
         file_count: offer.file_count,
         skipped_links: offer.skipped_links,
+        adjusted_names: adjusted.count,
         expires_at: sh.now() + OFFER_TTL_MS,
     };
 
     let (decide, mut decision) = oneshot::channel();
-    let auto = auto_accept_folder(sh, &info).await;
+    let auto = auto_accept_folder(sh, &info, longest_path).await;
     // Register for a decision before announcing, so a command sent the moment the event
     // is seen finds it. The same lock settles whether this Sender already has too many
     // Offers waiting.
@@ -259,7 +273,9 @@ async fn flow(
                 true
             } else {
                 match pending.entry(info.id) {
-                    Entry::Vacant(slot) => slot.insert(PendingOffer { peer: info.peer, size: info.size, decide }),
+                    Entry::Vacant(slot) => {
+                        slot.insert(PendingOffer { peer: info.peer, size: info.size, longest_path, decide })
+                    }
                     Entry::Occupied(_) => return Err(Failure::with(BAD_OFFER, "duplicate Transfer ID")),
                 };
                 false
@@ -354,9 +370,11 @@ async fn refuse(session: &mut Session, conn: &Connection) {
 }
 
 /// The save folder to accept `info` into without asking, if its Sender is a Contact with
-/// Auto-accept on and the Offer passes the Receiver's checks. Any failed check (or a failure to
-/// run one) returns `None`, and the Offer is shown as a normal prompt with its warning.
-async fn auto_accept_folder(sh: &Shared, info: &TransferInfo) -> Option<PathBuf> {
+/// Auto-accept on and the Offer passes the Receiver's checks: it fits, and its paths (the longest
+/// is `longest_path` bytes) are not too long. Any failed check (or a failure to run one) returns
+/// `None`, and the Offer is shown as a normal prompt with its warning. Adjusted names are no
+/// reason to ask.
+async fn auto_accept_folder(sh: &Shared, info: &TransferInfo, longest_path: usize) -> Option<PathBuf> {
     match sh.db.contact(info.peer).await {
         Ok(Some(contact)) if contact.auto_accept => {}
         Ok(_) => return None,
@@ -365,8 +383,8 @@ async fn auto_accept_folder(sh: &Shared, info: &TransferInfo) -> Option<PathBuf>
             return None;
         }
     }
-    match sh.space_check(info.size, &sh.save_dir).await {
-        Ok(check) if check.fits() => Some(sh.save_dir.clone()),
+    match sh.space_check(info.id, info.size, longest_path, &sh.save_dir).await {
+        Ok(check) if check.passes() => Some(sh.save_dir.clone()),
         Ok(_) => None,
         Err(e) => {
             tracing::warn!("Auto-accept held back, the save folder cannot be checked: {e}");
@@ -377,6 +395,15 @@ async fn auto_accept_folder(sh: &Shared, info: &TransferInfo) -> Option<PathBuf>
 
 fn incoming_dir(save_dir: &Path, id: TransferId) -> PathBuf {
     save_dir.join(INCOMING_DIR).join(id.to_string())
+}
+
+/// Whether the longest path of Transfer `id` (`longest_path` bytes, relative to the save
+/// folder) is short enough to write under `save_dir`. The tree is built under the incoming
+/// store, which is deeper than where it ends up, so the path there is the one that has to
+/// fit; it also leaves room for the number a clashing item is given.
+pub(crate) fn paths_fit(save_dir: &Path, id: TransferId, longest_path: usize) -> bool {
+    let staged = incoming_dir(save_dir, id).join(OUT_DIR);
+    staged.as_os_str().as_encoded_bytes().len() + 1 + longest_path <= MAX_PATH
 }
 
 /// How the Transfer ended after the Receiver accepted it, and the connection to the Sender
@@ -772,26 +799,29 @@ async fn fetch_and_save(
     sh.transition(info, TransferState::Saving).await;
     // Everything is built under `out` first, so that nothing reaches the save folder until
     // all of it is received and right. A try before a restart may have left some behind.
-    let out = incoming_dir(save_dir, info.id).join("out");
+    let out = incoming_dir(save_dir, info.id).join(OUT_DIR);
     remove_dir(&out).await;
-    for (name, hash) in collection.iter() {
+    // Under safe names (the same ones the Offer was shown with), file for file in the order
+    // the Collection was just checked to have.
+    let adjusted = adjust_names(manifest, INCOMING_DIR).manifest;
+    for ((_, hash), (staged, _)) in collection.iter().zip(adjusted.files()) {
         blobs
             .blobs()
             .export_with_opts(ExportOptions {
                 hash: *hash,
                 // The store keeps the data in its own file, so this is a rename, not a copy.
                 mode: ExportMode::TryReference,
-                target: out.join(name),
+                target: out.join(staged),
             })
             .finish()
             .await
             .map_err(fail(CANT_SAVE))?;
     }
 
-    let (manifest, save_dir) = (manifest.clone(), save_dir.to_owned());
+    let save_dir = save_dir.to_owned();
     let saved = tokio::task::spawn_blocking(move || {
-        build_tree(&out, &manifest)?;
-        move_into_save_folder(&out, &save_dir, &manifest.top_level_items())
+        build_tree(&out, &adjusted)?;
+        move_into_save_folder(&out, &save_dir, &adjusted.top_level_items())
     })
     .await
     .map_err(fail(CANT_SAVE))?
@@ -995,6 +1025,24 @@ mod tests {
         assert_eq!(std::fs::read(save.join("note.txt")).unwrap(), b"mine");
         assert_eq!(std::fs::read(save.join("note (2).txt")).unwrap(), b"theirs");
         assert!(names(&out).is_empty());
+    }
+
+    #[test]
+    fn a_path_fits_when_the_staged_tree_under_the_incoming_store_stays_within_the_limit() {
+        let save = Path::new("/home/me/Downloads/BhayanakShare");
+        let id = TransferId::from_bytes([0xab; 16]);
+        // What is in front of a Transfer's paths while it is being built.
+        let before = incoming_dir(save, id).join(OUT_DIR).as_os_str().len() + 1;
+        assert_eq!(before, save.as_os_str().len() + 1 + INCOMING_DIR.len() + 1 + 32 + 1 + 3 + 1);
+
+        assert!(paths_fit(save, id, 0));
+        assert!(paths_fit(save, id, MAX_PATH - before));
+        assert!(!paths_fit(save, id, MAX_PATH - before + 1));
+        // A longer save folder leaves less room.
+        assert!(!paths_fit(&save.join("x".repeat(100)), id, MAX_PATH - before));
+        // The limit counts bytes, not characters: 60 characters of 2 bytes are 120.
+        assert!(paths_fit(&save.join("é".repeat(60)), id, MAX_PATH - before - 121));
+        assert!(!paths_fit(&save.join("é".repeat(60)), id, MAX_PATH - before - 120));
     }
 
     #[test]

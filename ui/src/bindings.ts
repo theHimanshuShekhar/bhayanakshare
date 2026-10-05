@@ -176,6 +176,11 @@ export type SpaceCheck = {
 	needed: number,
 	/**  Bytes free in the save folder; `None` when the platform cannot say. */
 	free: number | null,
+	/**
+	 *  Some path in the Offer would be longer than the filesystem allows once it is under the
+	 *  save folder, so the Offer cannot be accepted into this folder.
+	 */
+	paths_too_long: boolean,
 };
 
 export type TransferEvent = {
@@ -201,6 +206,11 @@ export type TransferEvent = {
 	file_count: number,
 	/**  Symlinks the Sender found in the folders it picked and left out. */
 	skipped_links: number,
+	/**
+	 *  Names the Receiver changed to make them safe to write on every system (a Sender has
+	 *  none to report).
+	 */
+	adjusted_names: number,
 	/**
 	 *  When the Offer lapses if nobody answers it, by this Device's clock. The same on every
 	 *  event of the Transfer, so a late subscriber can show the countdown.

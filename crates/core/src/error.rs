@@ -18,6 +18,8 @@ pub enum Error {
     NotAFolder(PathBuf),
     #[error("not enough free space: needs {needed} bytes, only {free} free")]
     NotEnoughSpace { needed: u64, free: u64 },
+    #[error("Some paths are too long for this save folder")]
+    PathsTooLong,
     #[error("Transfer {0} is not running, so it cannot be cancelled")]
     NotRunning(TransferId),
     #[error("Transfer {0} did not expire on this Device, so there is nothing to send again")]

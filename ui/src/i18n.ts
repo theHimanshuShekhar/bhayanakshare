@@ -125,6 +125,7 @@ const en = {
   "offer.changeFolder": "Change…",
   "offer.changeFolderLabel": "Change the save folder for this file",
   "offer.noRoom": "Needs {needed}, only {free} free",
+  "offer.pathsTooLong": "Some paths are too long for this save folder",
   "offer.folderFailed": "Could not use that folder. {reason}",
   "offer.accept": "Accept",
   "offer.decline": "Decline",
@@ -132,6 +133,8 @@ const en = {
   "offer.failed": "Could not answer the Offer. {reason}",
 
   "transfer.nameMore": "{name} and {count} more",
+  "names.adjustedOne": "1 name adjusted",
+  "names.adjusted": "{count} names adjusted",
   "transfer.linkSkipped": "1 link skipped",
   "transfer.linksSkipped": "{count} links skipped",
   "transfer.to": "{name} to {peer}",

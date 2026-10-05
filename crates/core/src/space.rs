@@ -1,4 +1,4 @@
-//! Free space: the Receiver's "will it fit" check before accepting an Offer.
+//! The Receiver's "will it fit" checks before accepting an Offer: free space and path length.
 //!
 //! The probe is a seam on [`crate::DeviceConfig`], so a test can make an Offer too large
 //! without filling a real disk. The default asks the operating system.
@@ -60,12 +60,20 @@ pub struct SpaceCheck {
     pub needed: u64,
     /// Bytes free in the save folder; `None` when the platform cannot say.
     pub free: Option<u64>,
+    /// Some path in the Offer would be longer than the filesystem allows once it is under the
+    /// save folder, so the Offer cannot be accepted into this folder.
+    pub paths_too_long: bool,
 }
 
 impl SpaceCheck {
     /// Whether the Offer fits. Unknown free space is no reason to refuse.
     pub fn fits(&self) -> bool {
         self.free.is_none_or(|free| free >= self.needed)
+    }
+
+    /// Whether every check passes: the Offer fits and its paths are not too long.
+    pub fn passes(&self) -> bool {
+        self.fits() && !self.paths_too_long
     }
 }
 
@@ -75,9 +83,20 @@ mod tests {
 
     #[test]
     fn an_offer_fits_when_it_is_no_bigger_than_the_free_space() {
-        assert!(SpaceCheck { needed: 10, free: Some(10) }.fits());
-        assert!(!SpaceCheck { needed: 11, free: Some(10) }.fits());
-        assert!(SpaceCheck { needed: u64::MAX, free: None }.fits());
+        let check = |needed, free| SpaceCheck { needed, free, paths_too_long: false };
+        assert!(check(10, Some(10)).fits());
+        assert!(!check(11, Some(10)).fits());
+        assert!(check(u64::MAX, None).fits());
+    }
+
+    #[test]
+    fn long_paths_fail_the_checks_whatever_the_space() {
+        let roomy = SpaceCheck { needed: 1, free: Some(100), paths_too_long: false };
+        assert!(roomy.passes());
+        let long = SpaceCheck { paths_too_long: true, ..roomy };
+        assert!(long.fits());
+        assert!(!long.passes());
+        assert!(!SpaceCheck { needed: 2, free: Some(1), paths_too_long: false }.passes());
     }
 
     #[test]

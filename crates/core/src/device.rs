@@ -96,6 +96,9 @@ pub(crate) enum Decision {
 pub(crate) struct PendingOffer {
     pub peer: DeviceId,
     pub size: u64,
+    /// Bytes in the longest path the Offer would create, names as adjusted, relative to the
+    /// save folder: what the path-length check needs.
+    pub longest_path: usize,
     pub decide: oneshot::Sender<Decision>,
 }
 
@@ -114,6 +117,8 @@ pub(crate) struct TransferInfo {
     pub items: Vec<String>,
     pub file_count: u64,
     pub skipped_links: u32,
+    /// Names the Receiver adjusted to make them safe to write.
+    pub adjusted_names: u32,
     /// When the Offer lapses if nobody has answered it, by this Device's clock.
     pub expires_at: UnixMillis,
 }
@@ -132,6 +137,7 @@ impl TransferInfo {
             items: record.items.clone(),
             file_count: record.file_count,
             skipped_links: record.skipped_links,
+            adjusted_names: record.adjusted_names,
             // Both sides begin timing an Offer when they record it.
             expires_at: record.created_at + OFFER_TTL_MS,
         })
@@ -188,8 +194,15 @@ impl Shared {
         self.cancels.lock().unwrap_or_else(|e| e.into_inner()).remove(&id);
     }
 
-    /// What an Offer of `needed` bytes would take from `folder`.
-    pub async fn space_check(&self, needed: u64, folder: &Path) -> Result<SpaceCheck, Error> {
+    /// What Transfer `id`, an Offer of `needed` bytes whose longest path is `longest_path`
+    /// bytes, would take from `folder`.
+    pub async fn space_check(
+        &self,
+        id: TransferId,
+        needed: u64,
+        longest_path: usize,
+        folder: &Path,
+    ) -> Result<SpaceCheck, Error> {
         let probe = self.free_space.clone();
         let dir = folder.to_owned();
         // The probe is a blocking call into the operating system.
@@ -205,7 +218,7 @@ impl Shared {
         })
         .await
         .map_err(|e| Error::io("checking free space", std::io::Error::other(e)))??;
-        Ok(SpaceCheck { needed, free })
+        Ok(SpaceCheck { needed, free, paths_too_long: !receiver::paths_fit(folder, id, longest_path) })
     }
 
     /// This Device's name as it is announced to others: the stored Device Name, else the
@@ -249,6 +262,7 @@ impl Shared {
                 items: t.items.clone(),
                 file_count: t.file_count,
                 skipped_links: t.skipped_links,
+                adjusted_names: t.adjusted_names,
                 state: state.clone(),
                 created_at: now,
                 updated_at: now,
@@ -287,6 +301,7 @@ impl Shared {
                 items: t.items.clone(),
                 file_count: t.file_count,
                 skipped_links: t.skipped_links,
+                adjusted_names: t.adjusted_names,
                 expires_at: t.expires_at,
                 state,
             }),
@@ -491,6 +506,7 @@ impl Device {
             items,
             file_count: scan.manifest.file_count(),
             skipped_links: scan.skipped_links,
+            adjusted_names: 0,
             expires_at: sh.now() + OFFER_TTL_MS,
         };
         sh.begin(&info, TransferState::Offered).await?;
@@ -551,11 +567,15 @@ impl Device {
     }
 
     /// Accepts a pending Offer into `folder` for this Transfer only (the save folder when
-    /// `None`). Fails, leaving the Offer pending, if it does not fit there.
+    /// `None`). Fails, leaving the Offer pending, if it does not fit there or its paths would
+    /// be too long.
     pub async fn accept_into(&self, id: TransferId, folder: Option<&Path>) -> Result<(), Error> {
         let (folder, check) = self.check_space(id, folder).await?;
         if let Some(free) = check.free.filter(|_| !check.fits()) {
             return Err(Error::NotEnoughSpace { needed: check.needed, free });
+        }
+        if check.paths_too_long {
+            return Err(Error::PathsTooLong);
         }
         self.decide(id, Decision::Accept(folder))
     }
@@ -567,18 +587,18 @@ impl Device {
         folder: Option<&Path>,
     ) -> Result<(PathBuf, SpaceCheck), Error> {
         let sh = &self.inner.shared;
-        let needed = sh
+        let (needed, longest_path) = sh
             .pending
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .get(&id)
-            .map(|offer| offer.size)
+            .map(|offer| (offer.size, offer.longest_path))
             .ok_or(Error::UnknownTransfer(id))?;
         let folder = match folder {
             Some(folder) => std::path::absolute(folder).map_err(|e| Error::io("resolving the folder", e))?,
             None => sh.save_dir.clone(),
         };
-        let check = sh.space_check(needed, &folder).await?;
+        let check = sh.space_check(id, needed, longest_path, &folder).await?;
         Ok((folder, check))
     }
 

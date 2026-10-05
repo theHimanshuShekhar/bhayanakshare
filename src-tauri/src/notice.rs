@@ -211,6 +211,7 @@ mod tests {
             items: vec!["photo.jpg".into()],
             file_count: 1,
             skipped_links: 0,
+            adjusted_names: 0,
             expires_at: 0,
             state,
         }

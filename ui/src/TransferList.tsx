@@ -3,6 +3,7 @@ import type { Api, Contact } from "./api";
 import { peerName } from "./contacts";
 import { t, type MessageKey } from "./i18n";
 import {
+  adjustedNamesText,
   canCancel,
   canResend,
   formatSize,
@@ -77,6 +78,7 @@ function TransferRow({
             : t("transfer.linksSkipped", { count: x.skippedLinks })}
         </p>
       )}
+      {x.role === "receiver" && x.adjustedNames > 0 && <p>{adjustedNamesText(x.adjustedNames)}</p>}
       {moving && (
         <p>
           <progress

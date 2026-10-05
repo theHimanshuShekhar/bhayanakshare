@@ -72,6 +72,9 @@ pub struct TransferEvent {
     pub file_count: u64,
     /// Symlinks the Sender found in the folders it picked and left out.
     pub skipped_links: u32,
+    /// Names the Receiver changed to make them safe to write on every system (a Sender has
+    /// none to report).
+    pub adjusted_names: u32,
     /// When the Offer lapses if nobody answers it, by this Device's clock. The same on every
     /// event of the Transfer, so a late subscriber can show the countdown.
     pub expires_at: UnixMillis,
@@ -131,6 +134,7 @@ mod tests {
             items: vec![format!("f{i}")],
             file_count: 1,
             skipped_links: 0,
+            adjusted_names: 0,
             expires_at: 0,
             state: TransferState::Offered,
         })

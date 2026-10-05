@@ -19,6 +19,8 @@ export interface TransferView {
   fileCount: number;
   /** Symlinks the Sender found in the folders it picked and left out. */
   skippedLinks: number;
+  /** Names the Receiver changed to make them safe to write; always 0 for a Sender. */
+  adjustedNames: number;
   size: number;
   state: TransferState;
   /** When an unanswered Offer lapses, by the Device's clock (Unix milliseconds). */
@@ -62,6 +64,7 @@ export function applyEvent(transfers: Transfers, event: DeviceEvent): Transfers 
           items: event.items,
           fileCount: event.file_count,
           skippedLinks: event.skipped_links,
+          adjustedNames: event.adjusted_names,
           size: event.size,
           state: event.state,
           expiresAt: event.expires_at,
@@ -165,6 +168,11 @@ export function fingerprint(deviceId: string): string {
 }
 
 const UNITS = ["B", "KiB", "MiB", "GiB", "TiB", "PiB"];
+
+/** "1 name adjusted" or "7 names adjusted": names the Receiver changed to be able to save them. */
+export function adjustedNamesText(count: number): string {
+  return count === 1 ? t("names.adjustedOne") : t("names.adjusted", { count });
+}
 
 /** 1536 becomes "1.5 KiB". */
 export function formatSize(bytes: number): string {
