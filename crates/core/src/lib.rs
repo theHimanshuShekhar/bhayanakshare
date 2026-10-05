@@ -19,6 +19,7 @@ pub mod manifest;
 mod names;
 pub mod protocol;
 mod receiver;
+mod responder;
 mod scan;
 mod sender;
 mod session;

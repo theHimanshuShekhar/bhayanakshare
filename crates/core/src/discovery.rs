@@ -9,11 +9,15 @@
 //!   carries the Device Name.
 //! - **People who have my ID**: the blinded beacon of [`crate::beacon`], whose label and sealed
 //!   TXT only a Device holding this Device's ID can recognise and open.
-//! - **Hidden**: nothing yet (the responder is another ticket).
+//! - **Hidden**: no announcement at all. Instead the [`Responder`] answers a query that carries
+//!   this Device's own blinded label, which only a Device holding its ID can ask, and
+//!   [`LanLookup`] is how a Device asks: iroh consults it when dialling an ID.
 //!
 //! [`announcement`] is where a setting chooses what to say and [`hear`] is where a heard label
 //! becomes a Device. swarm-discovery fixes the label when it starts, so a different label (a
-//! new beacon epoch, or a change between plain and beacon) means a new `Discoverer`.
+//! new beacon epoch, or a change between plain and beacon) means a new `Discoverer`. Hidden
+//! only adds the responder: the `Discoverer` still listens, and its anonymous queries for the
+//! service are all this Device says, so its own Nearby list works.
 //!
 //! What is heard is kept as a table of Nearby Devices, reported on the event stream whenever it
 //! changes, and its addresses are handed to iroh, so dialling a Nearby Device by its ID alone
@@ -49,6 +53,7 @@ use crate::{
     device_name,
     event::{EventKind, NearbyEvent},
     identity::DeviceId,
+    responder::{LanLookup, Responder},
 };
 
 /// Our mDNS service name (`_bhayanakshare._udp.local.`). At most 15 characters (RFC 6335).
@@ -77,7 +82,7 @@ pub enum Visibility {
     /// Only Devices that hold this Device's ID: a blinded beacon only they can recognise.
     #[default]
     IdHolders,
-    /// Nobody. Announces nothing until the responder exists.
+    /// Nobody: announces nothing, and only answers a Device that asks for it by its ID.
     Hidden,
 }
 
@@ -162,15 +167,12 @@ fn announcement(
         }
         Visibility::IdHolders => {
             // The real ports are sealed; the SRV record carries a constant one.
-            let port_of = |family: fn(&SocketAddr) -> bool| {
-                addrs.iter().find(|a| family(a)).map_or(0, SocketAddr::port)
-            };
             let (label, sealed) = beacon::seal(
                 &id,
                 epoch,
                 name,
-                port_of(SocketAddr::is_ipv4),
-                port_of(SocketAddr::is_ipv6),
+                port_of(addrs, SocketAddr::is_ipv4),
+                port_of(addrs, SocketAddr::is_ipv6),
             );
             let ips: BTreeSet<IpAddr> = addrs.iter().map(SocketAddr::ip).collect();
             Some(Announcement {
@@ -192,10 +194,15 @@ fn plain_label(id: DeviceId) -> String {
     id.to_string().to_lowercase()
 }
 
+/// The port of the first of `addrs` of the given address family, or 0 if there is none.
+pub(crate) fn port_of(addrs: &[SocketAddr], family: fn(&SocketAddr) -> bool) -> u16 {
+    addrs.iter().find(|a| family(a)).map_or(0, SocketAddr::port)
+}
+
 /// Whether another Device could dial `addr`. A Device on the real network does not announce a
 /// loopback address (the Loopback test network does), and an IPv6 link-local address is
 /// useless without the interface it belongs to.
-fn dialable(addr: &SocketAddr, loopback_ok: bool) -> bool {
+pub(crate) fn dialable(addr: &SocketAddr, loopback_ok: bool) -> bool {
     let ip = addr.ip();
     let link_local_v6 = matches!(ip, IpAddr::V6(v6) if v6.segments()[0] & 0xffc0 == 0xfe80);
     addr.port() != 0
@@ -333,6 +340,8 @@ struct Running {
     label: String,
     tx: mpsc::UnboundedSender<Instance>,
     interfaces: Vec<Ipv4Addr>,
+    /// Answers lookups, while the Visibility is Hidden and only then.
+    responder: Option<Responder>,
 }
 
 /// A Device's LAN discovery, owned by [`Shared`].
@@ -372,8 +381,15 @@ impl Discovery {
     /// it, and the Nearby area shows the firewall hint.
     pub(crate) async fn start(&self, sh: &Arc<Shared>) {
         let (tx, rx) = mpsc::unbounded_channel();
-        let interfaces = self.interfaces().await.into_iter().collect();
-        *self.running.lock().await = Some(Running { guard: None, label: String::new(), tx, interfaces });
+        let interfaces: Vec<Ipv4Addr> = self.interfaces().await.into_iter().collect();
+        // How this Device asks for a Hidden one when dialling an ID.
+        let loopback_ok = self.network == Network::LocalhostLan;
+        match sh.endpoint.address_lookup() {
+            Ok(services) => services.add(LanLookup::new(interfaces.clone(), sh.clock.clone(), loopback_ok)),
+            Err(e) => tracing::warn!("LAN lookups cannot hand addresses to iroh: {e}"),
+        }
+        *self.running.lock().await =
+            Some(Running { guard: None, label: String::new(), tx, interfaces, responder: None });
         self.refresh(sh).await;
         sh.tasks.spawn(ingest(sh.clone(), rx));
         sh.tasks.spawn(follow_addresses(sh.clone()));
@@ -398,6 +414,18 @@ impl Discovery {
         let name = sh.device_name().await;
         let addrs = self.announced_addrs(&sh.endpoint);
         let announce = announcement(visibility, sh.id, &name, beacon::epoch_of(sh.now()), &addrs);
+
+        // Hidden is answered for, never announced: the responder runs for as long as it is chosen.
+        if visibility != Visibility::Hidden {
+            running.responder = None;
+        } else if running.responder.is_none() {
+            let loopback_ok = self.network == Network::LocalhostLan;
+            let (endpoint, clock) = (sh.endpoint.clone(), sh.clock.clone());
+            match Responder::start(sh.id, endpoint, clock, &running.interfaces, loopback_ok) {
+                Ok(responder) => running.responder = Some(responder),
+                Err(e) => tracing::warn!("this Device cannot answer lookups while Hidden: {e}"),
+            }
+        }
 
         // A different label (a new epoch, or beacon for plain) needs a new Discoverer. A silent
         // Device keeps its own: its queries carry no label.

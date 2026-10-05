@@ -19,7 +19,7 @@ use std::{
     time::Duration,
 };
 
-use bhayanakshare_core::{DeviceId, NearbyDevice, Visibility};
+use bhayanakshare_core::{Clock, DeviceId, NearbyDevice, Visibility};
 use socket2::{Domain, Protocol, Socket, Type};
 use support::TestDevice;
 use swarm_discovery::{Discoverer, DropGuard};
@@ -503,6 +503,273 @@ async fn removing_a_contact_takes_its_beacon_out_of_the_nearby_list() {
     bob.wait_nearby("Alice gone", is_absent(alice_id)).await;
     bob.quiet_for(SILENCE).await;
     assert!(is_absent(alice_id)(&bob.device.nearby()));
+
+    alice.shutdown().await;
+    bob.shutdown().await;
+}
+
+// Hidden: nothing is announced, and a Device that holds the ID can still find it by asking.
+
+/// The mDNS group and port, which is where a Device asks for a Hidden one.
+const MDNS: (Ipv4Addr, u16) = (Ipv4Addr::new(224, 0, 0, 251), 5353);
+
+/// The blinded label `id` has in `epoch`: what a beacon is announced under and what a Hidden
+/// Device is asked for. This is the design's contract (`beacon::label`), spelled out so that a
+/// change to it fails here.
+fn blinded_label(id: DeviceId, epoch: i64) -> String {
+    let mut material = id.as_bytes().to_vec();
+    material.extend_from_slice(&(epoch as u64).to_be_bytes());
+    let key = blake3::derive_key("bhayanakshare 2026-10 beacon label", &material);
+    data_encoding::HEXLOWER.encode(&key[..16])
+}
+
+/// The query for `label` as it goes on the wire: a TXT question for `<label>._bhayanakshare._udp.local.`.
+fn dns_query(label: &str) -> Vec<u8> {
+    let mut packet = vec![0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0];
+    for part in [label, "_bhayanakshare", "_udp", "local"] {
+        packet.push(part.len() as u8);
+        packet.extend_from_slice(part.as_bytes());
+    }
+    packet.extend_from_slice(&[0, 0, 16, 0, 1]);
+    packet
+}
+
+/// A socket on the loopback interface that can send to the mDNS group and hear what is sent there
+/// (`port` 5353, shared) or what is sent to it (0).
+fn loopback_socket(port: u16) -> std::io::Result<tokio::net::UdpSocket> {
+    let socket = Socket::new(Domain::IPV4, Type::DGRAM, Some(Protocol::UDP))?;
+    if port != 0 {
+        socket.set_reuse_address(true)?;
+        socket.set_reuse_port(true)?;
+    }
+    socket.bind(&SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, port).into())?;
+    if port != 0 {
+        socket.join_multicast_v4(&MDNS.0, &Ipv4Addr::LOCALHOST)?;
+    }
+    socket.set_multicast_if_v4(&Ipv4Addr::LOCALHOST)?;
+    socket.set_multicast_loop_v4(true)?;
+    socket.set_nonblocking(true)?;
+    tokio::net::UdpSocket::from_std(socket.into())
+}
+
+/// Sends each packet to the mDNS group, as a Device without any ID might, and returns what comes
+/// back to the sender within `wait`.
+async fn ask(packets: &[Vec<u8>], wait: Duration) -> Vec<Vec<u8>> {
+    let socket = loopback_socket(0).unwrap();
+    for packet in packets {
+        socket.send_to(packet, MDNS).await.unwrap();
+    }
+    let until = tokio::time::Instant::now() + wait;
+    let mut answers = Vec::new();
+    let mut buf = [0u8; 1500];
+    while let Ok(received) = tokio::time::timeout_at(until, socket.recv(&mut buf)).await {
+        answers.push(buf[..received.unwrap()].to_vec());
+    }
+    answers
+}
+
+/// Every packet sent to the mDNS group from the time it starts: what anyone on the LAN can read.
+struct Sniffer {
+    packets: Arc<Mutex<Vec<Vec<u8>>>>,
+    task: tokio::task::JoinHandle<()>,
+}
+
+impl Sniffer {
+    fn start() -> Self {
+        let socket = loopback_socket(5353).unwrap();
+        let packets = Arc::new(Mutex::new(Vec::new()));
+        let sink = packets.clone();
+        let task = tokio::spawn(async move {
+            let mut buf = [0u8; 1500];
+            while let Ok(len) = socket.recv(&mut buf).await {
+                sink.lock().unwrap().push(buf[..len].to_vec());
+            }
+        });
+        Self { packets, task }
+    }
+
+    /// The packets containing `needle`, in the lowercase text they would be in.
+    fn containing(&self, needle: &str) -> Vec<Vec<u8>> {
+        let needle = needle.to_lowercase().into_bytes();
+        let packets = self.packets.lock().unwrap();
+        let has = |p: &&Vec<u8>| p.to_ascii_lowercase().windows(needle.len()).any(|w| w == needle);
+        packets.iter().filter(has).cloned().collect()
+    }
+
+    fn heard(&self) -> usize {
+        self.packets.lock().unwrap().len()
+    }
+}
+
+impl Drop for Sniffer {
+    fn drop(&mut self) {
+        self.task.abort();
+    }
+}
+
+/// Whether a DNS packet is a query (its response bit is clear).
+fn is_query(packet: &[u8]) -> bool {
+    packet[2] & 0x80 == 0
+}
+
+fn epoch_of(device: &TestDevice) -> i64 {
+    device.clock.now() / EPOCH_MS
+}
+
+#[tokio::test]
+async fn a_hidden_device_is_never_listed_but_an_id_holder_can_send_to_it() {
+    if !multicast_available() {
+        return;
+    }
+    let sniffer = Sniffer::start();
+    let mut alice = TestDevice::start_discovering("alice").await;
+    alice.device.set_device_name("Hidden-test Alice 4M").await.unwrap();
+    alice.device.set_visibility(Visibility::Hidden).await.unwrap();
+    let mut bob = TestDevice::start_discovering("bob").await;
+    let mut carol = TestDevice::start_discovering("carol").await;
+    let alice_id = alice.device.device_id();
+    let labels: Vec<String> = (-1..=1).map(|d| blinded_label(alice_id, epoch_of(&alice) + d)).collect();
+    // Bob holds Alice's ID, which would make him recognise a beacon of hers; Carol does not.
+    bob.device.add_contact(alice_id, None).await.unwrap();
+
+    // Alice announces nothing: on the wire there is nothing of her, and nobody lists her.
+    tokio::join!(bob.quiet_for(SILENCE), carol.quiet_for(SILENCE));
+    assert!(sniffer.heard() > 0, "heard nothing at all, so this proves nothing");
+    for secret in [alice_id.to_string(), "Hidden-test Alice".to_owned()].iter().chain(&labels) {
+        assert!(sniffer.containing(secret).is_empty(), "{secret} was on the wire");
+    }
+    let (seen_by_bob, seen_by_carol) = (bob.device.nearby(), carol.device.nearby());
+    assert!(is_absent(alice_id)(&seen_by_bob), "{seen_by_bob:?}");
+    assert!(is_absent(alice_id)(&seen_by_carol), "{seen_by_carol:?}");
+    assert!(is_absent(carol.device.device_id())(&alice.device.nearby()));
+
+    // Bob dials her by her ID alone (no relay, no lookup, no address): he asks the LAN.
+    let src = tempfile::tempdir().unwrap();
+    let path = src.path().join("hello.txt");
+    std::fs::write(&path, b"hello to a hidden device").unwrap();
+    let id = bob.device.send_file(alice_id, &path).await.unwrap();
+    alice.wait_offer().await;
+    alice.device.accept(id).await.unwrap();
+    alice.wait_state(id, "completed").await;
+    bob.wait_state(id, "completed").await;
+    assert_eq!(std::fs::read(alice.save_dir.join("hello.txt")).unwrap(), b"hello to a hidden device");
+
+    // The ask was on the LAN, and it carried only her blinded label, in a query. Still
+    // nothing of her ID or name (the answer went to Bob alone), and still not listed.
+    let asked: Vec<_> = labels.iter().flat_map(|l| sniffer.containing(l)).collect();
+    assert!(!asked.is_empty() && asked.iter().all(|p| is_query(p)), "{asked:?}");
+    for secret in [alice_id.to_string(), "Hidden-test Alice".to_owned()] {
+        assert!(sniffer.containing(&secret).is_empty(), "{secret} was on the wire");
+    }
+    bob.quiet_for(Duration::from_secs(1)).await;
+    assert!(is_absent(alice_id)(&bob.device.nearby()), "{:?}", bob.device.nearby());
+    assert!(is_absent(alice_id)(&carol.device.nearby()));
+
+    alice.shutdown().await;
+    bob.shutdown().await;
+    carol.shutdown().await;
+}
+
+#[tokio::test]
+async fn a_hidden_device_answers_only_a_query_with_its_own_token() {
+    if !multicast_available() {
+        return;
+    }
+    let mut alice = TestDevice::start_discovering("alice").await;
+    alice.device.set_device_name("Hidden-test Alice 9R").await.unwrap();
+    alice.device.set_visibility(Visibility::Hidden).await.unwrap();
+    let mut bob = TestDevice::start_discovering("bob").await;
+    let alice_id = alice.device.device_id();
+    let epoch = epoch_of(&alice);
+    let wait = Duration::from_millis(800);
+
+    // The token of her ID in this epoch and the ones next to it, which cover clocks a little apart.
+    for e in [epoch - 1, epoch, epoch + 1] {
+        let answers = ask(&[dns_query(&blinded_label(alice_id, e))], Duration::from_secs(5)).await;
+        assert_eq!(answers.len(), 1, "epoch {e}");
+        // A response, to the asker alone, of a size that is the same whatever it says: nothing
+        // in the clear but the label.
+        let answer = &answers[0];
+        assert!(!is_query(answer) && answer.len() < 512, "{} bytes", answer.len());
+        assert!(!String::from_utf8_lossy(answer).to_lowercase().contains("alice"));
+    }
+
+    // Nothing else is answered: a token of another epoch or another Device, the ID itself, a
+    // made-up token, a query that is not quite right, or the browsing every Device does.
+    let ours = dns_query(&blinded_label(alice_id, epoch));
+    let mut trailing = ours.clone();
+    trailing.push(0);
+    let mut not_txt = ours.clone();
+    *not_txt.last_mut().unwrap() = 1;
+    not_txt[ours.len() - 3] = 12;
+    let browse = {
+        let mut packet = dns_query("x")[..12].to_vec();
+        packet.extend_from_slice(b"\x0e_bhayanakshare\x04_udp\x05local\x00\x00\x0c\x00\x01");
+        packet
+    };
+    let ignored = [
+        ("two epochs on", dns_query(&blinded_label(alice_id, epoch + 2))),
+        ("another Device's", dns_query(&blinded_label(bob.device.device_id(), epoch))),
+        ("the ID", dns_query(&alice_id.to_string().to_lowercase())),
+        ("made up", dns_query(&"ab".repeat(16))),
+        ("a trailing byte", trailing),
+        ("another type", not_txt),
+        ("a browse", browse),
+        ("noise", vec![0xff; 100]),
+    ];
+    for (what, packet) in ignored {
+        assert!(ask(&[packet], wait).await.is_empty(), "{what} was answered");
+    }
+
+    // However it is asked, it is answered only so often: a replayed query is no amplifier.
+    let answers = ask(&vec![ours; 60], Duration::from_millis(1500)).await;
+    assert!(!answers.is_empty() && answers.len() <= 20, "{} answers to 60 queries", answers.len());
+
+    alice.shutdown().await;
+    bob.shutdown().await;
+}
+
+#[tokio::test]
+async fn changing_to_and_from_hidden_takes_effect_at_once() {
+    if !multicast_available() {
+        return;
+    }
+    let mut alice = TestDevice::start_discovering("alice").await;
+    alice.device.set_device_name("Alice's laptop").await.unwrap();
+    let mut bob = TestDevice::start_discovering("bob").await;
+    let alice_id = alice.device.device_id();
+    let token = dns_query(&blinded_label(alice_id, epoch_of(&alice)));
+    let wait = Duration::from_millis(800);
+    bob.device.add_contact(alice_id, None).await.unwrap();
+
+    // At the default Visibility she announces a beacon and answers no lookup.
+    bob.wait_nearby("Alice nearby", is(alice_id, Some("Alice's laptop"))).await;
+    assert!(ask(&[token.clone()], wait).await.is_empty());
+
+    // Hidden: her beacon stops, and she answers the lookup the moment it is chosen.
+    alice.device.set_visibility(Visibility::Hidden).await.unwrap();
+    assert_eq!(ask(&[token.clone()], Duration::from_secs(5)).await.len(), 1);
+    bob.wait_nearby("Alice gone", is_absent(alice_id)).await;
+
+    // Bob can still send to her by ID.
+    let src = tempfile::tempdir().unwrap();
+    let path = src.path().join("hello.txt");
+    std::fs::write(&path, b"hello once hidden").unwrap();
+    let id = bob.device.send_file(alice_id, &path).await.unwrap();
+    alice.wait_offer().await;
+    alice.device.accept(id).await.unwrap();
+    alice.wait_state(id, "completed").await;
+    bob.wait_state(id, "completed").await;
+    assert_eq!(std::fs::read(alice.save_dir.join("hello.txt")).unwrap(), b"hello once hidden");
+
+    // Everyone, and Hidden is over: she is listed again and no longer answers the lookup.
+    alice.device.set_visibility(Visibility::Everyone).await.unwrap();
+    bob.wait_nearby("Alice nearby again", is(alice_id, Some("Alice's laptop"))).await;
+    assert!(ask(&[token.clone()], wait).await.is_empty());
+
+    // And once more: Hidden answers again.
+    alice.device.set_visibility(Visibility::Hidden).await.unwrap();
+    assert_eq!(ask(&[token], Duration::from_secs(5)).await.len(), 1);
 
     alice.shutdown().await;
     bob.shutdown().await;
