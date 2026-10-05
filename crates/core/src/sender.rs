@@ -61,7 +61,7 @@ use crate::{
     protocol::{self, LONG_TEXT_NAME, MAX_INLINE_TEXT, Message, Offer, write_frame},
     scan::{self, Scan},
     session::{
-        BUSY, CLOSE_GRACE, Failure, INVALID_NAMES, LOST, STALLED, Session, Stall, Stop, UNEXPECTED,
+        BUSY, CLOSE_GRACE, Failure, HelloError, INVALID_NAMES, LOST, STALLED, Session, Stall, Stop, UNEXPECTED,
         expect_hello, fail, made_progress, save_progress, stop,
     },
     transfer::{Role, STALL_TTL_MS, TransferId, TransferState},
@@ -310,7 +310,7 @@ async fn connect(sh: &Shared, to: &DeviceAddr) -> Result<(Session, Option<String
     write_frame(&mut send, &Message::Hello(protocol::Hello::named(sh.device_name().await)))
         .await
         .map_err(fail(LOST))?;
-    let peer_name = expect_hello(&mut incoming).await?;
+    let peer_name = expect_hello(sh, to.id, &mut send, &mut incoming).await.map_err(HelloError::failure)?;
     Ok((Session { conn, send, incoming }, peer_name))
 }
 

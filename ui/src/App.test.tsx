@@ -2046,3 +2046,39 @@ describe("History", () => {
     expect((await screen.findByRole("alert")).textContent).toBe("Could not load your History.");
   });
 });
+
+describe("version mismatches", () => {
+  const RELEASES = "https://github.com/theHimanshuShekhar/bhayanakshare/releases";
+  const refused = (device: ReturnType<typeof fakeApi>, outdated: "this_device" | "peer") =>
+    device.push({
+      type: "version_mismatch",
+      peer: PEER_ID,
+      peer_name: "Alice's Laptop",
+      peer_app_version: "9.9.9",
+      outdated,
+    });
+
+  it("tells the user to ask the other Device to update when that one is older", async () => {
+    const device = await start();
+    await refused(device, "peer");
+    expect(
+      screen.getByText(/Alice's Laptop · K3QF-7XNA is running an older BhayanakShare. Ask them to update./),
+    ).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Update now" })).toBeNull();
+  });
+
+  it("offers Update now when this Device is the older one, and opens the releases page", async () => {
+    const device = await start();
+    await refused(device, "this_device");
+    expect(screen.getByText(/This Device is running an older BhayanakShare than Alice's Laptop/)).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Update now" }));
+    expect(device.api.openUrl).toHaveBeenCalledWith(RELEASES);
+  });
+
+  it("goes away when dismissed", async () => {
+    const device = await start();
+    await refused(device, "this_device");
+    fireEvent.click(screen.getByRole("button", { name: "Dismiss" }));
+    expect(screen.queryByRole("button", { name: "Update now" })).toBeNull();
+  });
+});

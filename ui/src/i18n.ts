@@ -20,6 +20,12 @@ const en = {
   "home.firewallHint":
     "No Devices found on this network yet. If you expect some, a firewall may be blocking local discovery.",
   "home.firewallDocs": "How to allow local discovery",
+  "version.thisOlder":
+    "This Device is running an older BhayanakShare than {name}. Update it to send and receive with them.",
+  "version.peerOlder": "{name} is running an older BhayanakShare. Ask them to update.",
+  "version.update": "Update now",
+  "version.dismiss": "Dismiss",
+
   "home.transfers": "Transfers",
   "home.noTransfers": "No Transfers yet.",
   "home.loading": "Starting this Device…",

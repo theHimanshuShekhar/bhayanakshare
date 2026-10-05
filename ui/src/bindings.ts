@@ -138,7 +138,14 @@ export type EventKind =
 /**  The list of Nearby Devices changed. */
 {
 	type: "nearby",
-} & NearbyEvent;
+} & NearbyEvent | 
+/**
+ *  Another Device runs a version of BhayanakShare that cannot exchange Transfers with this
+ *  one, and was refused before any Offer.
+ */
+{
+	type: "version_mismatch",
+} & VersionMismatchEvent;
 
 /**  A row of History, newest first. */
 export type HistoryEntry = 
@@ -193,6 +200,13 @@ export type NearbyDevice = {
 export type NearbyEvent = {
 	devices: NearbyDevice[],
 };
+
+/**  Which side of a version mismatch has to update. */
+export type Outdated = 
+/**  This Device runs the older version: the user can update it ("Update now"). */
+"this_device" | 
+/**  The other Device runs the older version: its owner has to update. */
+"peer";
 
 /**
  *  Whether a Transfer is Preparing: the Sender is hashing the files, which it does while the
@@ -386,6 +400,20 @@ export type TransferState = { kind: "offered" } | { kind: "accepted" } | { kind:
 { kind: "expired" } | 
 /**  One side stopped the Transfer before it completed; `by` is which. */
 { kind: "cancelled"; by: Role };
+
+/**
+ *  A connection with another Device was refused for the versions of BhayanakShare. Sent on
+ *  both sides, whoever dialled, and for a resume as well as for a new Offer. A Sender also
+ *  sees its Transfer fail, with the same advice in the reason.
+ */
+export type VersionMismatchEvent = {
+	peer: DeviceId,
+	/**  What the other Device calls itself, as it announced in its `Hello`. Untrusted text. */
+	peer_name: string | null,
+	/**  The other Device's app version, as it announced. Untrusted text. */
+	peer_app_version: string | null,
+	outdated: Outdated,
+};
 
 /**
  *  Who can see a Device as a Nearby Device (spec section 3). Governs discovery only: anyone

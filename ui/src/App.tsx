@@ -12,10 +12,12 @@ import { SelectBox, SelectionBar } from "./SelectionBar";
 import { SendDialog } from "./SendDialog";
 import { SettingsScreen } from "./SettingsScreen";
 import { TransferList } from "./TransferList";
+import { VersionNotices } from "./VersionNotices";
 import { peerName, sortedContacts } from "./contacts";
 import { t, type MessageKey } from "./i18n";
 import { FIREWALL_DOCS_URL, NEARBY_WAIT_MS, applyNearby, nearbyStrangers } from "./nearby";
 import { applyEvent, baseName, fingerprint, listItems, noTransfers, pendingOffer } from "./transfers";
+import { applyVersionNotices } from "./versions";
 
 const TABS = [
   { id: "home", label: "tab.home", placeholder: "home.placeholder" },
@@ -49,6 +51,8 @@ export function App({ api = tauriApi }: AppProps) {
   const [cleared, setCleared] = useState(0);
   const [transfers, dispatch] = useReducer(applyEvent, noTransfers);
   const [nearby, dispatchNearby] = useReducer(applyNearby, []);
+  // Devices that were refused for their version, until the user dismisses the notice.
+  const [versionNotices, dispatchVersion] = useReducer(applyVersionNotices, []);
   // Set once Home has waited long enough for a Nearby Device to show up.
   const [waited, setWaited] = useState(false);
   const [saveFolder, setSaveFolder] = useState<string | null>(null);
@@ -86,6 +90,7 @@ export function App({ api = tauriApi }: AppProps) {
       .onDeviceEvent((event) => {
         dispatch(event);
         dispatchNearby(event);
+        dispatchVersion(event);
       })
       .then((stop) => (live ? (unlisten = stop) : stop()));
     api.saveFolder().then((folder) => live && setSaveFolder(folder), () => {});
@@ -153,6 +158,14 @@ export function App({ api = tauriApi }: AppProps) {
           ))}
         </nav>
       </header>
+      <div inert={inert}>
+        <VersionNotices
+          api={api}
+          contacts={contacts}
+          notices={versionNotices}
+          onDismiss={(peer) => dispatchVersion({ type: "dismiss_version_notice", peer })}
+        />
+      </div>
       <main inert={inert}>
         {tab === "home" && <p>{t(current.placeholder)}</p>}
         {tab === "home" && (

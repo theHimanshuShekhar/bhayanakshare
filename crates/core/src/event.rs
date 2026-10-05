@@ -33,6 +33,32 @@ pub enum EventKind {
     Preparing(PreparingEvent),
     /// The list of Nearby Devices changed.
     Nearby(NearbyEvent),
+    /// Another Device runs a version of BhayanakShare that cannot exchange Transfers with this
+    /// one, and was refused before any Offer.
+    VersionMismatch(VersionMismatchEvent),
+}
+
+/// Which side of a version mismatch has to update.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, specta::Type)]
+#[serde(rename_all = "snake_case")]
+pub enum Outdated {
+    /// This Device runs the older version: the user can update it ("Update now").
+    ThisDevice,
+    /// The other Device runs the older version: its owner has to update.
+    Peer,
+}
+
+/// A connection with another Device was refused for the versions of BhayanakShare. Sent on
+/// both sides, whoever dialled, and for a resume as well as for a new Offer. A Sender also
+/// sees its Transfer fail, with the same advice in the reason.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, specta::Type)]
+pub struct VersionMismatchEvent {
+    pub peer: DeviceId,
+    /// What the other Device calls itself, as it announced in its `Hello`. Untrusted text.
+    pub peer_name: Option<String>,
+    /// The other Device's app version, as it announced. Untrusted text.
+    pub peer_app_version: Option<String>,
+    pub outdated: Outdated,
 }
 
 /// Whether a Transfer is Preparing: the Sender is hashing the files, which it does while the
