@@ -6,9 +6,9 @@ use std::time::Duration;
 
 use bhayanakshare_core::{
     Device, DeviceConfig, KeySource, ManualClock, Network, SystemFreeSpace, TransferState,
-    protocol::{self, FrameError, Hello, Message, Offer, read_frame, write_frame},
+    protocol::{self, Hello, Message, read_frame, write_frame},
 };
-use support::{TestDevice, dial_addr, list_dir, raw_peer};
+use support::{TestDevice, dial_addr, list_dir, one_file_offer, raw_peer};
 
 #[tokio::test]
 async fn identity_settings_and_history_survive_a_restart() {
@@ -64,16 +64,13 @@ async fn an_offer_with_a_path_in_its_name_is_refused_and_nothing_is_written() {
 
     write_frame(&mut send, &Message::Hello(Hello::current())).await.unwrap();
     assert!(matches!(read_frame(&mut recv).await.unwrap(), Message::Hello(_)));
-    write_frame(
-        &mut send,
-        &Message::Offer(Offer { transfer_id: [5; 16], name: "../evil.txt".into(), size: 4 }),
-    )
-    .await
-    .unwrap();
+    write_frame(&mut send, &Message::Offer(one_file_offer([5; 16], "../evil.txt", 4)))
+        .await
+        .unwrap();
 
-    // Bob hangs up without ever showing the Offer.
+    // Bob says why, without ever showing the Offer, and hangs up.
     let reply = tokio::time::timeout(Duration::from_secs(10), read_frame(&mut recv)).await;
-    assert!(matches!(reply, Ok(Err(FrameError::Closed | FrameError::Io(_)))), "{reply:?}");
+    assert!(matches!(reply, Ok(Ok(Message::InvalidOffer))), "{reply:?}");
     bob.shutdown().await;
     assert!(bob.log.is_empty(), "an invalid Offer must not surface: {:?}", bob.log);
     assert!(bob.device.transfers().await.unwrap().is_empty());
@@ -96,7 +93,7 @@ async fn a_peer_on_another_protocol_version_is_refused_before_any_offer() {
     write_frame(&mut send, &Message::Hello(hello)).await.unwrap();
     write_frame(
         &mut send,
-        &Message::Offer(Offer { transfer_id: [6; 16], name: "ok.txt".into(), size: 1 }),
+        &Message::Offer(one_file_offer([6; 16], "ok.txt", 1)),
     )
     .await
     .unwrap();
@@ -125,7 +122,7 @@ async fn a_sender_that_disappears_before_the_decision_fails_the_offer() {
     read_frame(&mut recv).await.unwrap();
     write_frame(
         &mut send,
-        &Message::Offer(Offer { transfer_id: [7; 16], name: "gone.txt".into(), size: 10 }),
+        &Message::Offer(one_file_offer([7; 16], "gone.txt", 10)),
     )
     .await
     .unwrap();

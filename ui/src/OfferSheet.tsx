@@ -4,6 +4,10 @@ import { contactName, findContact } from "./contacts";
 import { t } from "./i18n";
 import { fingerprint, formatCountdown, formatSize, type TransferView } from "./transfers";
 
+/** How many top-level items the sheet lists before it says how many more there are: an Offer
+ * can name any number of them, and the sheet has to stay usable. */
+const SHOWN_ITEMS = 10;
+
 /** The time left to answer, counting down each second. Not announced: it changes constantly. */
 function Countdown({ expiresAt }: { expiresAt: number }) {
   const [now, setNow] = useState(() => Date.now());
@@ -94,8 +98,19 @@ export function OfferSheet({
           </dd>
           <dt>{t("offer.fingerprint")}</dt>
           <dd>{fingerprint(offer.peer)}</dd>
-          <dt>{t("offer.file")}</dt>
-          <dd>{offer.name}</dd>
+          <dt>{t("offer.items")}</dt>
+          <dd>
+            <ul>
+              {offer.items.slice(0, SHOWN_ITEMS).map((item) => (
+                <li key={item}>{item}</li>
+              ))}
+            </ul>
+            {offer.items.length > SHOWN_ITEMS && (
+              <>{t("offer.moreItems", { count: offer.items.length - SHOWN_ITEMS })}</>
+            )}
+          </dd>
+          <dt>{t("offer.files")}</dt>
+          <dd>{offer.fileCount}</dd>
           <dt>{t("offer.size")}</dt>
           <dd>{formatSize(offer.size)}</dd>
           <dt>{t("offer.saveTo")}</dt>

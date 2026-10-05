@@ -177,8 +177,9 @@ async fn commands_reject_bad_input() {
 
     let missing = src.path().join("nope.txt");
     assert!(matches!(alice.device.send_file(bob.addr(), &missing).await, Err(Error::NotAFile(_))));
+    // A folder can be sent now; a path that has no name to send it under cannot.
     assert!(matches!(
-        alice.device.send_file(bob.addr(), src.path()).await,
+        alice.device.send_file(bob.addr(), std::path::Path::new("/")).await,
         Err(Error::NotAFile(_))
     ));
     assert!(matches!(

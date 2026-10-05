@@ -12,10 +12,12 @@ use tokio::{
     sync::mpsc,
 };
 
+use crate::manifest::{Manifest, ManifestError};
+
 pub const ALPN: &[u8] = b"bhayanakshare/ctrl/1";
 
 /// Bumped whenever this protocol or the pinned iroh-blobs version changes incompatibly.
-pub const PROTOCOL_VERSION: u32 = 1;
+pub const PROTOCOL_VERSION: u32 = 2;
 
 /// Largest frame body accepted from a peer (the spec's 64 MiB Offer limit).
 pub const MAX_FRAME_LEN: u32 = 64 * 1024 * 1024;
@@ -61,6 +63,11 @@ pub enum Message {
     /// Sender to Receiver, answering `Resume`: the Transfer failed on the Sender, for this
     /// plain-language reason. (A Sender that cancelled it answers `Cancel`.)
     Failed { reason: String },
+    /// Receiver to Sender, in reply to an Offer: its manifest is malformed or over a limit
+    /// (spec sections 5 and 6). The Offer is dropped without being shown to anyone, and the
+    /// Sender shows "Couldn't be sent: invalid file names". The spec's table has no such
+    /// message.
+    InvalidOffer,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -86,13 +93,41 @@ impl Hello {
     }
 }
 
-/// An Offer of one file.
+/// The Sender's proposal of a Transfer: the files and folders it would send, which is all
+/// the Receiver needs to decide.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Offer {
     /// Random 128-bit Transfer ID chosen by the Sender.
     pub transfer_id: [u8; 16],
-    pub name: String,
+    /// The total size of the files, in bytes.
     pub size: u64,
+    pub file_count: u64,
+    /// Symlinks found in the chosen folders and left out.
+    pub skipped_links: u32,
+    pub manifest: Manifest,
+}
+
+impl Offer {
+    /// An Offer of what `manifest` lists, with the totals worked out from it.
+    pub fn new(transfer_id: [u8; 16], manifest: Manifest, skipped_links: u32) -> Self {
+        Self {
+            transfer_id,
+            size: manifest.total_size().unwrap_or(u64::MAX),
+            file_count: manifest.file_count(),
+            skipped_links,
+            manifest,
+        }
+    }
+
+    /// Checks the Offer as the Receiver must, before anyone sees it: the manifest is valid
+    /// and the totals the Offer states are what it adds up to.
+    pub fn validate(&self) -> Result<(), ManifestError> {
+        self.manifest.validate()?;
+        if self.manifest.total_size() != Some(self.size) || self.manifest.file_count() != self.file_count {
+            return Err(ManifestError::Inconsistent);
+        }
+        Ok(())
+    }
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -170,6 +205,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::manifest::Entry;
 
     fn sample_messages() -> Vec<Message> {
         vec![
@@ -178,7 +214,16 @@ mod tests {
                 app_version: "0.1.0".into(),
                 device_name: "Mum's laptop".into(),
             }),
-            Message::Offer(Offer { transfer_id: [9; 16], name: "photo.jpg".into(), size: 1 << 40 }),
+            Message::Offer(Offer::new(
+                [9; 16],
+                Manifest {
+                    entries: vec![
+                        Entry::File { path: "photos/a.jpg".into(), size: 1 << 40, mtime_ns: 5, executable: true },
+                        Entry::empty_dir("photos/empty"),
+                    ],
+                },
+                2,
+            )),
             Message::Accept,
             Message::Decline,
             Message::HashReady { collection_hash: [3; 32] },
@@ -191,6 +236,7 @@ mod tests {
             Message::ResumeOk,
             Message::Unknown,
             Message::Failed { reason: "The other Device went away.".into() },
+            Message::InvalidOffer,
         ]
     }
 
@@ -210,7 +256,30 @@ mod tests {
             .iter()
             .map(|m| postcard::to_stdvec(m).unwrap()[0])
             .collect();
-        assert_eq!(tags, [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13]);
+        assert_eq!(tags, [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14]);
+    }
+
+    #[test]
+    fn an_offer_must_add_up() {
+        let manifest = Manifest { entries: vec![Entry::file("a", 3), Entry::file("b/c", 4), Entry::empty_dir("d")] };
+        let offer = Offer::new([1; 16], manifest, 0);
+        assert_eq!((offer.size, offer.file_count), (7, 2));
+        assert_eq!(offer.validate(), Ok(()));
+
+        for wrong in [
+            Offer { size: 8, ..offer.clone() },
+            Offer { size: 6, ..offer.clone() },
+            Offer { file_count: 3, ..offer.clone() },
+            Offer { file_count: 0, ..offer.clone() },
+        ] {
+            assert_eq!(wrong.validate(), Err(ManifestError::Inconsistent));
+        }
+        // What is wrong with the manifest itself is reported first.
+        let bad = Offer::new([1; 16], Manifest { entries: vec![Entry::file("../x", 1)] }, 0);
+        assert_eq!(bad.validate(), Err(ManifestError::InvalidName(0)));
+        // Sizes that overflow cannot match any total.
+        let huge = Offer::new([1; 16], Manifest { entries: vec![Entry::file("a", u64::MAX), Entry::file("b", 1)] }, 0);
+        assert_eq!(huge.validate(), Err(ManifestError::Inconsistent));
     }
 
     #[tokio::test]

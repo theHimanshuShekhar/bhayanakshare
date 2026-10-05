@@ -63,8 +63,15 @@ pub struct TransferEvent {
     /// known (a Sender learns it only once it has reached the Receiver). Untrusted text: show
     /// it next to the Fingerprint.
     pub peer_name: Option<String>,
+    /// The first of `items`, for places with room for one name.
     pub name: String,
     pub size: u64,
+    /// The names at the top of what was offered: the files and folders the Sender picked, each
+    /// once. All of them are listed, however many; a screen shows as many as fit.
+    pub items: Vec<String>,
+    pub file_count: u64,
+    /// Symlinks the Sender found in the folders it picked and left out.
+    pub skipped_links: u32,
     /// When the Offer lapses if nobody answers it, by this Device's clock. The same on every
     /// event of the Transfer, so a late subscriber can show the countdown.
     pub expires_at: UnixMillis,
@@ -121,6 +128,9 @@ mod tests {
             peer_name: None,
             name: format!("f{i}"),
             size: i,
+            items: vec![format!("f{i}")],
+            file_count: 1,
+            skipped_links: 0,
             expires_at: 0,
             state: TransferState::Offered,
         })

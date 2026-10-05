@@ -83,7 +83,8 @@ pub async fn notify<R: Runtime>(app: &AppHandle<R>, event: &Event) {
             .and_then(|all| all.into_iter().find(|c| c.id == t.peer)),
         None => None,
     };
-    let (title, body) = text(&notice, t.role, &t.name, &who(t.peer, t.peer_name.as_deref(), contact.as_ref()));
+    let (title, body) =
+        text(&notice, t.role, &called(t), &who(t.peer, t.peer_name.as_deref(), contact.as_ref()));
     let on_click = (notice == Notice::Offer).then(|| {
         let app = app.clone();
         let id = t.transfer_id;
@@ -120,6 +121,14 @@ pub fn who(peer: DeviceId, announced: Option<&str>, contact: Option<&Contact>) -
             Some(name) => format!("{name} · {print}"),
             None => print,
         },
+    }
+}
+
+/// What a Transfer's contents are called in a sentence: the first item, and how many more.
+pub fn called(t: &TransferEvent) -> String {
+    match t.items.len() {
+        0 | 1 => t.name.clone(),
+        more => format!("{} and {} more", t.name, more - 1),
     }
 }
 
@@ -199,6 +208,9 @@ mod tests {
             peer_name: None,
             name: "photo.jpg".into(),
             size: 10,
+            items: vec!["photo.jpg".into()],
+            file_count: 1,
+            skipped_links: 0,
             expires_at: 0,
             state,
         }
@@ -207,6 +219,14 @@ mod tests {
     fn peer() -> DeviceId {
         // The Ed25519 base point: some valid public key.
         "LBTGMZTGMZTGMZTGMZTGMZTGMZTGMZTGMZTGMZTGMZTGMZTGMZTA".parse().unwrap()
+    }
+
+    #[test]
+    fn several_items_are_named_by_the_first_and_how_many_more() {
+        let mut t = event(1, Role::Receiver, TransferState::Offered);
+        assert_eq!(called(&t), "photo.jpg");
+        t.items = vec!["photo.jpg".into(), "docs".into(), "notes.txt".into()];
+        assert_eq!(called(&t), "photo.jpg and 2 more");
     }
 
     #[test]

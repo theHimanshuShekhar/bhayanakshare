@@ -22,15 +22,14 @@ use tokio_util::{sync::CancellationToken, task::TaskTracker};
 use crate::{
     clock::{Clock, UnixMillis},
     contacts::{Contact, KnownAddress, clean_name},
-    db::{Db, Source, TransferRecord, Unfinished},
+    db::{Db, TransferRecord, Unfinished},
     device_name,
     discovery::{Discovery, NearbyDevice, Visibility},
     error::Error,
     event::{EventKind, EventSink, EventStream, ProgressEvent, TransferEvent},
     gate::Gate,
     identity::{DeviceId, KeySource},
-    names::validate_file_name,
-    protocol, receiver, sender,
+    protocol, receiver, scan, sender,
     session::RESTARTED,
     space::{FreeSpace, SpaceCheck},
     store,
@@ -108,8 +107,13 @@ pub(crate) struct TransferInfo {
     pub peer: DeviceId,
     /// What the peer called itself in its Hello, once known.
     pub peer_name: Option<String>,
+    /// The first of `items`.
     pub name: String,
     pub size: u64,
+    /// The names at the top of the Offer's tree.
+    pub items: Vec<String>,
+    pub file_count: u64,
+    pub skipped_links: u32,
     /// When the Offer lapses if nobody has answered it, by this Device's clock.
     pub expires_at: UnixMillis,
 }
@@ -125,6 +129,9 @@ impl TransferInfo {
             peer_name: None,
             name: record.name.clone(),
             size: record.size,
+            items: record.items.clone(),
+            file_count: record.file_count,
+            skipped_links: record.skipped_links,
             // Both sides begin timing an Offer when they record it.
             expires_at: record.created_at + OFFER_TTL_MS,
         })
@@ -154,7 +161,7 @@ pub(crate) struct Shared {
     pub cancels: Mutex<HashMap<TransferId, CancellationToken>>,
     /// Offers this Device sent that expired, with where they went and what they held, so the
     /// user can send them again in one step.
-    pub expired: Mutex<HashMap<TransferId, (DeviceAddr, PathBuf)>>,
+    pub expired: Mutex<HashMap<TransferId, (DeviceAddr, Vec<PathBuf>)>>,
     /// Transfers this Device sends that are waiting for, or following, their Receiver, by
     /// Transfer ID: where a Receiver that dials back with `Resume` is handed over.
     pub resumers: Mutex<HashMap<TransferId, sender::Resumer>>,
@@ -239,6 +246,9 @@ impl Shared {
                 peer: t.peer.to_string(),
                 name: t.name.clone(),
                 size: t.size,
+                items: t.items.clone(),
+                file_count: t.file_count,
+                skipped_links: t.skipped_links,
                 state: state.clone(),
                 created_at: now,
                 updated_at: now,
@@ -274,6 +284,9 @@ impl Shared {
                 peer_name: t.peer_name.clone(),
                 name: t.name.clone(),
                 size: t.size,
+                items: t.items.clone(),
+                file_count: t.file_count,
+                skipped_links: t.skipped_links,
                 expires_at: t.expires_at,
                 state,
             }),
@@ -320,12 +333,12 @@ async fn recover(sh: &Arc<Shared>) -> Result<(), Error> {
                 | TransferState::Saving,
                 Some(info),
                 Some(root),
-            ) => match save_dir {
-                Some(save_dir) => {
-                    receiver::recover(sh, info, root, save_dir, progress_at);
+            ) => match (save_dir, sh.db.manifest(record.id).await?) {
+                (Some(save_dir), Some(manifest)) => {
+                    receiver::recover(sh, info, root, save_dir, manifest, progress_at);
                     true
                 }
-                None => false,
+                _ => false,
             },
             _ => false,
         };
@@ -432,62 +445,76 @@ impl Device {
         DeviceAddr { id: self.device_id(), direct: direct_addrs(&self.inner.shared.endpoint) }
     }
 
-    /// Offers the file at `path` to the Device at `to`. Returns once the Transfer exists;
-    /// everything after that is reported on the event stream.
+    /// Offers the file or folder at `path` to the Device at `to`. Returns once the Transfer
+    /// exists; everything after that is reported on the event stream.
     pub async fn send_file(
         &self,
         to: impl Into<DeviceAddr>,
         path: &Path,
+    ) -> Result<TransferId, Error> {
+        self.send(to, &[path.to_owned()]).await
+    }
+
+    /// Offers the files and folders at `paths` to the Device at `to`, as one Transfer: the
+    /// Receiver gets each under its own name, with folders' structure, empty folders,
+    /// modification times and executable bits kept. Symlinks inside a folder are skipped and
+    /// counted. A selection that breaks a limit, or has names that cannot be sent, is refused
+    /// here, before anything is sent.
+    pub async fn send(
+        &self,
+        to: impl Into<DeviceAddr>,
+        paths: &[PathBuf],
     ) -> Result<TransferId, Error> {
         let sh = &self.inner.shared;
         if sh.cancel.is_cancelled() {
             return Err(Error::ShuttingDown);
         }
         let to = to.into();
-        let path = std::path::absolute(path).map_err(|e| Error::io("resolving the path", e))?;
-        let meta = tokio::fs::metadata(&path).await.map_err(|_| Error::NotAFile(path.clone()))?;
-        if !meta.is_file() {
-            return Err(Error::NotAFile(path));
-        }
-        let name = path
-            .file_name()
-            .and_then(|n| n.to_str())
-            .ok_or_else(|| Error::NotAFile(path.clone()))?
-            .to_owned();
-        validate_file_name(&name)?;
+        let roots = paths
+            .iter()
+            .map(|path| std::path::absolute(path).map_err(|e| Error::io("resolving the path", e)))
+            .collect::<Result<Vec<_>, _>>()?;
+        let scanned = roots.clone();
+        let scan = tokio::task::spawn_blocking(move || scan::scan(&scanned))
+            .await
+            .map_err(|e| Error::io("reading the files", std::io::Error::other(e)))??;
 
+        let items = scan.manifest.top_level_items();
         let info = TransferInfo {
             id: TransferId::random(),
             role: Role::Sender,
             peer: to.id,
             peer_name: None,
-            name,
-            size: meta.len(),
+            name: items[0].clone(),
+            // The scan has been validated, so the total fits.
+            size: scan.manifest.total_size().unwrap_or(u64::MAX),
+            items,
+            file_count: scan.manifest.file_count(),
+            skipped_links: scan.skipped_links,
             expires_at: sh.now() + OFFER_TTL_MS,
         };
         sh.begin(&info, TransferState::Offered).await?;
         // The files as they are now, for the check before they are served again.
-        let source = Source { path: path.clone(), size: meta.len(), mtime_ns: sender::mtime_ns(&meta) };
-        sh.db.insert_sources(info.id, vec![source]).await?;
+        sh.db.insert_sources(info.id, scan.sources.clone()).await?;
         let id = info.id;
         let cancel = sh.track(id);
         let sh = sh.clone();
-        self.inner.shared.tasks.spawn(sender::run(sh, info, to, path, cancel));
+        self.inner.shared.tasks.spawn(sender::run(sh, info, to, roots, scan, cancel));
         Ok(id)
     }
 
     /// Sends an Offer that expired again, to the same Device, as a new Transfer. Fails if the
-    /// file has gone in the meantime.
+    /// files have gone in the meantime.
     pub async fn resend(&self, id: TransferId) -> Result<TransferId, Error> {
         let sh = &self.inner.shared;
-        let (to, path) = sh
+        let (to, paths) = sh
             .expired
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .get(&id)
             .cloned()
             .ok_or(Error::NothingToResend(id))?;
-        let new = self.send_file(to, &path).await?;
+        let new = self.send(to, &paths).await?;
         sh.expired.lock().unwrap_or_else(|e| e.into_inner()).remove(&id);
         Ok(new)
     }

@@ -1,7 +1,7 @@
 //! The Sender side of a Transfer.
 //!
-//! Dial the Receiver, say Hello, send the Offer straight away, and hash the file while the
-//! Receiver decides (the file is imported by reference, so nothing is copied). Once hashing
+//! Dial the Receiver, say Hello, send the Offer straight away, and hash the files while the
+//! Receiver decides (they are imported by reference, so nothing is copied). Once hashing
 //! is done and the Receiver has accepted, allow that Receiver to fetch (see `gate`) and send
 //! `HashReady`; the Receiver then pulls the content over iroh-blobs from this Device's global
 //! store. The Transfer ends with the Receiver's `Decline` or `Completed`, or earlier: either
@@ -14,6 +14,9 @@
 //! A Sender that restarted does the same: the Transfer record, content hash and source files
 //! are in the database, and [`recover`] starts waiting for the Receiver. With no progress for
 //! 24 hours the Sender gives up.
+//!
+//! What is offered is a manifest (see `manifest`) and an iroh-blobs Collection of the same
+//! files, in the same order, named by their manifest paths.
 
 use std::{path::PathBuf, sync::Arc};
 
@@ -26,6 +29,7 @@ use iroh_blobs::{
     },
     format::collection::Collection,
 };
+use n0_future::{BufferedStreamExt, StreamExt, stream};
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
@@ -36,9 +40,10 @@ use crate::{
     gate::Grant,
     identity::DeviceId,
     protocol::{self, Message, Offer, write_frame},
+    scan::Scan,
     session::{
-        BUSY, CLOSE_GRACE, Failure, LOST, STALLED, Session, Stall, Stop, UNEXPECTED, expect_hello,
-        fail, made_progress, save_progress, stop,
+        BUSY, CLOSE_GRACE, Failure, INVALID_NAMES, LOST, STALLED, Session, Stall, Stop, UNEXPECTED,
+        expect_hello, fail, made_progress, save_progress, stop,
     },
     transfer::{Role, TransferId, TransferState},
 };
@@ -47,12 +52,13 @@ pub(crate) async fn run(
     sh: Arc<Shared>,
     info: TransferInfo,
     to: DeviceAddr,
-    path: PathBuf,
+    roots: Vec<PathBuf>,
+    scan: Scan,
     cancel: CancellationToken,
 ) {
     let outcome = tokio::select! {
         () = sh.cancel.cancelled() => None,
-        outcome = flow(&sh, &info, &to, path, &cancel) => Some(outcome),
+        outcome = flow(&sh, &info, &to, roots, scan, &cancel) => Some(outcome),
     };
     sh.untrack(info.id);
     if let Some(Err(Failure(reason))) = outcome {
@@ -111,7 +117,8 @@ async fn flow(
     sh: &Arc<Shared>,
     info: &TransferInfo,
     to: &DeviceAddr,
-    path: PathBuf,
+    roots: Vec<PathBuf>,
+    scan: Scan,
     cancel: &CancellationToken,
 ) -> Result<(), Failure> {
     // Until the Offer is out nobody else knows of the Transfer, so there is no one to tell.
@@ -127,21 +134,14 @@ async fn flow(
     sh.remember_peer(to.id, &session.conn, peer_name.clone()).await;
     // From here on the Transfer's events carry what the Receiver calls itself.
     let info = &TransferInfo { peer_name, ..info.clone() };
-    write_frame(
-        &mut session.send,
-        &Message::Offer(Offer {
-            transfer_id: *info.id.as_bytes(),
-            name: info.name.clone(),
-            size: info.size,
-        }),
-    )
-    .await
-    .map_err(fail(LOST))?;
+    let Scan { manifest, sources, skipped_links } = scan;
+    let offer = Message::Offer(Offer::new(*info.id.as_bytes(), manifest, skipped_links));
+    write_frame(&mut session.send, &offer).await.map_err(fail(LOST))?;
+    drop(offer);
 
     // Hash while the Receiver decides. Not spawned: leaving this function drops it, which
     // abandons the hashing of a declined or failed Transfer.
-    let source = path.clone();
-    let mut import = Some(Box::pin(import(sh.blobs.clone(), path, info.name.clone())));
+    let mut import = Some(Box::pin(import(sh.blobs.clone(), sources)));
     // The temp tags keep the imported blobs alive for as long as the Transfer runs.
     let mut _keep_alive = Vec::new();
     let mut accepted = false;
@@ -179,12 +179,15 @@ async fn flow(
                     return Ok(());
                 }
                 Some(Ok(Message::Expired)) if !accepted => {
-                    lapse(sh, info, to, &source);
+                    lapse(sh, info, to, &roots);
                     stop(sh, info, Some(&mut session), Stop::PeerExpired).await;
                     return Ok(());
                 }
                 Some(Ok(Message::Busy)) if !accepted => {
                     return Err(Failure::with(BUSY, "the Receiver answered Busy"));
+                }
+                Some(Ok(Message::InvalidOffer)) if !accepted => {
+                    return Err(Failure::with(INVALID_NAMES, "the Receiver refused the manifest"));
                 }
                 Some(Ok(_)) => return Err(Failure::with(UNEXPECTED, "out-of-order message")),
                 Some(Err(e)) => return Err(Failure::with(LOST, e)),
@@ -195,7 +198,7 @@ async fn flow(
                 return Ok(());
             }
             () = &mut expiry, if !accepted => {
-                lapse(sh, info, to, &source);
+                lapse(sh, info, to, &roots);
                 stop(sh, info, Some(&mut session), Stop::Expired).await;
                 return Ok(());
             }
@@ -380,7 +383,7 @@ async fn welcome(
     }
 }
 
-/// Before serving again: the files must be as they were when the Offer was made, and the
+/// Before serving again: every file must be as it was when the Offer was made, and the
 /// store must still hold their content. It may not if the Device was killed just after hashing
 /// it, as the store commits a moment later; the files are unchanged, so hashing them again
 /// gives the same hash.
@@ -390,30 +393,35 @@ async fn check_files(
     root: Hash,
     keep_alive: &mut Vec<TempTag>,
 ) -> Result<(), Failure> {
-    let changed = || {
+    let changed = |name: &str| {
         Failure::with(
-            &format!("A file changed on the sending Device: {}", info.name),
+            &format!("A file changed on the sending Device: {name}"),
             "source check failed",
         )
     };
     let sources = sh.db.sources(info.id).await.map_err(fail("Could not look up the Transfer."))?;
-    let [source] = sources.as_slice() else { return Err(changed()) };
-    if !is_unchanged(source).await {
-        return Err(changed());
+    let (sources, gone) = tokio::task::spawn_blocking(move || {
+        let gone = sources.iter().find(|source| !is_unchanged(source)).map(|s| s.name.clone());
+        (sources, gone)
+    })
+    .await
+    .map_err(fail("Could not check the files."))?;
+    if let Some(name) = gone {
+        return Err(changed(&name));
     }
     let content = HashAndFormat::hash_seq(root);
     if !sh.blobs.remote().local(content).await.is_ok_and(|local| local.is_complete()) {
-        let (hash, tags) = import(sh.blobs.clone(), source.path.clone(), info.name.clone()).await?;
+        let (hash, tags) = import(sh.blobs.clone(), sources).await?;
         if hash != root {
-            return Err(changed());
+            return Err(changed(&info.name));
         }
         keep_alive.extend(tags);
     }
     Ok(())
 }
 
-async fn is_unchanged(source: &Source) -> bool {
-    match tokio::fs::metadata(&source.path).await {
+fn is_unchanged(source: &Source) -> bool {
+    match std::fs::metadata(&source.path) {
         Ok(meta) => meta.is_file() && meta.len() == source.size && mtime_ns(&meta) == source.mtime_ns,
         Err(_) => false,
     }
@@ -497,34 +505,50 @@ pub(crate) async fn resume(sh: &Shared, session: Session, id: TransferId) {
 }
 
 /// Keeps what an expired Offer held, so `Device::resend` can make it again.
-fn lapse(sh: &Shared, info: &TransferInfo, to: &DeviceAddr, path: &std::path::Path) {
+fn lapse(sh: &Shared, info: &TransferInfo, to: &DeviceAddr, roots: &[PathBuf]) {
     sh.expired
         .lock()
         .unwrap_or_else(|e| e.into_inner())
-        .insert(info.id, (to.clone(), path.to_owned()));
+        .insert(info.id, (to.clone(), roots.to_owned()));
 }
 
-/// Imports the file by reference into the global store and wraps it in a one-entry
-/// Collection, the shape the Receiver fetches (folders will add entries).
+/// How many files are hashed at once; a folder of small files is mostly waiting on the disk.
+const IMPORT_PARALLELISM: usize = 32;
+
+/// Imports the files by reference into the global store and wraps them in a Collection named
+/// by their manifest paths, in the order given: the shape the Receiver fetches. Returns the
+/// Collection's hash and the temp tags that keep everything alive.
 async fn import(
     store: iroh_blobs::api::Store,
-    path: PathBuf,
-    name: String,
+    sources: Vec<Source>,
 ) -> Result<(Hash, Vec<TempTag>), Failure> {
-    let file = store
-        .blobs()
-        .add_path_with_opts(AddPathOptions {
-            path,
-            format: BlobFormat::Raw,
-            mode: ImportMode::TryReference,
+    // Each import owns what it uses: futures that borrow make the whole task fail to prove
+    // that it can be sent between threads.
+    let jobs: Vec<_> = sources.iter().map(|source| (store.clone(), source.path.clone())).collect();
+    let mut tags: Vec<TempTag> = stream::iter(jobs)
+        .map(|(store, path)| async move {
+            store
+                .blobs()
+                .add_path_with_opts(AddPathOptions {
+                    path,
+                    format: BlobFormat::Raw,
+                    mode: ImportMode::TryReference,
+                })
+                .temp_tag()
+                .await
         })
-        .temp_tag()
-        .await
-        .map_err(fail("Could not read the file."))?;
-    let collection = Collection::from_iter([(name, file.hash())]);
+        .buffered_ordered(IMPORT_PARALLELISM)
+    .try_collect()
+    .await
+    .map_err(fail("Could not read the files."))?;
+    let collection = Collection::from_iter(
+        sources.into_iter().map(|source| source.name).zip(tags.iter().map(TempTag::hash)),
+    );
     let root = collection
         .store(&store)
         .await
-        .map_err(fail("Could not prepare the file for sending."))?;
-    Ok((root.hash(), vec![file, root]))
+        .map_err(fail("Could not prepare the files for sending."))?;
+    let hash = root.hash();
+    tags.push(root);
+    Ok((hash, tags))
 }

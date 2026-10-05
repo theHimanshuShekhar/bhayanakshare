@@ -2,6 +2,7 @@
 // only: the React side just feeds events in and renders the result.
 
 import type { DeviceEvent, Role, TransferId, TransferState } from "./bindings";
+import { t } from "./i18n";
 
 export interface TransferView {
   id: TransferId;
@@ -10,7 +11,14 @@ export interface TransferView {
   peer: string;
   /** What the other Device calls itself, as it announced; null until known. Untrusted text. */
   peerName: string | null;
+  /** The first of `items`. */
   name: string;
+  /** The names at the top of what is being sent: the files and folders picked, each once. */
+  items: string[];
+  /** How many files there are in all, inside folders too. */
+  fileCount: number;
+  /** Symlinks the Sender found in the folders it picked and left out. */
+  skippedLinks: number;
   size: number;
   state: TransferState;
   /** When an unanswered Offer lapses, by the Device's clock (Unix milliseconds). */
@@ -51,6 +59,9 @@ export function applyEvent(transfers: Transfers, event: DeviceEvent): Transfers 
           peer: event.peer,
           peerName: event.peer_name,
           name: event.name,
+          items: event.items,
+          fileCount: event.file_count,
+          skippedLinks: event.skipped_links,
           size: event.size,
           state: event.state,
           expiresAt: event.expires_at,
@@ -134,6 +145,13 @@ export function formatCountdown(millis: number): string {
 export function percent(view: TransferView): number {
   if (view.size === 0) return 100;
   return Math.min(100, Math.floor((view.bytes * 100) / view.size));
+}
+
+/** What a Transfer holds, for a sentence: "photo.jpg", or "photo.jpg and 2 more". */
+export function transferName(view: TransferView): string {
+  return view.items.length > 1
+    ? t("transfer.nameMore", { name: view.name, count: view.items.length - 1 })
+    : view.name;
 }
 
 /** The last part of a path, for showing a file by name. */

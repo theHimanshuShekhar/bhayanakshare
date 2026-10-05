@@ -3,9 +3,11 @@
 //! Hello, then the Offer is shown to the user and nothing moves until they accept. After
 //! `Accept` and the Sender's `HashReady`, the content is fetched over iroh-blobs into a
 //! per-Transfer store under `<save folder>/.bhayanakshare-incoming/<transfer id>/` (on the
-//! save folder's filesystem, so saving is a rename), verified, moved into the save folder,
-//! fsynced, and only then is `Completed` sent and the incoming store deleted. The save folder
-//! is the one the Offer was accepted into, which the Receiver may choose per Offer.
+//! save folder's filesystem, so saving is a rename), verified against the Offer's manifest,
+//! built into a staging tree next to the store, and only when all of it is right is each
+//! top-level item moved into the save folder, fsynced, and only then is `Completed` sent and the
+//! incoming store deleted. The save folder is the one the Offer was accepted into, which the
+//! Receiver may choose per Offer.
 //!
 //! Until the move into the save folder starts, either side can cancel (the incoming store is
 //! deleted), and an Offer nobody answers expires. A Sender that already has 5 Offers waiting
@@ -19,7 +21,7 @@
 //! is missing. With no progress for 24 hours the Receiver gives up and deletes it.
 
 use std::{
-    collections::hash_map::Entry,
+    collections::{BTreeSet, hash_map::Entry},
     io,
     path::{Path, PathBuf},
     sync::Arc,
@@ -49,8 +51,9 @@ use crate::{
     device::{Decision, PendingOffer, Shared, TransferInfo},
     fsmove::rename_no_replace,
     identity::DeviceId,
-    names::{numbered, validate_file_name},
-    protocol::{self, Message, spawn_reader, write_frame},
+    manifest::{self, Manifest},
+    names::numbered,
+    protocol::{self, FrameError, Message, spawn_reader, write_frame},
     session::{
         CLOSE_GRACE, FORGOTTEN, Failure, LOST, STALLED, Session, Stall, Stop, UNEXPECTED,
         expect_hello, fail, made_progress, retry_delay, save_progress, stop,
@@ -68,9 +71,18 @@ const MAX_PENDING_OFFERS: usize = 5;
 /// The least time, by the Device's clock, between two progress reports while fetching.
 const PROGRESS_INTERVAL_MS: UnixMillis = 100;
 
-/// Bytes a one-file Transfer may download beyond the file itself: the Collection's hash
-/// sequence and names, a few hundred bytes at most.
-const COLLECTION_ALLOWANCE: u64 = 4096;
+/// Bytes a Transfer may download beyond the files themselves, before the Collection's own
+/// size: slack for its header and the framing.
+const COLLECTION_SLACK: u64 = 4096;
+
+/// What the Collection itself, which is fetched along with the files, may add to what the
+/// Offer says: a hash and a name for each file, however the names are encoded.
+fn collection_allowance(manifest: &Manifest) -> u64 {
+    // 32 bytes of hash and a few of length per file, for one more than the files (the names).
+    const PER_ENTRY: u64 = 37;
+    let names: u64 = manifest.files().map(|(path, _)| path.len() as u64).sum();
+    COLLECTION_SLACK + PER_ENTRY * (manifest.file_count() + 1) + names
+}
 
 /// How long one try to reach the Sender may take before the next is made.
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
@@ -79,10 +91,10 @@ const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 const TELL_TIMEOUT: Duration = Duration::from_secs(5);
 
 const BAD_OFFER: &str = "The other Device sent an invalid Offer.";
-const CANT_FETCH: &str = "Could not download the file from the sending Device.";
-const WRONG_FILE: &str = "The sending Device sent a different file than it offered.";
+const CANT_FETCH: &str = "Could not download the files from the sending Device.";
+const WRONG_FILE: &str = "The sending Device sent different files than it offered.";
 const TOO_MUCH: &str = "The sending Device sent more than it offered.";
-const CANT_SAVE: &str = "Could not save the file to the save folder.";
+const CANT_SAVE: &str = "Could not save the files to the save folder.";
 
 pub(crate) struct Handler {
     sh: Arc<Shared>,
@@ -133,6 +145,7 @@ pub(crate) fn recover(
     info: TransferInfo,
     root: [u8; 32],
     save_dir: PathBuf,
+    manifest: Manifest,
     progress_at: UnixMillis,
 ) {
     let cancel = sh.track(info.id);
@@ -141,10 +154,11 @@ pub(crate) fn recover(
         let sh = task_sh;
         let mut opened = None;
         let root = Some(Hash::from_bytes(root));
+        let manifest = Arc::new(manifest);
         let outcome = tokio::select! {
             () = sh.cancel.cancelled() => None,
             outcome = settle(
-                &sh, &info, &save_dir, None, root, None, &cancel, &mut opened,
+                &sh, &info, &save_dir, &manifest, None, root, None, &cancel, &mut opened,
                 Stall::new(progress_at),
             ) => Some(outcome),
         };
@@ -195,17 +209,34 @@ async fn flow(
             return Ok(());
         }
         Some(Ok(_)) => return Err(Failure::with(UNEXPECTED, "expected Offer")),
+        // An Offer that cannot be read, or is bigger than any Offer may be, is malformed.
+        Some(Err(e @ (FrameError::Malformed(_) | FrameError::TooLarge(_)))) => {
+            tracing::warn!(peer = %DeviceId::from_endpoint_id(peer_endpoint).fingerprint(), "Offer refused: {e}");
+            refuse(&mut session, conn).await;
+            return Ok(());
+        }
         Some(Err(e)) => return Err(Failure::with(LOST, e)),
         None => return Err(Failure::with(LOST, "closed before the Offer")),
     };
-    validate_file_name(&offer.name).map_err(fail(BAD_OFFER))?;
+    // Nothing in the Offer is trusted until it has passed: it is not shown, recorded or
+    // looked at again otherwise, and a Sender whose Offer fails is told so.
+    if let Err(e) = offer.validate() {
+        tracing::warn!(peer = %DeviceId::from_endpoint_id(peer_endpoint).fingerprint(), "Offer refused: {e}");
+        refuse(&mut session, conn).await;
+        return Ok(());
+    }
+    let items = offer.manifest.top_level_items();
+    let manifest = Arc::new(offer.manifest);
     let info = TransferInfo {
         id: TransferId::from_bytes(offer.transfer_id),
         role: Role::Receiver,
         peer: DeviceId::from_endpoint_id(peer_endpoint),
         peer_name,
-        name: offer.name,
+        name: items[0].clone(),
         size: offer.size,
+        items,
+        file_count: offer.file_count,
+        skipped_links: offer.skipped_links,
         expires_at: sh.now() + OFFER_TTL_MS,
     };
 
@@ -301,13 +332,25 @@ async fn flow(
     if let Err(e) = sh.db.start_transfer(info.id, known, Some(&save_dir), now).await {
         tracing::warn!(transfer = %info.id, "could not record the save folder, so a restart cannot resume: {e}");
     }
+    if let Err(e) = sh.db.insert_manifest(info.id, &manifest).await {
+        tracing::warn!(transfer = %info.id, "could not record the manifest, so a restart cannot resume: {e}");
+    }
     write_frame(&mut session.send, &Message::Accept).await.map_err(fail(LOST))?;
     // An auto-accepted Transfer was announced as Accepted when it began.
     if auto.is_none() {
         sh.transition(&info, TransferState::Accepted).await;
     }
     let shown = Some(TransferState::Accepted);
-    settle(sh, &info, &save_dir, Some(session), root, shown, &cancel, opened, Stall::new(now)).await
+    settle(sh, &info, &save_dir, &manifest, Some(session), root, shown, &cancel, opened, Stall::new(now))
+        .await
+}
+
+/// Turns a malformed Offer away: the Sender is told, and nothing is recorded or shown, as if
+/// it had never come.
+async fn refuse(session: &mut Session, conn: &Connection) {
+    let _ = write_frame(&mut session.send, &Message::InvalidOffer).await;
+    let _ = session.send.finish();
+    let _ = tokio::time::timeout(CLOSE_GRACE, conn.closed()).await;
 }
 
 /// The save folder to accept `info` into without asking, if its Sender is a Contact with
@@ -353,6 +396,7 @@ async fn settle(
     sh: &Arc<Shared>,
     info: &TransferInfo,
     save_dir: &Path,
+    manifest: &Arc<Manifest>,
     session: Option<Session>,
     root: Option<Hash>,
     shown: Option<TransferState>,
@@ -360,7 +404,7 @@ async fn settle(
     opened: &mut Option<Opened>,
     stall: Stall,
 ) -> Result<(), Failure> {
-    let ended = drive(sh, info, save_dir, session, root, shown, cancel, opened, stall).await;
+    let ended = drive(sh, info, save_dir, manifest, session, root, shown, cancel, opened, stall).await;
     // However it ended, whatever is left in the incoming store is deleted with it: partial
     // data after a failure or cancel, nothing after a save.
     match opened.take() {
@@ -421,6 +465,7 @@ async fn drive(
     sh: &Arc<Shared>,
     info: &TransferInfo,
     save_dir: &Path,
+    manifest: &Arc<Manifest>,
     mut session: Option<Session>,
     mut root: Option<Hash>,
     mut shown: Option<TransferState>,
@@ -471,7 +516,9 @@ async fn drive(
         }
         let store = &opened.as_ref().expect("opened above").store;
         let last_progress = stall.last();
-        match fetch_and_save(sh, &mut live, cancel, store, info, hash, save_dir, &mut stall).await? {
+        match fetch_and_save(sh, &mut live, cancel, store, info, hash, save_dir, manifest, &mut stall)
+            .await?
+        {
             Fetched::Saved(saved) => return Ok(Ended::Saved(saved, Some(live))),
             Fetched::Stopped(how) => return Ok(Ended::Stopped(how, Some(live))),
             Fetched::Lost => {
@@ -628,9 +675,9 @@ async fn report_progress(sh: &Shared, live: &mut Session, info: &TransferInfo, b
     let _ = write_frame(&mut live.send, &Message::Progress { bytes: bytes.min(info.size) }).await;
 }
 
-/// Fetches the Transfer's content into `store`, checks it is what was offered, and moves it
-/// into `save_dir`. Returns where it ended up. Whatever `store` already holds from an
-/// earlier try is kept, and only the rest is requested.
+/// Fetches the Transfer's content into `store`, checks it is what was offered, builds the tree
+/// the manifest describes and moves it into `save_dir`. Returns where it ended up. Whatever
+/// `store` already holds from an earlier try is kept, and only the rest is requested.
 async fn fetch_and_save(
     sh: &Arc<Shared>,
     live: &mut Session,
@@ -639,6 +686,7 @@ async fn fetch_and_save(
     info: &TransferInfo,
     root: Hash,
     save_dir: &Path,
+    manifest: &Arc<Manifest>,
     stall: &mut Stall,
 ) -> Result<Fetched, Failure> {
     let blobs: &iroh_blobs::api::Store = store;
@@ -647,6 +695,7 @@ async fn fetch_and_save(
     // iroh-blobs counts only what a request downloads, so the progress shown adds what an
     // earlier try left in the store.
     let already = blobs.remote().local(content).await.map_err(fail(CANT_FETCH))?.local_bytes();
+    let allowance = collection_allowance(manifest);
 
     let conn = tokio::select! {
         biased;
@@ -681,7 +730,7 @@ async fn fetch_and_save(
                 let bytes = already.saturating_add(downloaded);
                 // The free-space check was made for the offered size; a Sender that sends
                 // more must not fill the disk beyond it.
-                if bytes > info.size.saturating_add(COLLECTION_ALLOWANCE) {
+                if bytes > info.size.saturating_add(allowance) {
                     conn.close(0u32.into(), b"too much");
                     return Err(Failure::with(TOO_MUCH, format!("{bytes} bytes, offered {}", info.size)));
                 }
@@ -710,58 +759,154 @@ async fn fetch_and_save(
     // The count above includes the Collection's own few bytes, so only now is it exact.
     report_progress(sh, live, info, info.size).await;
 
-    // The Collection must be exactly the one file that was offered.
+    // The Collection must list exactly the files that were offered, under the names the
+    // manifest gave them.
     let collection = Collection::load(root, blobs).await.map_err(fail(WRONG_FILE))?;
-    let [(name, file)] = collection.iter().cloned().collect::<Vec<_>>().try_into().map_err(
-        |entries: Vec<_>| Failure::with(WRONG_FILE, format!("{} entries", entries.len())),
-    )?;
-    if name != info.name {
-        return Err(Failure::with(WRONG_FILE, "name differs from the Offer"));
-    }
-    let size = blobs.blobs().observe(file).await.map_err(fail(WRONG_FILE))?.size();
-    if size != info.size {
-        return Err(Failure::with(WRONG_FILE, format!("{size} bytes, offered {}", info.size)));
+    let named = collection.iter().map(|(name, _)| name.as_str());
+    if collection.len() as u64 != manifest.file_count() || !named.eq(manifest.files().map(|(path, _)| path)) {
+        return Err(Failure::with(WRONG_FILE, "the Collection's names differ from the manifest"));
     }
 
-    // From here the file is moved into the save folder, which cannot be taken back.
+    // From here the files are put in place, which cannot be taken back.
     sh.untrack(info.id);
     sh.transition(info, TransferState::Saving).await;
-    let staged = incoming_dir(save_dir, info.id).join("out").join(&info.name);
-    blobs
-        .blobs()
-        .export_with_opts(ExportOptions {
-            hash: file,
-            // The store keeps the data in its own file, so this is a rename, not a copy.
-            mode: ExportMode::TryReference,
-            target: staged.clone(),
-        })
-        .finish()
-        .await
-        .map_err(fail(CANT_SAVE))?;
+    // Everything is built under `out` first, so that nothing reaches the save folder until
+    // all of it is received and right. A try before a restart may have left some behind.
+    let out = incoming_dir(save_dir, info.id).join("out");
+    remove_dir(&out).await;
+    for (name, hash) in collection.iter() {
+        blobs
+            .blobs()
+            .export_with_opts(ExportOptions {
+                hash: *hash,
+                // The store keeps the data in its own file, so this is a rename, not a copy.
+                mode: ExportMode::TryReference,
+                target: out.join(name),
+            })
+            .finish()
+            .await
+            .map_err(fail(CANT_SAVE))?;
+    }
 
-    let save_dir = save_dir.to_owned();
-    let name = info.name.clone();
-    let saved = tokio::task::spawn_blocking(move || move_into_save_folder(&staged, &save_dir, &name))
-        .await
-        .map_err(fail(CANT_SAVE))?
-        .map_err(fail(CANT_SAVE))?;
+    let (manifest, save_dir) = (manifest.clone(), save_dir.to_owned());
+    let saved = tokio::task::spawn_blocking(move || {
+        build_tree(&out, &manifest)?;
+        move_into_save_folder(&out, &save_dir, &manifest.top_level_items())
+    })
+    .await
+    .map_err(fail(CANT_SAVE))?
+    .map_err(|e| {
+        if e.kind() == io::ErrorKind::InvalidData { Failure::with(WRONG_FILE, e) } else { Failure::with(CANT_SAVE, e) }
+    })?;
     Ok(Fetched::Saved(saved.to_string_lossy().into_owned()))
 }
 
-/// Makes the staged file durable, moves it into `save_dir` under a name that is not taken
-/// (`a.txt`, `a (1).txt`, ...), and fsyncs the folder so the rename survives a power cut.
-/// The move fails rather than replaces, so a file that appears at the chosen name at any
-/// moment, even from another program, is never overwritten: the next name is tried.
-fn move_into_save_folder(staged: &Path, save_dir: &Path, name: &str) -> io::Result<PathBuf> {
-    std::fs::OpenOptions::new().write(true).open(staged)?.sync_all()?;
+/// How many threads finish the staged files at once. Each file is fsynced, which waits on the
+/// disk, so a folder of thousands of small files takes minutes one at a time.
+const BUILD_THREADS: usize = 8;
+
+/// Makes the files exported under `out` what the manifest says they are: checks each is the
+/// size offered, gives it its modification time and executable bit, makes the empty folders,
+/// and makes all of it durable. A file of another size is `InvalidData`.
+fn build_tree(out: &Path, manifest: &Manifest) -> io::Result<()> {
+    let per_thread = manifest.entries.len().div_ceil(BUILD_THREADS).max(1);
+    std::thread::scope(|scope| {
+        manifest
+            .entries
+            .chunks(per_thread)
+            .map(|part| scope.spawn(move || part.iter().try_for_each(|entry| finish_entry(out, entry))))
+            .collect::<Vec<_>>()
+            .into_iter()
+            .try_for_each(|worker| {
+                worker.join().unwrap_or_else(|_| Err(io::Error::other("a worker thread panicked")))
+            })
+    })?;
+    // Every folder that holds something, to be fsynced so the names in it last.
+    let mut folders = BTreeSet::from([out.to_owned()]);
+    for entry in &manifest.entries {
+        let path = out.join(entry.path());
+        let holder = match entry {
+            manifest::Entry::File { .. } => path.parent().unwrap_or(out),
+            manifest::Entry::EmptyDir { .. } => &path,
+        };
+        for folder in holder.ancestors().take_while(|folder| *folder != out) {
+            folders.insert(folder.to_owned());
+        }
+    }
+    folders.iter().try_for_each(|folder| sync_dir(folder))
+}
+
+fn finish_entry(out: &Path, entry: &manifest::Entry) -> io::Result<()> {
+    match entry {
+        manifest::Entry::File { path, size, mtime_ns, executable } => {
+            let file = std::fs::OpenOptions::new().write(true).open(out.join(path))?;
+            if file.metadata()?.len() != *size {
+                return Err(io::Error::new(io::ErrorKind::InvalidData, "a file is not the size offered"));
+            }
+            // A time before 1970 or out of range is left as it came out of the store.
+            let at = u64::try_from(*mtime_ns)
+                .ok()
+                .and_then(|ns| std::time::UNIX_EPOCH.checked_add(Duration::from_nanos(ns)));
+            if let Some(at) = at {
+                file.set_modified(at)?;
+            }
+            if *executable {
+                make_executable(&file)?;
+            }
+            file.sync_all()
+        }
+        manifest::Entry::EmptyDir { path } => std::fs::create_dir_all(out.join(path)),
+    }
+}
+
+/// Lets everyone who can read the file run it too, as the Sender's file could be run by them.
+#[cfg(unix)]
+fn make_executable(file: &std::fs::File) -> io::Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+    let mode = file.metadata()?.permissions().mode();
+    file.set_permissions(std::fs::Permissions::from_mode(mode | ((mode & 0o444) >> 2)))
+}
+
+#[cfg(not(unix))]
+fn make_executable(_: &std::fs::File) -> io::Result<()> {
+    Ok(())
+}
+
+/// Moves each top-level item built under `out` into `save_dir` under a name that is not
+/// taken (`photos`, `photos (1)`, ...), and fsyncs the folder so the renames survive a power
+/// cut. An item is moved as a unit, never merged into one already there, and the move fails
+/// rather than replaces, so an item that appears at the chosen name at any moment, even from
+/// another program, is never overwritten: the next name is tried. If one item cannot be moved
+/// the ones already moved are put back, so that a failure leaves nothing in `save_dir`.
+/// Returns where the item went, or `save_dir` itself when there were several.
+fn move_into_save_folder(out: &Path, save_dir: &Path, items: &[String]) -> io::Result<PathBuf> {
+    let mut moved: Vec<(PathBuf, PathBuf)> = Vec::new();
+    let result = items.iter().try_for_each(|item| {
+        let staged = out.join(item);
+        let dest = move_item(&staged, save_dir, item)?;
+        moved.push((dest, staged));
+        Ok(())
+    });
+    if let Err(e) = result.and_then(|()| sync_dir(save_dir)) {
+        for (dest, staged) in moved.iter().rev() {
+            if let Err(undo) = rename_no_replace(dest, staged) {
+                tracing::warn!("could not take {} back out of the save folder: {undo}", dest.display());
+            }
+        }
+        return Err(e);
+    }
+    Ok(match moved.as_slice() {
+        [(dest, _)] => dest.clone(),
+        _ => save_dir.to_owned(),
+    })
+}
+
+fn move_item(staged: &Path, save_dir: &Path, name: &str) -> io::Result<PathBuf> {
     for n in 0u32.. {
         let candidate = if n == 0 { name.to_owned() } else { numbered(name, n) };
         let dest = save_dir.join(candidate);
         match rename_no_replace(staged, &dest) {
-            Ok(()) => {
-                sync_dir(save_dir)?;
-                return Ok(dest);
-            }
+            Ok(()) => return Ok(dest),
             Err(e) if e.kind() == io::ErrorKind::AlreadyExists => continue,
             Err(e) => return Err(e),
         }
@@ -800,5 +945,143 @@ async fn remove_dir(dir: &Path) {
         if e.kind() != io::ErrorKind::NotFound {
             tracing::warn!("removing {}: {e}", dir.display());
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::time::UNIX_EPOCH;
+
+    use iroh_blobs::{hashseq::HashSeq, store::mem::MemStore};
+
+    use super::*;
+    use crate::manifest::Entry;
+
+    fn write(path: &Path, bytes: &[u8]) {
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, bytes).unwrap();
+    }
+
+    fn names(dir: &Path) -> Vec<String> {
+        let mut names: Vec<_> = std::fs::read_dir(dir)
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        names.sort();
+        names
+    }
+
+    fn items(names: &[&str]) -> Vec<String> {
+        names.iter().map(|n| (*n).to_owned()).collect()
+    }
+
+    #[test]
+    fn each_top_level_item_moves_as_a_unit_to_a_name_that_is_free() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (out, save) = (tmp.path().join("out"), tmp.path().join("save"));
+        write(&out.join("album/a.txt"), b"theirs");
+        write(&out.join("note.txt"), b"theirs");
+        write(&save.join("album/mine.txt"), b"mine");
+        write(&save.join("note.txt"), b"mine");
+        write(&save.join("note (1).txt"), b"mine too");
+
+        let at = move_into_save_folder(&out, &save, &items(&["album", "note.txt"])).unwrap();
+
+        // Several items: there is no one place to point at.
+        assert_eq!(at, save);
+        assert_eq!(names(&save), ["album", "album (1)", "note (1).txt", "note (2).txt", "note.txt"]);
+        assert_eq!(names(&save.join("album")), ["mine.txt"]);
+        assert_eq!(std::fs::read(save.join("album (1)/a.txt")).unwrap(), b"theirs");
+        assert_eq!(std::fs::read(save.join("note.txt")).unwrap(), b"mine");
+        assert_eq!(std::fs::read(save.join("note (2).txt")).unwrap(), b"theirs");
+        assert!(names(&out).is_empty());
+    }
+
+    #[test]
+    fn a_single_item_reports_where_it_went() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (out, save) = (tmp.path().join("out"), tmp.path().join("save"));
+        write(&out.join("album/a.txt"), b"a");
+        std::fs::create_dir_all(save.join("album")).unwrap();
+
+        let at = move_into_save_folder(&out, &save, &items(&["album"])).unwrap();
+
+        assert_eq!(at, save.join("album (1)"));
+    }
+
+    #[test]
+    fn when_one_item_cannot_be_moved_the_ones_already_moved_are_put_back() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (out, save) = (tmp.path().join("out"), tmp.path().join("save"));
+        write(&out.join("first/a.txt"), b"a");
+        write(&out.join("second.txt"), b"b");
+        std::fs::create_dir_all(&save).unwrap();
+
+        // The third is not there to move: nothing is left half-delivered.
+        let result = move_into_save_folder(&out, &save, &items(&["first", "second.txt", "third"]));
+
+        assert!(result.is_err());
+        assert!(names(&save).is_empty(), "{:?}", names(&save));
+        assert_eq!(names(&out), ["first", "second.txt"]);
+        assert_eq!(std::fs::read(out.join("first/a.txt")).unwrap(), b"a");
+    }
+
+    #[test]
+    fn the_staged_tree_gets_its_times_bits_and_empty_folders_and_is_checked_for_size() {
+        let tmp = tempfile::tempdir().unwrap();
+        let out = tmp.path().join("out");
+        write(&out.join("d/run.sh"), b"#!/bin/sh\n");
+        write(&out.join("d/plain"), b"plain");
+        let nanos = 1_600_000_000_123_456_789i64;
+        let manifest = Manifest {
+            entries: vec![
+                Entry::File { path: "d/run.sh".into(), size: 10, mtime_ns: nanos, executable: true },
+                Entry::File { path: "d/plain".into(), size: 5, mtime_ns: -1, executable: false },
+                Entry::empty_dir("d/sub/empty"),
+            ],
+        };
+
+        build_tree(&out, &manifest).unwrap();
+
+        let run = std::fs::metadata(out.join("d/run.sh")).unwrap();
+        assert_eq!(run.modified().unwrap(), UNIX_EPOCH + Duration::from_nanos(nanos as u64));
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_ne!(run.permissions().mode() & 0o111, 0);
+            let plain = std::fs::metadata(out.join("d/plain")).unwrap();
+            assert_eq!(plain.permissions().mode() & 0o111, 0);
+        }
+        assert!(out.join("d/sub/empty").is_dir());
+
+        // A file that is not the size offered is refused, not delivered.
+        let wrong = Manifest { entries: vec![Entry::file("d/plain", 6)] };
+        let err = build_tree(&out, &wrong).unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::InvalidData);
+    }
+
+    /// The allowance for the Collection is what lets a folder through the "sent more than it
+    /// offered" cut-off; it has to cover the real thing, names and hashes, for a big folder.
+    #[tokio::test]
+    async fn the_collection_allowance_covers_a_real_collections_size() {
+        let store = MemStore::new();
+        let mut entries = Vec::new();
+        let mut manifest = Manifest::default();
+        for i in 0..2_000 {
+            let path = format!("{}/{}", "d".repeat(100), format!("{i}-{}", "n".repeat(150)));
+            let tag = store.blobs().add_bytes(vec![i as u8; 3]).temp_tag().await.unwrap();
+            entries.push((path.clone(), tag.hash()));
+            manifest.entries.push(Entry::file(path, 3));
+        }
+        let root = Collection::from_iter(entries).store(&store).await.unwrap();
+
+        let sequence = store.blobs().get_bytes(root.hash()).await.unwrap();
+        let meta = HashSeq::try_from(sequence.clone()).unwrap().iter().next().unwrap();
+        let meta_len = store.blobs().get_bytes(meta).await.unwrap().len();
+        let on_the_wire = (sequence.len() + meta_len) as u64;
+
+        assert!(on_the_wire <= collection_allowance(&manifest), "{on_the_wire} bytes of Collection");
+        // And it is not wildly more than that: a Sender cannot hide much in it.
+        assert!(collection_allowance(&manifest) < on_the_wire * 2);
     }
 }

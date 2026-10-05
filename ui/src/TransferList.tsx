@@ -7,6 +7,7 @@ import {
   canResend,
   formatSize,
   percent,
+  transferName,
   type TransferView,
 } from "./transfers";
 
@@ -56,7 +57,8 @@ function TransferRow({
   // An expired Offer can be sent again once; the new Offer is a row of its own.
   const [resent, setResent] = useState(false);
   const peer = peerName(x.peer, contacts, x.peerName);
-  const title = t(x.role === "sender" ? "transfer.to" : "transfer.from", { name: x.name, peer });
+  const name = transferName(x);
+  const title = t(x.role === "sender" ? "transfer.to" : "transfer.from", { name, peer });
   const moving =
     x.state.kind === "transferring" ||
     x.state.kind === "reconnecting" ||
@@ -68,12 +70,19 @@ function TransferRow({
       <strong>{title}</strong>
       {/* Announced when the state changes; the progress below is not, so it stays quiet. */}
       <p aria-live="polite">{statusText(x, peer)}</p>
+      {x.role === "sender" && x.skippedLinks > 0 && (
+        <p>
+          {x.skippedLinks === 1
+            ? t("transfer.linkSkipped")
+            : t("transfer.linksSkipped", { count: x.skippedLinks })}
+        </p>
+      )}
       {moving && (
         <p>
           <progress
             value={x.bytes}
             max={Math.max(x.size, 1)}
-            aria-label={t("transfer.progressLabel", { name: x.name })}
+            aria-label={t("transfer.progressLabel", { name })}
           />{" "}
           {t("transfer.progress", { percent: percent(x), size: formatSize(x.size) })}
           {x.rate !== null && ` · ${t("transfer.rate", { size: formatSize(x.rate) })}`}
@@ -84,7 +93,7 @@ function TransferRow({
           {t("transfer.savedTo", { path: savedTo })}{" "}
           <button
             type="button"
-            aria-label={t("transfer.showInFolderLabel", { name: x.name })}
+            aria-label={t("transfer.showInFolderLabel", { name })}
             onClick={() => {
               setShowFailed(false);
               api.showInFolder(savedTo).catch(() => setShowFailed(true));
@@ -98,7 +107,7 @@ function TransferRow({
       {canCancel(x) && (
         <button
           type="button"
-          aria-label={t("transfer.cancelLabel", { name: x.name })}
+          aria-label={t("transfer.cancelLabel", { name })}
           onClick={() => {
             setProblem(null);
             api.cancelTransfer(x.id).catch(() => setProblem(t("transfer.cancelFailed")));
@@ -110,7 +119,7 @@ function TransferRow({
       {canResend(x) && !resent && (
         <button
           type="button"
-          aria-label={t("transfer.resendLabel", { name: x.name })}
+          aria-label={t("transfer.resendLabel", { name })}
           onClick={() => {
             setProblem(null);
             api.resendTransfer(x.id).then(

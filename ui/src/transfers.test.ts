@@ -11,6 +11,7 @@ import {
   noTransfers,
   pendingOffer,
   percent,
+  transferName,
   type Transfers,
 } from "./transfers";
 
@@ -27,6 +28,9 @@ function transfer(seq: number, state: TransferState, extra: Partial<{ id: string
     peer: PEER,
     peer_name: null,
     name: "photo.jpg",
+    items: ["photo.jpg"],
+    file_count: 1,
+    skipped_links: 0,
     size: 1000,
     expires_at: 601_000,
     state,
@@ -45,6 +49,20 @@ describe("applyEvent", () => {
     expect(state.order).toEqual([ID]);
     expect(state.byId[ID]).toMatchObject({ role: "receiver", peer: PEER, name: "photo.jpg", size: 1000 });
     expect(state.byId[ID].state).toEqual({ kind: "accepted" });
+  });
+
+  it("keeps what an Offer holds: the items, the file count and the links skipped", () => {
+    const event = {
+      ...transfer(0, { kind: "offered" }),
+      name: "album",
+      items: ["album", "notes.txt"],
+      file_count: 7,
+      skipped_links: 2,
+    } as DeviceEvent;
+    const view = run([event, transfer(1, { kind: "accepted" })]).byId[ID];
+    expect(view).toMatchObject({ items: ["album", "notes.txt"], fileCount: 7, skippedLinks: 2 });
+    expect(transferName(view)).toBe("album and 1 more");
+    expect(transferName({ ...view, items: ["album"] })).toBe("album");
   });
 
   it("ignores an event it has already seen", () => {
@@ -133,7 +151,7 @@ describe("formatting", () => {
   });
 
   it("counts whole percent, and an empty file as complete", () => {
-    const base = { id: ID, role: "receiver", peer: PEER, peerName: null, name: "x", state: { kind: "transferring" }, expiresAt: 0, rate: null, progressAt: null } as const;
+    const base = { id: ID, role: "receiver", peer: PEER, peerName: null, name: "x", items: ["x"] as string[], fileCount: 1, skippedLinks: 0, state: { kind: "transferring" }, expiresAt: 0, rate: null, progressAt: null } as const;
     expect(percent({ ...base, size: 1000, bytes: 999 })).toBe(99);
     expect(percent({ ...base, size: 1000, bytes: 1000 })).toBe(100);
     expect(percent({ ...base, size: 0, bytes: 0 })).toBe(100);

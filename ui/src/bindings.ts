@@ -8,10 +8,10 @@ export const commands = {
 	myId: () => __TAURI_INVOKE<MyId>("my_id"),
 	saveFolder: () => __TAURI_INVOKE<string>("save_folder"),
 	/**
-	 *  Offers the file at `path` to the Device with the pasted Device ID `to`; resolves to the
-	 *  Transfer ID.
+	 *  Offers the files and folders at `paths` to the Device with the pasted Device ID `to`, as
+	 *  one Transfer; resolves to the Transfer ID.
 	 */
-	sendFile: (to: string, path: string) => __TAURI_INVOKE<string>("send_file", { to, path }),
+	sendFiles: (to: string, paths: string[]) => __TAURI_INVOKE<string>("send_files", { to, paths }),
 	/**  Whether a pending Offer fits in `folder` (the save folder when absent). */
 	checkOffer: (transferId: TransferId, folder: string | null) => __TAURI_INVOKE<SpaceCheck>("check_offer", { transferId, folder }),
 	/**  Accepts a pending Offer into `folder` for this Offer only (the save folder when absent). */
@@ -190,8 +190,17 @@ export type TransferEvent = {
 	 *  it next to the Fingerprint.
 	 */
 	peer_name: string | null,
+	/**  The first of `items`, for places with room for one name. */
 	name: string,
 	size: number,
+	/**
+	 *  The names at the top of what was offered: the files and folders the Sender picked, each
+	 *  once. All of them are listed, however many; a screen shows as many as fit.
+	 */
+	items: string[],
+	file_count: number,
+	/**  Symlinks the Sender found in the folders it picked and left out. */
+	skipped_links: number,
 	/**
 	 *  When the Offer lapses if nobody answers it, by this Device's clock. The same on every
 	 *  event of the Transfer, so a late subscriber can show the countdown.

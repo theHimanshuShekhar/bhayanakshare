@@ -48,7 +48,7 @@ function fakeApi(overrides: Partial<Api> = {}, initialContacts: Contact[] = []) 
   const api = {
     myId: () => Promise.resolve({ id: MY_ID, fingerprint: "AAAA-AAAA" }),
     saveFolder: () => Promise.resolve("/home/me/Downloads/BhayanakShare"),
-    sendFile: vi.fn(() => Promise.resolve(TRANSFER)),
+    sendFiles: vi.fn((_to: string, _paths: string[]) => Promise.resolve(TRANSFER)),
     checkOffer: vi.fn((_id: string, _folder: string | null) =>
       Promise.resolve({ needed: 2048, free: 1_000_000 }),
     ),
@@ -81,7 +81,7 @@ function fakeApi(overrides: Partial<Api> = {}, initialContacts: Contact[] = []) 
       contacts = contacts.filter((c) => c.id !== id);
       return Promise.resolve(null);
     }),
-    pickFile: vi.fn(() => Promise.resolve<string | null>("/tmp/photo.jpg")),
+    pickFiles: vi.fn(() => Promise.resolve<string[] | null>(["/tmp/photo.jpg"])),
     pickFolder: vi.fn(() => Promise.resolve<string | null>("/mnt/big")),
     showInFolder: vi.fn(() => Promise.resolve()),
     openUrl: vi.fn((_url: string) => Promise.resolve()),
@@ -100,10 +100,13 @@ function fakeApi(overrides: Partial<Api> = {}, initialContacts: Contact[] = []) 
   const shell = (event: ShellEvent) => act(() => shellHandler(event));
   const push = (event: Unstamped) =>
     act(() => handler({ seq: seq++, at: 1_000 * seq, ...event } as DeviceEvent));
+  /** What an Offer holds when it is not just `photo.jpg`: a folder, several files, links skipped. */
+  type Contents = Partial<{ name: string; items: string[]; file_count: number; skipped_links: number }>;
   const transfer = (
     role: "sender" | "receiver",
     state: TransferState,
     peerName: string | null = null,
+    contents: Contents = {},
   ) =>
     push({
       type: "transfer",
@@ -112,9 +115,13 @@ function fakeApi(overrides: Partial<Api> = {}, initialContacts: Contact[] = []) 
       peer: PEER_ID,
       peer_name: peerName,
       name: "photo.jpg",
+      items: ["photo.jpg"],
+      file_count: 1,
+      skipped_links: 0,
       size: 2048,
       expires_at: EXPIRES_AT,
       state,
+      ...contents,
     });
   /** The Device reports the Nearby Devices as they are now. */
   const nearby = (...devices: NearbyDevice[]) => push({ type: "nearby", devices });
@@ -131,8 +138,8 @@ async function start(device = fakeApi()) {
 async function sendPhoto(device: ReturnType<typeof fakeApi>) {
   fireEvent.click(screen.getByRole("button", { name: "Send to ID…" }));
   fireEvent.change(screen.getByLabelText("Device ID"), { target: { value: ` ${PEER_ID} ` } });
-  fireEvent.click(screen.getByRole("button", { name: "Choose file…" }));
-  await waitFor(() => expect(device.api.sendFile).toHaveBeenCalled());
+  fireEvent.click(screen.getByRole("button", { name: "Choose files…" }));
+  await waitFor(() => expect(device.api.sendFiles).toHaveBeenCalled());
 }
 
 describe("My ID", () => {
@@ -179,8 +186,8 @@ describe("sending", () => {
     const device = await start();
     await sendPhoto(device);
 
-    expect(device.api.pickFile).toHaveBeenCalled();
-    expect(device.api.sendFile).toHaveBeenCalledWith(PEER_ID, "/tmp/photo.jpg");
+    expect(device.api.pickFiles).toHaveBeenCalled();
+    expect(device.api.sendFiles).toHaveBeenCalledWith(PEER_ID, ["/tmp/photo.jpg"]);
     await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
 
     await device.transfer("sender", { kind: "offered" });
@@ -188,22 +195,95 @@ describe("sending", () => {
     expect(screen.getByText("Waiting for K3QF-7XNA…")).toBeTruthy();
   });
 
-  it("sends nothing when the file picker is cancelled", async () => {
-    const device = await start(fakeApi({ pickFile: vi.fn(() => Promise.resolve(null)) }));
+  it("sends several chosen files as one Transfer", async () => {
+    const pickFiles = vi.fn(() => Promise.resolve<string[] | null>(["/tmp/a.txt", "/tmp/b.txt"]));
+    const device = await start(fakeApi({ pickFiles }));
+    await sendPhoto(device);
+
+    expect(device.api.sendFiles).toHaveBeenCalledTimes(1);
+    expect(device.api.sendFiles).toHaveBeenCalledWith(PEER_ID, ["/tmp/a.txt", "/tmp/b.txt"]);
+  });
+
+  it("lets the user choose a folder to send, and sends it", async () => {
+    const device = await start();
     fireEvent.click(screen.getByRole("button", { name: "Send to ID…" }));
     fireEvent.change(screen.getByLabelText("Device ID"), { target: { value: PEER_ID } });
-    fireEvent.click(screen.getByRole("button", { name: "Choose file…" }));
-    await waitFor(() => expect(device.api.pickFile).toHaveBeenCalled());
-    expect(device.api.sendFile).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole("button", { name: "Choose folder…" }));
+
+    await waitFor(() => expect(device.api.sendFiles).toHaveBeenCalled());
+    expect(device.api.pickFolder).toHaveBeenCalled();
+    expect(device.api.sendFiles).toHaveBeenCalledWith(PEER_ID, ["/mnt/big"]);
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+  });
+
+  it("sends nothing when the folder picker is cancelled", async () => {
+    const device = await start(fakeApi({ pickFolder: vi.fn(() => Promise.resolve(null)) }));
+    fireEvent.click(screen.getByRole("button", { name: "Send to ID…" }));
+    fireEvent.change(screen.getByLabelText("Device ID"), { target: { value: PEER_ID } });
+    fireEvent.click(screen.getByRole("button", { name: "Choose folder…" }));
+    await waitFor(() => expect(device.api.pickFolder).toHaveBeenCalled());
+    expect(device.api.sendFiles).not.toHaveBeenCalled();
+    expect(screen.getByRole("dialog")).toBeTruthy();
+  });
+
+  it("needs an ID before it will pick a folder either", async () => {
+    await start();
+    fireEvent.click(screen.getByRole("button", { name: "Send to ID…" }));
+    expect((screen.getByRole("button", { name: "Choose folder…" }) as HTMLButtonElement).disabled).toBe(true);
+  });
+
+  it("names a Transfer of several things by the first and how many more", async () => {
+    const device = await start();
+    await device.transfer("sender", { kind: "offered" }, null, {
+      name: "docs",
+      items: ["docs", "notes.txt", "photo.jpg"],
+    });
+    expect(screen.getByText("docs and 2 more to K3QF-7XNA")).toBeTruthy();
+  });
+
+  it("tells the Sender how many links were skipped, and not the Receiver", async () => {
+    const device = await start();
+    await device.transfer("sender", { kind: "offered" }, null, { skipped_links: 3 });
+    expect(screen.getByText("3 links skipped")).toBeTruthy();
+
+    await device.push({
+      type: "transfer",
+      transfer_id: "cd".repeat(16),
+      role: "sender",
+      peer: PEER_ID,
+      peer_name: null,
+      name: "pack",
+      items: ["pack"],
+      file_count: 2,
+      skipped_links: 1,
+      size: 1,
+      expires_at: EXPIRES_AT,
+      state: { kind: "offered" },
+    });
+    expect(screen.getByText("1 link skipped")).toBeTruthy();
+    cleanup();
+
+    const received = await start();
+    await received.transfer("receiver", { kind: "accepted" }, null, { skipped_links: 3 });
+    expect(screen.queryByText(/links skipped/)).toBeNull();
+  });
+
+  it("sends nothing when the file picker is cancelled", async () => {
+    const device = await start(fakeApi({ pickFiles: vi.fn(() => Promise.resolve(null)) }));
+    fireEvent.click(screen.getByRole("button", { name: "Send to ID…" }));
+    fireEvent.change(screen.getByLabelText("Device ID"), { target: { value: PEER_ID } });
+    fireEvent.click(screen.getByRole("button", { name: "Choose files…" }));
+    await waitFor(() => expect(device.api.pickFiles).toHaveBeenCalled());
+    expect(device.api.sendFiles).not.toHaveBeenCalled();
     expect(screen.getByRole("dialog")).toBeTruthy();
   });
 
   it("keeps the dialog open and says why when the Device refuses to send", async () => {
     const device = await start(
-      fakeApi({ sendFile: vi.fn(() => Promise.reject("a Device ID is 52 characters of base32")) }),
+      fakeApi({ sendFiles: vi.fn(() => Promise.reject("a Device ID is 52 characters of base32")) }),
     );
     await sendPhoto(device);
-    expect((await screen.findByRole("alert")).textContent).toContain("Could not send the file");
+    expect((await screen.findByRole("alert")).textContent).toContain("Could not send.");
     expect(screen.getByRole("alert").textContent).toContain("52 characters");
     expect(screen.getByRole("dialog")).toBeTruthy();
   });
@@ -211,7 +291,7 @@ describe("sending", () => {
   it("needs an ID before it will pick a file", async () => {
     await start();
     fireEvent.click(screen.getByRole("button", { name: "Send to ID…" }));
-    expect((screen.getByRole("button", { name: "Choose file…" }) as HTMLButtonElement).disabled).toBe(true);
+    expect((screen.getByRole("button", { name: "Choose files…" }) as HTMLButtonElement).disabled).toBe(true);
   });
 
   it("closes the dialog on Escape", async () => {
@@ -251,6 +331,9 @@ describe("sending", () => {
       peer: PEER_ID,
       peer_name: null,
       name: "b.bin",
+      items: ["b.bin"],
+      file_count: 1,
+      skipped_links: 0,
       size: 1,
       expires_at: EXPIRES_AT,
       state: { kind: "failed", reason: "The other Device went away." },
@@ -264,11 +347,36 @@ describe("receiving", () => {
     const device = await start();
     await device.transfer("receiver", { kind: "offered" });
 
-    const sheet = await screen.findByRole("dialog", { name: "Incoming file" });
+    const sheet = await screen.findByRole("dialog", { name: "Incoming files" });
     expect(sheet.textContent).toContain("K3QF-7XNA");
     expect(sheet.textContent).toContain("photo.jpg");
     expect(sheet.textContent).toContain("2 KiB");
     await waitFor(() => expect(sheet.textContent).toContain("/home/me/Downloads/BhayanakShare"));
+  });
+
+  it("lists what is offered: the top-level items, the file count and the total size", async () => {
+    const device = await start();
+    await device.transfer("receiver", { kind: "offered" }, null, {
+      name: "album",
+      items: ["album", "notes.txt", "todo.md"],
+      file_count: 1_234,
+    });
+
+    const sheet = await screen.findByRole("dialog", { name: "Incoming files" });
+    const items = within(sheet).getAllByRole("listitem").map((li) => li.textContent);
+    expect(items).toEqual(["album", "notes.txt", "todo.md"]);
+    expect(sheet.textContent).toContain("1234");
+    expect(sheet.textContent).toContain("2 KiB");
+  });
+
+  it("lists a few items and says how many more there are, however many are offered", async () => {
+    const device = await start();
+    const items = Array.from({ length: 500 }, (_, i) => `file-${i}.txt`);
+    await device.transfer("receiver", { kind: "offered" }, null, { name: items[0], items });
+
+    const sheet = await screen.findByRole("dialog", { name: "Incoming files" });
+    expect(within(sheet).getAllByRole("listitem")).toHaveLength(10);
+    expect(sheet.textContent).toContain("and 490 more");
   });
 
   it("makes the page behind the Offer unreachable until it is answered", async () => {
@@ -358,6 +466,9 @@ describe("receiving", () => {
       peer: PEER_ID,
       peer_name: null,
       name: "b.bin",
+      items: ["b.bin"],
+      file_count: 1,
+      skipped_links: 0,
       size: 1,
       expires_at: EXPIRES_AT,
       state: { kind: "offered" },
@@ -429,7 +540,7 @@ describe("cancelling, expiry and the Offer countdown", () => {
       vi.setSystemTime(EXPIRES_AT - 581_000);
       const device = await start();
       await device.transfer("receiver", { kind: "offered" });
-      const sheet = await screen.findByRole("dialog", { name: "Incoming file" });
+      const sheet = await screen.findByRole("dialog", { name: "Incoming files" });
       expect(within(sheet).getByRole("timer").textContent).toBe("Expires in 9:41");
 
       await act(async () => {
@@ -542,6 +653,9 @@ describe("cancelling, expiry and the Offer countdown", () => {
       peer: PEER_ID,
       peer_name: null,
       name: "photo.jpg",
+      items: ["photo.jpg"],
+      file_count: 1,
+      skipped_links: 0,
       size: 2048,
       expires_at: EXPIRES_AT,
       state: { kind: "failed", reason: "The other Device already has too many Offers from you." },
@@ -698,6 +812,9 @@ describe("Contacts", () => {
       peer: "Z".repeat(52),
       peer_name: null,
       name: "b.bin",
+      items: ["b.bin"],
+      file_count: 1,
+      skipped_links: 0,
       size: 1,
       expires_at: EXPIRES_AT,
       state: { kind: "offered" },
@@ -709,7 +826,7 @@ describe("Contacts", () => {
     const device = await start(fakeApi({}, [contact({ nickname: "Mum", device_name: "DESKTOP-7" })]));
     await screen.findByRole("button", { name: "Send to Mum" });
     await device.transfer("receiver", { kind: "offered" });
-    const sheet = await screen.findByRole("dialog", { name: "Incoming file" });
+    const sheet = await screen.findByRole("dialog", { name: "Incoming files" });
     expect(sheet.textContent).toContain("Mum");
     expect(sheet.textContent).not.toContain("DESKTOP-7");
     expect(sheet.textContent).toContain("Contact");
@@ -719,7 +836,7 @@ describe("Contacts", () => {
   it("shows an Offer from a non-Contact as one, with its Fingerprint", async () => {
     const device = await start();
     await device.transfer("receiver", { kind: "offered" });
-    const sheet = await screen.findByRole("dialog", { name: "Incoming file" });
+    const sheet = await screen.findByRole("dialog", { name: "Incoming files" });
     expect(sheet.textContent).toContain("Not in your Contacts");
     expect(sheet.textContent).toContain("K3QF-7XNA");
   });
@@ -734,14 +851,14 @@ describe("Contacts", () => {
 
     name = "new name"; // refreshed by the connection that brought the Offer
     await api.transfer("receiver", { kind: "offered" });
-    expect(await screen.findByRole("dialog", { name: "Incoming file" })).toBeTruthy();
+    expect(await screen.findByRole("dialog", { name: "Incoming files" })).toBeTruthy();
     await waitFor(() => expect(screen.getByRole("dialog").textContent).toContain("new name"));
   });
 
   it("shows an Offer from a non-Contact by the name it announced, plus its Fingerprint", async () => {
     const device = await start();
     await device.transfer("receiver", { kind: "offered" }, "Alice's desktop");
-    const sheet = await screen.findByRole("dialog", { name: "Incoming file" });
+    const sheet = await screen.findByRole("dialog", { name: "Incoming files" });
     expect(within(sheet).getByText(/Alice's desktop/).textContent).toContain("Not in your Contacts");
     expect(sheet.textContent).toContain("K3QF-7XNA");
   });
@@ -752,7 +869,7 @@ describe("Contacts", () => {
     );
     await screen.findByRole("button", { name: "Send to DESKTOP-7" });
     await device.transfer("receiver", { kind: "offered" }, "Someone else");
-    const sheet = await screen.findByRole("dialog", { name: "Incoming file" });
+    const sheet = await screen.findByRole("dialog", { name: "Incoming files" });
     expect(sheet.textContent).toContain("DESKTOP-7");
     expect(sheet.textContent).not.toContain("Someone else");
   });
@@ -1043,21 +1160,21 @@ describe("files from a second launch or the tray", () => {
     expect(within(dialog).getByText(/a\.txt, b\.txt/)).toBeTruthy();
     fireEvent.click(within(dialog).getByRole("button", { name: "Send" }));
 
-    await waitFor(() => expect(device.api.sendFile).toHaveBeenCalledTimes(2));
-    expect(device.api.sendFile).toHaveBeenNthCalledWith(1, PEER_ID, "/home/me/a.txt");
-    expect(device.api.sendFile).toHaveBeenNthCalledWith(2, PEER_ID, "/home/me/b.txt");
-    expect(device.api.pickFile).not.toHaveBeenCalled();
+    await waitFor(() => expect(device.api.sendFiles).toHaveBeenCalledTimes(2));
+    expect(device.api.sendFiles).toHaveBeenNthCalledWith(1, PEER_ID, ["/home/me/a.txt"]);
+    expect(device.api.sendFiles).toHaveBeenNthCalledWith(2, PEER_ID, ["/home/me/b.txt"]);
+    expect(device.api.pickFiles).not.toHaveBeenCalled();
     await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
     expect(screen.queryByText(/Choose a Device to send/)).toBeNull();
   });
 
   it("keeps the files that were not sent when one fails", async () => {
     const sendFile = vi
-      .fn<Api["sendFile"]>()
+      .fn<Api["sendFiles"]>()
       .mockResolvedValueOnce(TRANSFER)
       .mockRejectedValueOnce(new Error("unreachable"))
       .mockResolvedValue(TRANSFER);
-    const device = await start(fakeApi({ sendFile }, [contact()]));
+    const device = await start(fakeApi({ sendFiles: sendFile }, [contact()]));
     await device.shell({ type: "send_files", paths: ["/x/a.txt", "/x/b.txt"] });
     fireEvent.click(screen.getByRole("button", { name: "Send to K3QF-7XNA" }));
     fireEvent.click(screen.getByRole("button", { name: "Send" }));
@@ -1067,7 +1184,7 @@ describe("files from a second launch or the tray", () => {
 
     fireEvent.click(within(dialog).getByRole("button", { name: "Send" }));
     await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
-    expect(sendFile).toHaveBeenLastCalledWith(PEER_ID, "/x/b.txt");
+    expect(sendFile).toHaveBeenLastCalledWith(PEER_ID, ["/x/b.txt"]);
   });
 
   it("forgets the files when asked", async () => {
@@ -1089,6 +1206,9 @@ describe("a clicked notification", () => {
       peer: PEER_ID,
       peer_name: null,
       name: "older.txt",
+      items: ["older.txt"],
+      file_count: 1,
+      skipped_links: 0,
       size: 1,
       expires_at: EXPIRES_AT,
       state: { kind: "offered" },

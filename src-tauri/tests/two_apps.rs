@@ -1,7 +1,7 @@
 //! Two shells in one process, driven the way the UI drives them: commands through Tauri's IPC
 //! and events from the `device-event` stream. Stands in for launching two windows, which
 //! needs a display. The Offer itself is started through the core's `Device` because the
-//! `send_file` command dials by Device ID alone, and a localhost-only test network has no
+//! `send_files` command dials by Device ID alone, and a localhost-only test network has no
 //! way to resolve one.
 
 use std::{
@@ -167,7 +167,7 @@ fn a_declined_offer_and_bad_input_are_reported_to_the_ui() {
     let again = bob.invoke("decline_offer", json!({ "transferId": offer["transfer_id"] }));
     assert!(again.unwrap_err().as_str().unwrap().contains("no pending Offer"));
     assert!(bob.invoke("accept_offer", json!({ "transferId": "nope" })).is_err());
-    let bad = alice.invoke("send_file", json!({ "to": "not an id", "path": "/tmp/x" }));
+    let bad = alice.invoke("send_files", json!({ "to": "not an id", "paths": ["/tmp/x"] }));
     assert!(bad.unwrap_err().as_str().unwrap().contains("52 characters"));
 
     for shell in [&alice, &bob] {
