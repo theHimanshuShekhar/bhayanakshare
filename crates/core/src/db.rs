@@ -1,7 +1,7 @@
 //! SQLite (WAL) persistence: settings, Contacts and Transfer records.
 
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     net::SocketAddr,
     path::{Path, PathBuf},
     sync::{Arc, Mutex},
@@ -17,7 +17,7 @@ use crate::{
     transfer::{BatchId, Role, TransferId, TransferKind, TransferState},
 };
 
-const SCHEMA_VERSION: i32 = 8;
+const SCHEMA_VERSION: i32 = 9;
 
 #[derive(Debug, thiserror::Error)]
 pub enum DbError {
@@ -31,13 +31,16 @@ pub enum DbError {
     Corrupt(String),
 }
 
-/// One row of the Transfer table; the seed of Transfer History.
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+/// One row of the Transfer table: an entry of Transfer History.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, specta::Type)]
 pub struct TransferRecord {
     pub id: TransferId,
     pub role: Role,
     /// The other Device's ID (base32).
     pub peer: String,
+    /// What the other Device called itself when it last connected for this Transfer; `None` if
+    /// it never did (an Offer that could not be delivered). Untrusted text.
+    pub peer_name: Option<String>,
     /// The first of `items`: what the Transfer is called where there is room for one name.
     pub name: String,
     /// What the Transfer carries: files, or text that went inline in the Offer.
@@ -58,7 +61,11 @@ pub struct TransferRecord {
     /// every Receiver's (a Receiver is never told about the Batch).
     pub batch_id: Option<BatchId>,
     pub state: TransferState,
+    /// When the Offer was made.
     pub created_at: UnixMillis,
+    /// When the Receiver said yes (or Auto-accept did); `None` if it never was accepted.
+    pub accepted_at: Option<UnixMillis>,
+    /// When the state last changed: for a Transfer that has ended, when it ended.
     pub updated_at: UnixMillis,
 }
 
@@ -88,6 +95,14 @@ pub(crate) struct Source {
 /// The states that end a Transfer, as stored. Must list what [`TransferState::is_terminal`]
 /// does; a test checks.
 const ENDED: &str = "'declined', 'completed', 'failed', 'expired', 'cancelled'";
+
+/// Which Transfers [`Db::delete_ended`] looks at.
+#[derive(Debug, Clone, Copy)]
+pub(crate) enum Scope {
+    Everything,
+    Transfer(TransferId),
+    Batch(BatchId),
+}
 
 /// A handle to the database. Cheap to clone; calls run on the blocking pool.
 #[derive(Clone)]
@@ -249,8 +264,9 @@ impl Db {
             c.execute(
                 "INSERT INTO transfers
                  (id, role, peer, name, size, state, saved_to, error, created_at, updated_at,
-                  progress_at, items, file_count, skipped_links, adjusted_names, batch_id, kind, text)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?9, ?11, ?12, ?13, ?14, ?15, ?16, ?17)",
+                  progress_at, items, file_count, skipped_links, adjusted_names, batch_id, kind, text,
+                  peer_name, accepted_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?9, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19)",
                 params![
                     t.id.to_string(),
                     t.role.as_str(),
@@ -268,7 +284,9 @@ impl Db {
                     t.adjusted_names,
                     t.batch_id.map(|batch| batch.to_string()),
                     t.kind.as_str(),
-                    t.text
+                    t.text,
+                    t.peer_name,
+                    t.accepted_at
                 ],
             )?;
             Ok(())
@@ -286,7 +304,8 @@ impl Db {
             let (saved_to, error) = state.details();
             c.execute(
                 "UPDATE transfers
-                 SET state = ?2, saved_to = ?3, error = ?4, updated_at = ?5
+                 SET state = ?2, saved_to = ?3, error = ?4, updated_at = ?5,
+                     accepted_at = CASE WHEN ?2 = 'accepted' THEN COALESCE(accepted_at, ?5) ELSE accepted_at END
                  WHERE id = ?1",
                 params![id.to_string(), state.label(), saved_to, error, now],
             )?;
@@ -322,6 +341,71 @@ impl Db {
                 c.prepare(&format!("SELECT {COLUMNS} FROM transfers ORDER BY created_at, rowid"))?;
             let rows = stmt.query_map([], read_row)?;
             rows.map(|row| record(row?)).collect()
+        })
+        .await
+    }
+
+    /// Notes what the other Device called itself, for a Transfer that learned it only after it
+    /// began (a Sender learns it by reaching the Receiver).
+    pub async fn set_peer_name(&self, id: TransferId, name: &str) -> Result<(), DbError> {
+        let name = name.to_owned();
+        self.run(move |c| {
+            c.execute("UPDATE transfers SET peer_name = ?2 WHERE id = ?1", params![id.to_string(), name])?;
+            Ok(())
+        })
+        .await
+    }
+
+    /// The Transfers with Device `peer` (any when `None`) in `role` (either when `None`), newest
+    /// first.
+    pub async fn history(
+        &self,
+        peer: Option<String>,
+        role: Option<Role>,
+    ) -> Result<Vec<TransferRecord>, DbError> {
+        self.run(move |c| {
+            let mut stmt = c.prepare(&format!(
+                "SELECT {COLUMNS} FROM transfers
+                 WHERE (?1 IS NULL OR peer = ?1) AND (?2 IS NULL OR role = ?2)
+                 ORDER BY created_at DESC, rowid DESC"
+            ))?;
+            let rows = stmt.query_map(params![peer, role.map(Role::as_str)], read_row)?;
+            rows.map(|row| record(row?)).collect()
+        })
+        .await
+    }
+
+    /// Deletes the Transfers in `scope` that have ended, with what is kept only for them, and
+    /// returns how many. One that is still running is left alone, whatever asked: only the
+    /// `state` decides, in the same transaction as the delete. A Batch nothing is left in is
+    /// forgotten too (what it was made from can no longer be retried).
+    pub async fn delete_ended(&self, scope: Scope) -> Result<u64, DbError> {
+        self.run(move |c| {
+            let (filter, arg) = match scope {
+                Scope::Everything => ("1", None),
+                Scope::Transfer(id) => ("id = ?1", Some(id.to_string())),
+                Scope::Batch(batch) => ("batch_id = ?1", Some(batch.to_string())),
+            };
+            let tx = c.unchecked_transaction()?;
+            let doomed: Vec<(String, Option<String>)> = tx
+                .prepare(&format!("SELECT id, batch_id FROM transfers WHERE state IN ({ENDED}) AND {filter}"))?
+                .query_map(rusqlite::params_from_iter(&arg), |r| Ok((r.get(0)?, r.get(1)?)))?
+                .collect::<Result<_, _>>()?;
+            for (id, _) in &doomed {
+                for table in ["transfer_sources", "transfer_manifests"] {
+                    tx.execute(&format!("DELETE FROM {table} WHERE transfer_id = ?1"), [id])?;
+                }
+                tx.execute("DELETE FROM transfers WHERE id = ?1", [id])?;
+            }
+            for batch in doomed.iter().filter_map(|(_, batch)| batch.as_ref()).collect::<HashSet<_>>() {
+                tx.execute(
+                    "DELETE FROM batches WHERE id = ?1
+                     AND NOT EXISTS (SELECT 1 FROM transfers WHERE batch_id = ?1)",
+                    [batch],
+                )?;
+            }
+            tx.commit()?;
+            Ok(doomed.len() as u64)
         })
         .await
     }
@@ -415,9 +499,9 @@ impl Db {
             let rows = stmt.query_map([], |r| {
                 Ok((
                     read_row(r)?,
-                    r.get::<_, i64>(17)?,
-                    r.get::<_, Option<String>>(18)?,
-                    r.get::<_, Option<String>>(19)?,
+                    r.get::<_, i64>(19)?,
+                    r.get::<_, Option<String>>(20)?,
+                    r.get::<_, Option<String>>(21)?,
                 ))
             })?;
             let mut out = Vec::new();
@@ -629,7 +713,7 @@ impl Db {
     }
 }
 
-const COLUMNS: &str = "id, role, peer, name, size, state, saved_to, error, created_at, updated_at, items, file_count, skipped_links, adjusted_names, batch_id, kind, text";
+const COLUMNS: &str = "id, role, peer, name, size, state, saved_to, error, created_at, updated_at, items, file_count, skipped_links, adjusted_names, batch_id, kind, text, peer_name, accepted_at";
 
 type TransferRow = (
     String,
@@ -649,6 +733,8 @@ type TransferRow = (
     Option<String>,
     String,
     Option<String>,
+    Option<String>,
+    Option<i64>,
 );
 
 fn read_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<TransferRow> {
@@ -670,6 +756,8 @@ fn read_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<TransferRow> {
         r.get(14)?,
         r.get(15)?,
         r.get(16)?,
+        r.get(17)?,
+        r.get(18)?,
     ))
 }
 
@@ -692,12 +780,15 @@ fn record(row: TransferRow) -> Result<TransferRecord, DbError> {
         batch_id,
         kind,
         text,
+        peer_name,
+        accepted_at,
     ) = row;
     let corrupt = |what: &str, v: &str| DbError::Corrupt(format!("{what} {v:?}"));
     Ok(TransferRecord {
         id: id.parse().map_err(|_| corrupt("transfer id", &id))?,
         role: role.parse().map_err(|_| corrupt("role", &role))?,
         peer,
+        peer_name,
         name,
         kind: kind.parse().map_err(|_| corrupt("kind", &kind))?,
         size: size as u64,
@@ -712,6 +803,7 @@ fn record(row: TransferRow) -> Result<TransferRecord, DbError> {
         state: TransferState::from_parts(&state, saved_to, error)
             .ok_or_else(|| corrupt("state", &state))?,
         created_at,
+        accepted_at,
         updated_at,
     })
 }
@@ -890,6 +982,17 @@ fn migrate(conn: &Connection) -> Result<(), DbError> {
              COMMIT;",
         )?;
     }
+    if version < 9 {
+        // History: what the other Device called itself, and when the Transfer was accepted
+        // (the Offer and the end are `created_at` and `updated_at`).
+        conn.execute_batch(
+            "BEGIN;
+             ALTER TABLE transfers ADD COLUMN peer_name TEXT;
+             ALTER TABLE transfers ADD COLUMN accepted_at INTEGER;
+             PRAGMA user_version = 9;
+             COMMIT;",
+        )?;
+    }
     Ok(())
 }
 
@@ -902,6 +1005,7 @@ mod tests {
             id: TransferId::from_bytes([id; 16]),
             role: Role::Sender,
             peer: "PEER".into(),
+            peer_name: None,
             name: "a.txt".into(),
             kind: TransferKind::Files,
             size: 12,
@@ -913,6 +1017,7 @@ mod tests {
             batch_id: None,
             state,
             created_at: 100,
+            accepted_at: None,
             updated_at: 100,
         }
     }
@@ -959,6 +1064,83 @@ mod tests {
         assert_eq!(rows[0].state, TransferState::Completed { saved_to: Some("/saved/a.txt".into()) });
         assert_eq!(rows[0].updated_at, 200);
         assert_eq!(rows[1].state, TransferState::Offered);
+    }
+
+    #[tokio::test]
+    async fn the_time_a_transfer_was_accepted_is_kept_once() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = Db::open(&dir.path().join("t.db")).await.unwrap();
+        let id = TransferId::from_bytes([1; 16]);
+        db.insert_transfer(record(1, TransferState::Offered)).await.unwrap();
+        db.update_transfer(id, TransferState::Accepted, 150).await.unwrap();
+        db.update_transfer(id, TransferState::Transferring, 160).await.unwrap();
+        // A Transfer announced as Accepted again keeps its first time.
+        db.update_transfer(id, TransferState::Accepted, 170).await.unwrap();
+        db.update_transfer(id, TransferState::Completed { saved_to: None }, 180).await.unwrap();
+
+        let done = db.transfer(id).await.unwrap().unwrap();
+        assert_eq!((done.created_at, done.accepted_at, done.updated_at), (100, Some(150), 180));
+    }
+
+    #[tokio::test]
+    async fn history_is_newest_first_and_narrowed_by_device_and_role() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = Db::open(&dir.path().join("t.db")).await.unwrap();
+        for (id, peer, role, at) in [
+            (1, "A", Role::Sender, 100),
+            (2, "B", Role::Receiver, 200),
+            (3, "A", Role::Receiver, 300),
+            // The same moment as 3: the one recorded later is newer.
+            (4, "A", Role::Sender, 300),
+        ] {
+            let t = TransferRecord { peer: peer.into(), role, created_at: at, ..record(id, TransferState::Offered) };
+            db.insert_transfer(t).await.unwrap();
+        }
+        let ids = |rows: Vec<TransferRecord>| rows.iter().map(|t| t.id.as_bytes()[0]).collect::<Vec<_>>();
+
+        assert_eq!(ids(db.history(None, None).await.unwrap()), [4, 3, 2, 1]);
+        assert_eq!(ids(db.history(Some("A".into()), None).await.unwrap()), [4, 3, 1]);
+        assert_eq!(ids(db.history(None, Some(Role::Receiver)).await.unwrap()), [3, 2]);
+        assert_eq!(ids(db.history(Some("A".into()), Some(Role::Sender)).await.unwrap()), [4, 1]);
+    }
+
+    #[tokio::test]
+    async fn only_transfers_that_have_ended_are_deleted_with_what_was_kept_for_them() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = Db::open(&dir.path().join("t.db")).await.unwrap();
+        let (kept, gone) = (BatchId::random(), BatchId::random());
+        let states = [
+            (1, TransferState::Completed { saved_to: None }, Some(gone)),
+            (2, TransferState::Failed { reason: "x".into() }, Some(gone)),
+            (3, TransferState::Transferring, Some(kept)),
+            (4, TransferState::Declined, Some(kept)),
+            (5, TransferState::Offered, None),
+            (6, TransferState::Cancelled { by: Role::Sender }, None),
+        ];
+        for (id, state, batch) in states {
+            db.insert_transfer(TransferRecord { batch_id: batch, ..record(id, state) }).await.unwrap();
+            let source = Source { path: "a".into(), size: 1, mtime_ns: 1, name: "a".into() };
+            db.insert_sources(TransferId::from_bytes([id; 16]), vec![source]).await.unwrap();
+        }
+        db.insert_manifest(TransferId::from_bytes([3; 16]), &Manifest::default()).await.unwrap();
+        db.insert_batch(gone, &[PathBuf::from("a")], None).await.unwrap();
+        db.insert_batch(kept, &[PathBuf::from("a")], None).await.unwrap();
+
+        // Asked for by name, a running Transfer stays. So does the Batch another of whose
+        // Transfers is still running, though one that ended in it goes.
+        assert_eq!(db.delete_ended(Scope::Transfer(TransferId::from_bytes([3; 16]))).await.unwrap(), 0);
+        assert_eq!(db.delete_ended(Scope::Batch(kept)).await.unwrap(), 1);
+        assert!(db.batch_roots(kept).await.unwrap().is_some());
+
+        assert_eq!(db.delete_ended(Scope::Everything).await.unwrap(), 3);
+        let left: Vec<_> = db.transfers().await.unwrap().iter().map(|t| t.id.as_bytes()[0]).collect();
+        assert_eq!(left, [3, 5]);
+        // What was kept for the ones that went, went too; the running ones keep theirs.
+        assert!(db.sources(TransferId::from_bytes([1; 16])).await.unwrap().is_empty());
+        assert_eq!(db.sources(TransferId::from_bytes([3; 16])).await.unwrap().len(), 1);
+        assert!(db.manifest(TransferId::from_bytes([3; 16])).await.unwrap().is_some());
+        assert_eq!(db.batch_roots(gone).await.unwrap(), None);
+        assert!(db.batch_roots(kept).await.unwrap().is_some());
     }
 
     #[tokio::test]
@@ -1219,6 +1401,8 @@ mod tests {
         assert_eq!(old.adjusted_names, 0);
         // Nothing from before text is text.
         assert_eq!((old.kind, old.text), (TransferKind::Files, None));
+        // Nor was its Device's name or the time it was accepted written down.
+        assert_eq!((old.peer_name, old.accepted_at), (None, None));
         let source = Source { path: "/src/a.txt".into(), size: 7, mtime_ns: 99, name: "a.txt".into() };
         assert_eq!(db.sources(id).await.unwrap(), [source]);
 

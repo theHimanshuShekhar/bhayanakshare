@@ -10,14 +10,27 @@ import {
   type BatchId,
   type Contact,
   type DeviceEvent,
+  type HistoryEntry,
   type MyId,
+  type Role,
   type ShellEvent,
   type SpaceCheck,
   type TransferId,
   type Visibility,
 } from "./bindings";
 
-export type { BatchId, Contact, DeviceEvent, MyId, ShellEvent, SpaceCheck, TransferId, Visibility };
+export type {
+  BatchId,
+  Contact,
+  DeviceEvent,
+  HistoryEntry,
+  MyId,
+  Role,
+  ShellEvent,
+  SpaceCheck,
+  TransferId,
+  Visibility,
+};
 
 export interface Api {
   myId(): Promise<MyId>;
@@ -64,6 +77,17 @@ export interface Api {
   setAutoAccept(id: string, on: boolean): Promise<Contact>;
   /** Forgets a Contact; its Transfer records stay. */
   removeContact(id: string): Promise<unknown>;
+  /**
+   * Transfer History, newest first, narrowed by the other Device's ID, by the role this Device
+   * played (`direction`) and by a search of the item names; null leaves that out.
+   */
+  history(peer: string | null, direction: Role | null, search: string | null): Promise<HistoryEntry[]>;
+  /** Deletes one Transfer that has ended from History. */
+  deleteHistoryTransfer(id: TransferId): Promise<unknown>;
+  /** Deletes the Transfers of a Batch that have ended from History. */
+  deleteHistoryBatch(id: BatchId): Promise<unknown>;
+  /** Deletes every Transfer that has ended from History; the ones still going stay. */
+  clearHistory(): Promise<unknown>;
   /** Asks the user for one or more files; null if they cancel. */
   pickFiles(): Promise<string[] | null>;
   /** Asks the user for a folder; null if they cancel. */
@@ -122,6 +146,10 @@ export const tauriApi: Api = {
   setNickname: commands.setNickname,
   setAutoAccept: commands.setAutoAccept,
   removeContact: commands.removeContact,
+  history: commands.history,
+  deleteHistoryTransfer: commands.deleteHistoryTransfer,
+  deleteHistoryBatch: commands.deleteHistoryBatch,
+  clearHistory: commands.clearHistory,
   pickFiles: async () => {
     const picked = await open({ multiple: true, directory: false });
     return Array.isArray(picked) && picked.length > 0 ? picked : null;

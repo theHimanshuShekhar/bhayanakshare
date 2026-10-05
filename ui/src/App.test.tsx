@@ -1,8 +1,8 @@
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { App } from "./App";
-import type { Api, Contact, DeviceEvent, ShellEvent, Visibility } from "./api";
-import type { NearbyDevice, TransferState } from "./bindings";
+import type { Api, Contact, DeviceEvent, Role, ShellEvent, Visibility } from "./api";
+import type { HistoryEntry, NearbyDevice, TransferRecord, TransferState } from "./bindings";
 import { NEARBY_WAIT_MS } from "./nearby";
 
 afterEach(cleanup);
@@ -41,6 +41,9 @@ function fakeApi(overrides: Partial<Api> = {}, initialContacts: Contact[] = []) 
   let seq = 0;
   let contacts = initialContacts;
   let visibility: Visibility = "id_holders";
+  let historyEntries: HistoryEntry[] = [];
+  /** What each read of History asked for: the Device, the direction and the search. */
+  const historyReads: [string | null, Role | null, string | null][] = [];
   const change =(id: string, over: (c: Contact) => Partial<Contact>) => {
     const changed = contacts.map((c) => (c.id === id ? { ...c, ...over(c) } : c));
     contacts = changed;
@@ -87,6 +90,13 @@ function fakeApi(overrides: Partial<Api> = {}, initialContacts: Contact[] = []) 
       contacts = contacts.filter((c) => c.id !== id);
       return Promise.resolve(null);
     }),
+    history: vi.fn((peer: string | null, direction: Role | null, search: string | null) => {
+      historyReads.push([peer, direction, search]);
+      return Promise.resolve(historyEntries);
+    }),
+    deleteHistoryTransfer: vi.fn((_id: string) => Promise.resolve(null)),
+    deleteHistoryBatch: vi.fn((_id: string) => Promise.resolve(null)),
+    clearHistory: vi.fn(() => Promise.resolve(null)),
     pickFiles: vi.fn(() => Promise.resolve<string[] | null>(["/tmp/photo.jpg"])),
     pickFolder: vi.fn(() => Promise.resolve<string | null>("/mnt/big")),
     showInFolder: vi.fn(() => Promise.resolve()),
@@ -144,7 +154,11 @@ function fakeApi(overrides: Partial<Api> = {}, initialContacts: Contact[] = []) 
     });
   /** The Device reports the Nearby Devices as they are now. */
   const nearby = (...devices: NearbyDevice[]) => push({ type: "nearby", devices });
-  return { api, push, transfer, nearby, shell };
+  /** What the Device's History holds from now on, newest first. */
+  const setHistory = (entries: HistoryEntry[]) => {
+    historyEntries = entries;
+  };
+  return { api, push, transfer, nearby, shell, setHistory, historyReads };
 }
 
 /** Renders the app and waits until it is listening for events. */
@@ -196,7 +210,7 @@ describe("navigation", () => {
     fireEvent.click(screen.getByRole("button", { name: "History" }));
     expect(screen.getByRole("button", { name: "History" }).getAttribute("aria-current")).toBe("page");
     expect(screen.getByRole("button", { name: "Home" }).getAttribute("aria-current")).toBeNull();
-    expect(screen.getByText("Your Transfer History will appear here.")).toBeTruthy();
+    expect(await screen.findByText("No Transfers in your History yet.")).toBeTruthy();
   });
 });
 
@@ -1732,5 +1746,303 @@ describe("Text", () => {
     const sheet = await screen.findByRole("dialog", { name: "Incoming files" });
     expect(sheet.textContent).toContain("text.txt");
     expect(device.api.checkOffer).toHaveBeenCalled();
+  });
+});
+
+describe("History", () => {
+  const SAVED = "/home/me/Downloads/BhayanakShare/photo.jpg";
+  const MORE_ID = "Q7ZZ4RTB" + "C".repeat(44);
+
+  function record(over: Partial<TransferRecord> = {}): TransferRecord {
+    return {
+      id: TRANSFER,
+      role: "receiver",
+      peer: PEER_ID,
+      peer_name: "Laptop",
+      name: "photo.jpg",
+      kind: "files",
+      size: 2048,
+      text: null,
+      items: ["photo.jpg"],
+      file_count: 1,
+      skipped_links: 0,
+      adjusted_names: 0,
+      batch_id: null,
+      state: { kind: "completed", saved_to: SAVED },
+      created_at: 1_700_000_000_000,
+      accepted_at: 1_700_000_005_000,
+      updated_at: 1_700_000_060_000,
+      ...over,
+    };
+  }
+
+  const single = (over: Partial<TransferRecord> = {}, saved_present: boolean | null = null): HistoryEntry => ({
+    kind: "transfer",
+    transfer: { record: record(over), saved_present },
+  });
+
+  /** The ID of the nth Transfer of a test. */
+  const id = (n: number) => n.toString(16).padStart(2, "0").repeat(16);
+
+  /** A Batch sent to Receivers named `Device 0`…, each ending as `states` say. */
+  function batch(states: TransferState[]): HistoryEntry {
+    return {
+      kind: "batch",
+      batch_id: BATCH,
+      transfers: states.map((state, i) => ({
+        saved_present: null,
+        record: record({
+          id: id(i + 1),
+          role: "sender",
+          peer: i === 0 ? PEER_ID : `${i}`.repeat(52),
+          peer_name: `Device ${i}`,
+          name: "report.txt",
+          items: ["report.txt"],
+          batch_id: BATCH,
+          state,
+        }),
+      })),
+    };
+  }
+
+  async function openHistory(device: ReturnType<typeof fakeApi>, entries: HistoryEntry[]) {
+    device.setHistory(entries);
+    await start(device);
+    fireEvent.click(screen.getByRole("button", { name: "History" }));
+  }
+
+  const lastQuery = (device: ReturnType<typeof fakeApi>) => device.historyReads.at(-1);
+
+  it("says when there is nothing yet, and when nothing matches the filters", async () => {
+    const device = fakeApi();
+    await openHistory(device, []);
+    expect(await screen.findByText("No Transfers in your History yet.")).toBeTruthy();
+
+    fireEvent.change(screen.getByLabelText("Search by item name"), { target: { value: "zzz" } });
+    expect(await screen.findByText("No Transfers match.")).toBeTruthy();
+  });
+
+  it("lists what was received: whom from, what, how big, when, how it ended and where it was saved", async () => {
+    const device = fakeApi();
+    await openHistory(device, [
+      single({ adjusted_names: 2, name: "photos", items: ["photos", "a.txt"], file_count: 12, size: 5 << 20 }, true),
+    ]);
+    const row = (await screen.findByText("photos and 1 more from Laptop · K3QF-7XNA")).closest("li")!;
+    expect(within(row).getByText("Received.")).toBeTruthy();
+    expect(within(row).getByText("5 MiB · 12 files · 2 names adjusted")).toBeTruthy();
+    // The times are the user's own format; each is there.
+    const times = within(row).getByText(/^Offered .* · Accepted .* · Finished /);
+    expect(times.textContent).toContain(new Date(1_700_000_005_000).toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" }));
+    expect(within(row).getByText(`Saved to ${SAVED}`, { exact: false })).toBeTruthy();
+
+    fireEvent.click(within(row).getByRole("button", { name: "Show photos and 1 more in folder" }));
+    expect(device.api.showInFolder).toHaveBeenCalledWith(SAVED);
+  });
+
+  it("says the file is no longer at its saved location instead of offering to show it", async () => {
+    const device = fakeApi();
+    await openHistory(device, [single({}, false)]);
+    const row = (await screen.findByText("photo.jpg from Laptop · K3QF-7XNA")).closest("li")!;
+    expect(within(row).getByText("File no longer at saved location")).toBeTruthy();
+    expect(within(row).queryByRole("button", { name: /in folder/ })).toBeNull();
+  });
+
+  it("shows a text in full as plain text, with Copy, whichever way it went", async () => {
+    const device = fakeApi();
+    await openHistory(device, [
+      single({ id: id(2), role: "sender", kind: "text", text: "my <b>reply</b>", name: "", items: [], file_count: 0, state: { kind: "completed", saved_to: null } }),
+      single({ kind: "text", text: "<img src=x onerror=alert(1)>", name: "", items: [], file_count: 0, state: { kind: "completed", saved_to: null } }),
+      // A text that was declined is not kept.
+      single({ id: id(3), kind: "text", text: null, name: "", items: [], file_count: 0, state: { kind: "declined" } }),
+    ]);
+    const received = (await screen.findAllByText("Text from Laptop · K3QF-7XNA"))[0].closest("li")!;
+    expect(within(received).getByRole("region", { name: "Text" }).textContent).toBe("<img src=x onerror=alert(1)>");
+    expect(received.querySelector("img")).toBeNull();
+    expect(within(received).queryByRole("button", { name: /in folder/ })).toBeNull();
+    fireEvent.click(within(received).getByRole("button", { name: "Copy the text from Laptop · K3QF-7XNA" }));
+    await waitFor(() => expect(device.api.copyText).toHaveBeenCalledWith("<img src=x onerror=alert(1)>"));
+
+    const sent = screen.getByText("Text to Laptop · K3QF-7XNA").closest("li")!;
+    expect(within(sent).getByRole("region", { name: "Text" }).textContent).toBe("my <b>reply</b>");
+    fireEvent.click(within(sent).getByRole("button", { name: "Copy the text sent to Laptop · K3QF-7XNA" }));
+    await waitFor(() => expect(device.api.copyText).toHaveBeenCalledWith("my <b>reply</b>"));
+
+    const declined = screen.getAllByText("Text from Laptop · K3QF-7XNA")[1].closest("li")!;
+    expect(within(declined).getByText("You declined.")).toBeTruthy();
+    expect(within(declined).queryByRole("region", { name: "Text" })).toBeNull();
+  });
+
+  it("shows a Batch as one entry that opens to each Receiver, and counts them by how they ended", async () => {
+    const device = fakeApi();
+    await openHistory(device, [
+      batch([{ kind: "completed", saved_to: null }, { kind: "declined" }, { kind: "failed", reason: "Could not reach the receiving Device." }]),
+    ]);
+    const entry = (await screen.findByText("report.txt to 3 Devices")).closest("li")!;
+    expect(within(entry).getByText("1 of 3 delivered, 1 declined, 1 failed")).toBeTruthy();
+    expect(within(entry).queryByText("report.txt to Device 1 · 1111-1111")).toBeNull();
+
+    fireEvent.click(within(entry).getByRole("button", { name: /Show each Device/ }));
+    expect(within(entry).getByText("report.txt to Device 0 · K3QF-7XNA")).toBeTruthy();
+    expect(within(entry).getByText("Could not send. Could not reach the receiving Device.")).toBeTruthy();
+    expect(within(entry).getByText("Device 1 · 1111-1111 declined.")).toBeTruthy();
+  });
+
+  it("offers Retry for a Failed Transfer of a Batch, once, and never for a Declined one", async () => {
+    const device = fakeApi();
+    const failed: TransferState = { kind: "failed", reason: "gone" };
+    await openHistory(device, [batch([failed, { kind: "declined" }, failed])]);
+    const entry = (await screen.findByText("report.txt to 3 Devices")).closest("li")!;
+    fireEvent.click(within(entry).getByRole("button", { name: /Show each Device/ }));
+    const retries = within(entry).getAllByRole("button", { name: /^Retry/ });
+    expect(retries).toHaveLength(2);
+
+    fireEvent.click(within(entry).getByRole("button", { name: "Retry report.txt to Device 2 · 2222-2222" }));
+    expect(device.api.retryTransfer).toHaveBeenCalledWith(id(3));
+    expect(within(entry).queryByRole("button", { name: "Retry report.txt to Device 1 · 1111-1111" })).toBeNull();
+  });
+
+  it("does not offer Retry for a Failed Transfer that was sent again, nor one that is not in a Batch", async () => {
+    const device = fakeApi();
+    const sent = batch([{ kind: "failed", reason: "gone" }, { kind: "completed", saved_to: null }]);
+    // A later Transfer of the same Batch to the same Receiver, which went through.
+    if (sent.kind !== "batch") throw new Error("a Batch");
+    const again = { ...sent.transfers[0], record: { ...sent.transfers[0].record, id: id(9), state: { kind: "completed", saved_to: null } as TransferState } };
+    sent.transfers.push(again);
+    const alone = single({ id: id(5), role: "sender", name: "alone.txt", items: ["alone.txt"], state: { kind: "failed", reason: "gone" } });
+    await openHistory(device, [alone, sent]);
+
+    const entry = (await screen.findByText("report.txt to 2 Devices")).closest("li")!;
+    fireEvent.click(within(entry).getByRole("button", { name: /Show each Device/ }));
+    expect(screen.queryByRole("button", { name: /^Retry/ })).toBeNull();
+  });
+
+  it("deletes one Transfer and reads History again; a Transfer that is still going has no Delete", async () => {
+    const running = single({ id: id(4), role: "sender", name: "big.iso", items: ["big.iso"], state: { kind: "transferring" } });
+    const ended = single({ id: id(2) });
+    const device = fakeApi({
+      deleteHistoryTransfer: vi.fn((_id: string) => {
+        device.setHistory([running]);
+        return Promise.resolve(null);
+      }),
+    });
+    await openHistory(device, [running, ended]);
+    const row = (await screen.findByText("photo.jpg from Laptop · K3QF-7XNA")).closest("li")!;
+    const going = screen.getByText("big.iso to Laptop · K3QF-7XNA").closest("li")!;
+    expect(within(going).queryByRole("button", { name: /^Delete/ })).toBeNull();
+
+    fireEvent.click(within(row).getByRole("button", { name: "Delete photo.jpg from Laptop · K3QF-7XNA from History" }));
+    await waitFor(() => expect(device.api.deleteHistoryTransfer).toHaveBeenCalledWith(id(2)));
+    await waitFor(() => expect(screen.queryByText("photo.jpg from Laptop · K3QF-7XNA")).toBeNull());
+    expect(screen.getByText("big.iso to Laptop · K3QF-7XNA")).toBeTruthy();
+  });
+
+  it("says when a Transfer could not be deleted", async () => {
+    const device = fakeApi({ deleteHistoryTransfer: () => Promise.reject(new Error("it has not ended")) });
+    await openHistory(device, [single()]);
+    fireEvent.click(await screen.findByRole("button", { name: /^Delete/ }));
+    expect((await screen.findByRole("alert")).textContent).toContain("Could not delete it. it has not ended");
+  });
+
+  it("deletes a Batch once all of it has ended, and not before", async () => {
+    const device = fakeApi();
+    await openHistory(device, [batch([{ kind: "completed", saved_to: null }, { kind: "transferring" }])]);
+    const entry = (await screen.findByText("report.txt to 2 Devices")).closest("li")!;
+    expect(within(entry).queryByRole("button", { name: /^Delete all/ })).toBeNull();
+    cleanup();
+
+    const done = fakeApi();
+    await openHistory(done, [batch([{ kind: "completed", saved_to: null }, { kind: "declined" }])]);
+    fireEvent.click(await screen.findByRole("button", { name: "Delete all of report.txt from History" }));
+    await waitFor(() => expect(done.api.deleteHistoryBatch).toHaveBeenCalledWith(BATCH));
+  });
+
+  it("narrows History by Device, direction and item name through the Device", async () => {
+    const device = fakeApi({}, [contact({ nickname: "Mum" })]);
+    await openHistory(device, [single(), single({ id: id(2), peer: MORE_ID, peer_name: "Phone" })]);
+    await screen.findByText("photo.jpg from Mum");
+    expect(lastQuery(device)).toEqual([null, null, null]);
+
+    // Contacts, and Devices seen in History, can be chosen.
+    const choices = within(screen.getByLabelText("Device")).getAllByRole("option").map((o) => o.textContent);
+    expect(choices).toEqual(["Any Device", "Mum", "Phone · Q7ZZ-4RTB"]);
+    fireEvent.change(screen.getByLabelText("Device"), { target: { value: MORE_ID } });
+    await waitFor(() => expect(lastQuery(device)).toEqual([MORE_ID, null, null]));
+
+    fireEvent.change(screen.getByLabelText("Direction"), { target: { value: "sender" } });
+    await waitFor(() => expect(lastQuery(device)).toEqual([MORE_ID, "sender", null]));
+    fireEvent.change(screen.getByLabelText("Search by item name"), { target: { value: " report " } });
+    await waitFor(() => expect(lastQuery(device)).toEqual([MORE_ID, "sender", "report"]));
+    // Narrowed to one Device, the others can still be chosen.
+    expect(within(screen.getByLabelText("Device")).getAllByRole("option")).toHaveLength(3);
+
+    fireEvent.change(screen.getByLabelText("Device"), { target: { value: "" } });
+    await waitFor(() => expect(lastQuery(device)).toEqual([null, "sender", "report"]));
+  });
+
+  it("opens a Contact's History from the Contacts tab, narrowed to that Contact", async () => {
+    const device = fakeApi({}, [contact({ nickname: "Mum" })]);
+    device.setHistory([single({ peer_name: "Mum's phone" })]);
+    await start(device);
+    fireEvent.click(screen.getByRole("button", { name: "Contacts" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Show the Transfer History with Mum" }));
+
+    expect(screen.getByRole("button", { name: "History" }).getAttribute("aria-current")).toBe("page");
+    await waitFor(() => expect(lastQuery(device)).toEqual([PEER_ID, null, null]));
+    expect((screen.getByLabelText("Device") as HTMLSelectElement).value).toBe(PEER_ID);
+    // The Contact is called what the user calls it.
+    expect(await screen.findByText("photo.jpg from Mum")).toBeTruthy();
+  });
+
+  it("clears History only after asking, and reads it again", async () => {
+    const device = fakeApi();
+    await openHistory(device, [single()]);
+    await screen.findByText("photo.jpg from Laptop · K3QF-7XNA");
+
+    fireEvent.click(screen.getByRole("button", { name: "Clear History…" }));
+    const dialog = screen.getByRole("alertdialog", { name: "Clear History?" });
+    expect(dialog.textContent).toContain("Transfers still going are not touched");
+    // The safe answer has focus, so Enter cannot clear it by accident.
+    expect(document.activeElement).toBe(within(dialog).getByRole("button", { name: "Keep" }));
+    fireEvent.click(within(dialog).getByRole("button", { name: "Keep" }));
+    expect(screen.queryByRole("alertdialog")).toBeNull();
+    expect(device.api.clearHistory).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getByRole("button", { name: "Clear History…" }));
+    device.setHistory([]);
+    const reads = device.historyReads.length;
+    fireEvent.click(within(screen.getByRole("alertdialog")).getByRole("button", { name: "Clear History" }));
+    await waitFor(() => expect(device.api.clearHistory).toHaveBeenCalledTimes(1));
+    expect(await screen.findByText("No Transfers in your History yet.")).toBeTruthy();
+    expect(device.historyReads.length).toBeGreaterThan(reads);
+    expect(screen.queryByRole("alertdialog")).toBeNull();
+  });
+
+  it("says when History could not be cleared", async () => {
+    const device = fakeApi({ clearHistory: () => Promise.reject(new Error("disk full")) });
+    await openHistory(device, [single()]);
+    fireEvent.click(await screen.findByRole("button", { name: "Clear History…" }));
+    fireEvent.click(within(screen.getByRole("alertdialog")).getByRole("button", { name: "Clear History" }));
+    expect((await screen.findByRole("alert")).textContent).toContain("Could not clear History. disk full");
+    expect(screen.getByRole("alertdialog")).toBeTruthy();
+  });
+
+  it("reads History again when a Transfer of this session changes state", async () => {
+    const device = fakeApi();
+    await openHistory(device, []);
+    await screen.findByText("No Transfers in your History yet.");
+    const reads = device.historyReads.length;
+
+    await device.transfer("receiver", { kind: "offered" }, "Laptop");
+    await waitFor(() => expect(device.historyReads.length).toBeGreaterThan(reads));
+    // Progress is not a change of state.
+    const after = device.historyReads.length;
+    await device.push({ type: "progress", transfer_id: TRANSFER, bytes: 5, total: 2048 });
+    expect(device.historyReads.length).toBe(after);
+  });
+
+  it("says when History could not be read", async () => {
+    const device = fakeApi({ history: () => Promise.reject(new Error("db")) });
+    await openHistory(device, []);
+    expect((await screen.findByRole("alert")).textContent).toBe("Could not load your History.");
   });
 });

@@ -332,6 +332,12 @@ async fn flow(
         return Ok(());
     };
     sh.remember_peer(to.id, &session.conn, peer_name.clone()).await;
+    if let Some(name) = &peer_name {
+        // For History, which says whom it was sent to as they called themselves then.
+        if let Err(e) = sh.db.set_peer_name(info.id, name).await {
+            tracing::warn!(transfer = %info.id, "could not record the Receiver's name: {e}");
+        }
+    }
     // From here on the Transfer's events carry what the Receiver calls itself.
     let info = &TransferInfo { peer_name, ..info.clone() };
     // Nothing in it says who else gets the files: every Receiver's Offer is its own.
