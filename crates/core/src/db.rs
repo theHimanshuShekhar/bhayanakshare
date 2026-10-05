@@ -229,13 +229,14 @@ impl Db {
     }
 
     /// Folds what a connection to `id` showed into its last known address, and takes the Device
-    /// Name it announced, if any. Does nothing if `id` is not a Contact.
+    /// Name it announced, if any. Does nothing if `id` is not a Contact. Returns the last known
+    /// address as it is now, or `None` if `id` is not a Contact.
     pub async fn update_contact_connection(
         &self,
         id: DeviceId,
         seen: KnownAddress,
         device_name: Option<String>,
-    ) -> Result<(), DbError> {
+    ) -> Result<Option<KnownAddress>, DbError> {
         self.run(move |c| {
             let key = id.to_string();
             let known = c
@@ -245,7 +246,7 @@ impl Db {
                     |r| read_address(r, 0),
                 )
                 .optional()?;
-            let Some(known) = known else { return Ok(()) };
+            let Some(known) = known else { return Ok(None) };
             let merged = known?.updated_with(&seen);
             c.execute(
                 "UPDATE contacts
@@ -253,7 +254,7 @@ impl Db {
                  WHERE id = ?1",
                 params![key, merged.relay_url, join_addrs(&merged.direct), device_name],
             )?;
-            Ok(())
+            Ok(Some(merged))
         })
         .await
     }

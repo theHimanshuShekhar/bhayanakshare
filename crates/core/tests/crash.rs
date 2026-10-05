@@ -181,6 +181,7 @@ async fn crash_and_resume(
     let bob = DeviceAddr {
         id: id.parse::<DeviceId>().unwrap(),
         direct: vec![addr.parse().unwrap()],
+        relay_url: None,
     };
     let (_src, path) = big_thing(shape, size);
     let transfer: TransferId = alice.device.send_file(bob, &path).await.unwrap();

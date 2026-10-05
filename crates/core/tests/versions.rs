@@ -60,7 +60,7 @@ impl HandReceiver {
 
     fn addr(&self) -> DeviceAddr {
         let id = data_encoding::BASE32_NOPAD.encode(self.endpoint.id().as_bytes());
-        DeviceAddr { id: id.parse::<DeviceId>().unwrap(), direct: self.endpoint.bound_sockets() }
+        DeviceAddr { id: id.parse::<DeviceId>().unwrap(), direct: self.endpoint.bound_sockets(), relay_url: None }
     }
 
     /// Takes a Sender's call, checks it said Hello on this build's version, answers with

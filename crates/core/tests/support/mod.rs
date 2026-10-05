@@ -59,6 +59,12 @@ impl TestDevice {
         Self::start_on(name, Network::LocalhostLan, SystemFreeSpace).await
     }
 
+    /// Like `start`, but the Device has no direct paths: it is reached only through the relay
+    /// at `url`, which a test runs itself.
+    pub async fn start_on_relay(name: &str, url: &'static str) -> Self {
+        Self::start_on(name, Network::Relay(url), SystemFreeSpace).await
+    }
+
     async fn start_on(name: &str, network: Network, free_space: impl FreeSpace) -> Self {
         Self::build(name, tempfile::tempdir().unwrap(), network, free_space).await
     }
