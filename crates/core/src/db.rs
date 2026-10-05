@@ -1,6 +1,7 @@
 //! SQLite (WAL) persistence: settings, Contacts and Transfer records.
 
 use std::{
+    collections::HashMap,
     net::SocketAddr,
     path::{Path, PathBuf},
     sync::{Arc, Mutex},
@@ -16,7 +17,7 @@ use crate::{
     transfer::{BatchId, Role, TransferId, TransferKind, TransferState},
 };
 
-const SCHEMA_VERSION: i32 = 7;
+const SCHEMA_VERSION: i32 = 8;
 
 #[derive(Debug, thiserror::Error)]
 pub enum DbError {
@@ -534,6 +535,64 @@ impl Db {
         .await
     }
 
+    /// The files the Sender's blob store refers to for each of `hashes` (see `sender::import`).
+    /// A hash the store has no file for is left out; the `name` of a file is empty.
+    pub async fn blob_files(
+        &self,
+        hashes: Vec<[u8; 32]>,
+    ) -> Result<HashMap<[u8; 32], Vec<Source>>, DbError> {
+        self.run(move |c| {
+            let mut stmt = c.prepare("SELECT path, size, mtime_ns FROM blob_files WHERE hash = ?1")?;
+            let mut found = HashMap::new();
+            for hash in hashes {
+                let files = stmt
+                    .query_map([hash.as_slice()], |r| {
+                        Ok(Source {
+                            path: PathBuf::from(r.get::<_, String>(0)?),
+                            size: r.get::<_, i64>(1)? as u64,
+                            mtime_ns: r.get(2)?,
+                            name: String::new(),
+                        })
+                    })?
+                    .collect::<Result<Vec<_>, _>>()?;
+                if !files.is_empty() {
+                    found.insert(hash, files);
+                }
+            }
+            Ok(found)
+        })
+        .await
+    }
+
+    /// Records the files the blob store refers to, each for the hash of its content, and
+    /// forgets every file recorded for the hashes in `forget` (the store holds its own copy of
+    /// those now).
+    pub async fn set_blob_files(
+        &self,
+        add: Vec<([u8; 32], Source)>,
+        forget: Vec<[u8; 32]>,
+    ) -> Result<(), DbError> {
+        self.run(move |c| {
+            // One transaction, not one per file: a folder can hold hundreds of thousands.
+            let tx = c.unchecked_transaction()?;
+            {
+                let mut delete = tx.prepare("DELETE FROM blob_files WHERE hash = ?1")?;
+                for hash in forget {
+                    delete.execute([hash.as_slice()])?;
+                }
+                let mut insert = tx.prepare(
+                    "INSERT OR REPLACE INTO blob_files (hash, path, size, mtime_ns) VALUES (?1, ?2, ?3, ?4)",
+                )?;
+                for (hash, s) in add {
+                    insert.execute(params![hash.as_slice(), s.path.to_string_lossy(), s.size as i64, s.mtime_ns])?;
+                }
+            }
+            tx.commit()?;
+            Ok(())
+        })
+        .await
+    }
+
     /// Keeps the manifest of a Transfer a Receiver accepted, so it can carry on after a
     /// restart: the manifest says what to make of the files once they are fetched.
     pub async fn insert_manifest(&self, id: TransferId, manifest: &Manifest) -> Result<(), DbError> {
@@ -812,6 +871,22 @@ fn migrate(conn: &Connection) -> Result<(), DbError> {
              ALTER TABLE transfers ADD COLUMN text TEXT;
              ALTER TABLE batches ADD COLUMN text TEXT;
              PRAGMA user_version = 7;
+             COMMIT;",
+        )?;
+    }
+    if version < 8 {
+        // Source files: the files the Sender's blob store refers to, by the hash of their
+        // content, so one that has gone or changed can be told from one that is still good.
+        conn.execute_batch(
+            "BEGIN;
+             CREATE TABLE blob_files (
+                 hash BLOB NOT NULL,
+                 path TEXT NOT NULL,
+                 size INTEGER NOT NULL,
+                 mtime_ns INTEGER NOT NULL,
+                 PRIMARY KEY (hash, path)
+             );
+             PRAGMA user_version = 8;
              COMMIT;",
         )?;
     }
@@ -1195,6 +1270,28 @@ mod tests {
         assert!(db.manifest(id).await.unwrap().is_some());
         db.update_transfer(id, TransferState::Failed { reason: "x".into() }, 300).await.unwrap();
         assert_eq!(db.manifest(id).await.unwrap(), None);
+    }
+
+    #[tokio::test]
+    async fn the_files_the_store_refers_to_are_kept_by_hash_and_forgotten_on_request() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = Db::open(&dir.path().join("t.db")).await.unwrap();
+        let file = |path: &str, size| Source { path: path.into(), size, mtime_ns: 5, name: String::new() };
+        let (a, b, c) = ([1; 32], [2; 32], [3; 32]);
+
+        db.set_blob_files(vec![(a, file("/x/1", 10)), (a, file("/y/1", 10)), (b, file("/x/2", 20))], vec![])
+            .await
+            .unwrap();
+        let found = db.blob_files(vec![a, b, c]).await.unwrap();
+        assert_eq!(found[&a], [file("/x/1", 10), file("/y/1", 10)]);
+        assert_eq!(found[&b], [file("/x/2", 20)]);
+        assert!(!found.contains_key(&c), "nothing is known of a hash never noted");
+
+        // A file noted again replaces what was known of it; a hash can be forgotten whole.
+        db.set_blob_files(vec![(a, file("/x/1", 11))], vec![b]).await.unwrap();
+        let found = db.blob_files(vec![a, b]).await.unwrap();
+        assert_eq!(found[&a], [file("/x/1", 11), file("/y/1", 10)]);
+        assert!(!found.contains_key(&b));
     }
 
     #[tokio::test]

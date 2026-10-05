@@ -30,7 +30,7 @@ pub use db::{DbError, TransferRecord};
 pub use device::{Device, DeviceAddr, DeviceConfig, Network, SentBatch};
 pub use discovery::{NearbyDevice, Visibility};
 pub use error::Error;
-pub use event::{Event, EventKind, EventStream, NearbyEvent, ProgressEvent, TransferEvent};
+pub use event::{Event, EventKind, EventStream, NearbyEvent, PreparingEvent, ProgressEvent, TransferEvent};
 pub use identity::{DEVICE_ID_LEN, DeviceId, DeviceIdError, KeySource};
 pub use names::{NameError, validate_file_name};
 pub use receiver::INCOMING_DIR;

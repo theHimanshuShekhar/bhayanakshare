@@ -260,6 +260,39 @@ describe("sending", () => {
     expect(screen.getByText("docs and 2 more to K3QF-7XNA")).toBeTruthy();
   });
 
+  it("shows Preparing on the Sender while it hashes, whether or not the Receiver has answered", async () => {
+    const device = await start(fakeApi({}, [contact({ nickname: "Mum" })]));
+    await screen.findByRole("button", { name: "Send to Mum" });
+    await device.transfer("sender", { kind: "offered" });
+    await device.push({ type: "preparing", transfer_id: TRANSFER, preparing: true });
+    expect(screen.getByText("Preparing the files for Mum…")).toBeTruthy();
+    expect(screen.queryByText("Waiting for Mum…")).toBeNull();
+
+    // Done hashing before the answer: back to waiting for it.
+    await device.push({ type: "preparing", transfer_id: TRANSFER, preparing: false });
+    expect(screen.getByText("Waiting for Mum…")).toBeTruthy();
+
+    // Or the answer comes first: accepted, and still preparing.
+    await device.push({ type: "preparing", transfer_id: TRANSFER, preparing: true });
+    await device.transfer("sender", { kind: "accepted" });
+    expect(screen.getByText("Preparing the files for Mum…")).toBeTruthy();
+    await device.transfer("sender", { kind: "transferring" });
+    expect(screen.getByText("Sending…")).toBeTruthy();
+  });
+
+  it("shows Preparing on the Receiver only once it has accepted", async () => {
+    const device = await start(fakeApi({}, [contact({ nickname: "Mum" })]));
+    await screen.findByRole("button", { name: "Send to Mum" });
+    await device.transfer("receiver", { kind: "offered" });
+    await device.push({ type: "preparing", transfer_id: TRANSFER, preparing: true });
+    expect(screen.getByText("Waiting for your answer.")).toBeTruthy();
+
+    await device.transfer("receiver", { kind: "accepted" });
+    expect(screen.getByText("Accepted. Mum is preparing the files…")).toBeTruthy();
+    await device.push({ type: "preparing", transfer_id: TRANSFER, preparing: false });
+    expect(screen.getByText("Accepted. Starting…")).toBeTruthy();
+  });
+
   it("tells the Sender how many links were skipped, and not the Receiver", async () => {
     const device = await start();
     await device.transfer("sender", { kind: "offered" }, null, { skipped_links: 3 });

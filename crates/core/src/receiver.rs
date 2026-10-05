@@ -320,6 +320,10 @@ async fn flow(
         return Err(Failure::with("Could not record the Offer.", e));
     }
     *announced = Some(info.clone());
+    if manifest.is_some() {
+        // The Sender is hashing the files; it says when it is done.
+        sh.preparing(&info, true);
+    }
     let cancel = sh.track(info.id);
     let mut expiry = Box::pin(sleep_until(&*sh.clock, info.expires_at));
 
@@ -334,7 +338,10 @@ async fn flow(
                 // A text Offer has no content to be ready.
                 Some(Ok(Message::HashReady { collection_hash })) if root.is_none() && manifest.is_some() => {
                     root = Some(collection_hash.into());
+                    sh.preparing(&info, false);
                 }
+                // The Sender could not prepare the files, or found one changed (spec section 5).
+                Some(Ok(Message::Failed { reason })) if manifest.is_some() => return Err(Failure(reason)),
                 Some(Ok(Message::Cancel)) => {
                     stop(sh, &info, Some(&mut session), Stop::PeerCancelled).await;
                     return Ok(());
@@ -581,6 +588,7 @@ async fn drive(
             Some(hash) => hash,
             None => match await_hash(&mut live, cancel).await? {
                 Awaited::Ready(hash) => {
+                    sh.preparing(info, false);
                     // Saved so a restart can resume.
                     let saved = sh.db.start_transfer(info.id, Some(*hash.as_bytes()), None, sh.now());
                     if let Err(e) = saved.await {
@@ -737,6 +745,8 @@ async fn await_hash(live: &mut Session, cancel: &CancellationToken) -> Result<Aw
         biased;
         msg = live.incoming.recv() => match msg {
             Some(Ok(Message::HashReady { collection_hash })) => Ok(Awaited::Ready(collection_hash.into())),
+            // A file changed on the Sender before it could serve them (spec section 5).
+            Some(Ok(Message::Failed { reason })) => Err(Failure(reason)),
             Some(Ok(Message::Cancel)) => Ok(Awaited::Stopped(Stop::PeerCancelled)),
             // The Sender's clock ran out just before it read our answer.
             Some(Ok(Message::Expired)) => Ok(Awaited::Stopped(Stop::PeerExpired)),

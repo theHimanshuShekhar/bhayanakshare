@@ -120,6 +120,10 @@ export type EventKind =
 {
 	type: "progress",
 } & ProgressEvent | 
+/**  A Transfer's files started or finished being hashed. */
+{
+	type: "preparing",
+} & PreparingEvent | 
 /**  The list of Nearby Devices changed. */
 {
 	type: "nearby",
@@ -157,6 +161,21 @@ export type NearbyDevice = {
  */
 export type NearbyEvent = {
 	devices: NearbyDevice[],
+};
+
+/**
+ *  Whether a Transfer is Preparing: the Sender is hashing the files, which it does while the
+ *  Receiver decides (spec section 4). It overlays the Offered and Accepted states, which are
+ *  announced as before; once the Transfer is in any other state there is nothing to prepare.
+ *  Sent for Transfers of files only, never for text.
+ */
+export type PreparingEvent = {
+	transfer_id: TransferId,
+	/**
+	 *  True when hashing starts on the Sender or the Offer arrives on the Receiver; false once
+	 *  the Sender is done, or the Receiver has been told so (`HashReady`).
+	 */
+	preparing: boolean,
 };
 
 /**

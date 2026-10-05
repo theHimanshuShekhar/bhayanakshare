@@ -67,8 +67,9 @@ pub enum Message {
     ResumeOk,
     /// Sender to Receiver, answering `Resume`: this Device has no such Transfer for you.
     Unknown,
-    /// Sender to Receiver, answering `Resume`: the Transfer failed on the Sender, for this
-    /// plain-language reason. (A Sender that cancelled it answers `Cancel`.)
+    /// Sender to Receiver: the Transfer failed on the Sender, for this plain-language reason.
+    /// Answers `Resume`, or comes instead of `HashReady` when a file changed or went missing
+    /// before the Sender could serve it. (A Sender that cancelled it answers `Cancel`.)
     Failed { reason: String },
     /// Receiver to Sender, in reply to an Offer: its manifest is malformed or over a limit
     /// (spec sections 5 and 6). The Offer is dropped without being shown to anyone, and the

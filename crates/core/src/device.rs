@@ -26,7 +26,7 @@ use crate::{
     device_name,
     discovery::{Discovery, NearbyDevice, Visibility},
     error::Error,
-    event::{EventKind, EventSink, EventStream, ProgressEvent, TransferEvent},
+    event::{EventKind, EventSink, EventStream, PreparingEvent, ProgressEvent, TransferEvent},
     gate::Gate,
     identity::{DeviceId, KeySource},
     protocol, receiver,
@@ -360,6 +360,12 @@ impl Shared {
     pub fn progress(&self, t: &TransferInfo, bytes: u64) {
         let progress = ProgressEvent { transfer_id: t.id, bytes: bytes.min(t.size), total: t.size };
         self.events.emit(self.now(), EventKind::Progress(progress));
+    }
+
+    /// Announces that a Transfer of files started (`true`) or finished being prepared.
+    pub fn preparing(&self, t: &TransferInfo, preparing: bool) {
+        let event = PreparingEvent { transfer_id: t.id, preparing };
+        self.events.emit(self.now(), EventKind::Preparing(event));
     }
 
     fn announce(&self, t: &TransferInfo, state: TransferState, now: UnixMillis) {

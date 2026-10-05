@@ -2,8 +2,10 @@
 //!
 //! Dial the Receiver, say Hello, send the Offer straight away, and hash the files while the
 //! Receiver decides (they are imported by reference, so nothing is copied). Once hashing
-//! is done and the Receiver has accepted, allow that Receiver to fetch (see `gate`) and send
-//! `HashReady`; the Receiver then pulls the content over iroh-blobs from this Device's global
+//! is done and the Receiver has accepted, check that the files are as they were hashed (a changed
+//! or missing one fails the Transfer, and the Receiver is told why), allow that Receiver to fetch
+//! (see `gate`) and send `HashReady`; both sides show the Transfer as Preparing meanwhile (see
+//! `PreparingEvent`). The Receiver then pulls the content over iroh-blobs from this Device's global
 //! store. The Transfer ends with the Receiver's `Decline` or `Completed`, or earlier: either
 //! side can cancel, an Offer nobody answers expires, and a Receiver with too many Offers from
 //! this Device says `Busy`.
@@ -33,7 +35,7 @@
 //! A Receiver gives its slot up when it loses its connection (it may be gone for hours) and
 //! takes one again before it is answered `ResumeOk`.
 
-use std::{io::Write, path::PathBuf, sync::Arc};
+use std::{collections::HashMap, io::Write, path::PathBuf, sync::Arc};
 
 use iroh::EndpointId;
 use iroh_blobs::{
@@ -50,7 +52,7 @@ use tokio_util::sync::CancellationToken;
 
 use crate::{
     clock::{UnixMillis, sleep_until},
-    db::Source,
+    db::{Db, Source},
     device::{DeviceAddr, Shared, TransferInfo},
     error::Error,
     gate::Grant,
@@ -88,8 +90,6 @@ pub(crate) struct Outgoing {
     hashed: OnceCell<Hashed>,
     /// The file a text too long to go inline is sent from; deleted with the send.
     _file: Option<TextFile>,
-    /// Files under this folder are copied into the store, not referenced (see [`TextFile`]).
-    copy_under: Option<PathBuf>,
 }
 
 struct Hashed {
@@ -101,7 +101,7 @@ struct Hashed {
 impl Outgoing {
     pub fn new(scan: Scan, payload: Payload, slots: Arc<Semaphore>) -> Self {
         let Scan { manifest, sources, skipped_links } = scan;
-        Self { manifest, sources, skipped_links, payload, slots, hashed: OnceCell::new(), _file: None, copy_under: None }
+        Self { manifest, sources, skipped_links, payload, slots, hashed: OnceCell::new(), _file: None }
     }
 
     /// Reads what `payload` names off the disk, or, for text too long to go inline, writes it
@@ -130,8 +130,7 @@ impl Outgoing {
         let scan = tokio::task::spawn_blocking(move || scan::scan(&roots))
             .await
             .map_err(|e| Error::io("reading the files", std::io::Error::other(e)))??;
-        let copy_under = file.is_some().then(|| texts_dir(&sh.data_dir));
-        Ok(Self { _file: file, copy_under, ..Self::new(scan, payload, slots) })
+        Ok(Self { _file: file, ..Self::new(scan, payload, slots) })
     }
 
     /// The text, if it goes in the Offer itself.
@@ -161,11 +160,11 @@ impl Outgoing {
     /// The Collection's hash, importing the files the first time it is asked for. Transfers
     /// that ask meanwhile wait for that one import; if the one doing it is dropped (its
     /// Receiver declined), another takes over.
-    async fn hash(&self, store: iroh_blobs::api::Store) -> Result<Hash, Failure> {
+    async fn hash(&self, store: iroh_blobs::api::Store, db: &Db) -> Result<Hash, Failure> {
         let hashed = self
             .hashed
             .get_or_try_init(|| async {
-                let (root, tags) = import(store, &self.sources, self.copy_under.as_deref()).await?;
+                let (root, tags) = import(store, db, &self.sources).await?;
                 Ok(Hashed { root, _tags: tags })
             })
             .await?;
@@ -184,11 +183,8 @@ fn texts_dir(data_dir: &std::path::Path) -> PathBuf {
 /// not when the Device is shutting down with some of them unfinished: [`sweep_texts`] takes
 /// care of the ones a crash or a restart leaves.
 ///
-/// Unlike a file the user picked, it is imported into the store by copy, not by reference. The
-/// store names content by hash and keeps what it has imported, so sending the same text again
-/// (a retry, or the same words twice) finds the blob already there; were that a reference to a
-/// file deleted since, serving it would fail. The cost is that the store keeps the text, which
-/// it can only be rid of by garbage collection, which this Device does not run.
+/// The same text sent again (a retry, or the same words twice) comes from a new file, while the
+/// store may still refer to this one for the same content; [`import`] sees to that.
 struct TextFile {
     dir: PathBuf,
     shutdown: CancellationToken,
@@ -351,7 +347,10 @@ async fn flow(
     // spawned: leaving this function drops it, which abandons the hashing if no other
     // Transfer is waiting on it.
     // Text that went in the Offer has nothing to hash.
-    let mut hashing = (!inline).then(|| Box::pin(out.hash(sh.blobs.clone())));
+    let mut hashing = (!inline).then(|| Box::pin(out.hash(sh.blobs.clone(), &sh.db)));
+    if hashing.is_some() {
+        sh.preparing(info, true);
+    }
     let mut accepted = false;
     let mut root = None;
     let peer = to.id.endpoint_id();
@@ -425,7 +424,18 @@ async fn flow(
                 if hashing.is_some() =>
             {
                 hashing = None;
-                root = Some(done?);
+                match done {
+                    Ok(hash) => {
+                        root = Some(hash);
+                        sh.preparing(info, false);
+                    }
+                    Err(failure) => {
+                        // A file that went missing or changed while it was read is named as such.
+                        let Failure(reason) = check_sources(sh, info).await.err().unwrap_or(failure);
+                        tell_failed(&mut session, &reason).await;
+                        return Err(Failure(reason));
+                    }
+                }
             }
         }
     };
@@ -442,6 +452,15 @@ async fn flow(
         }
         Slotted::Gone => return Err(Failure::with(LOST, "the Receiver left while waiting for a slot")),
     };
+
+    // The files may have changed since they were hashed, however long ago: the Receiver deciding,
+    // or this one waiting for a slot, can take a while. They are checked now, before the
+    // Receiver is allowed to fetch them, and a Receiver fetching a file that changed would only
+    // see the fetch fail.
+    if let Err(Failure(reason)) = check_sources(sh, info).await {
+        tell_failed(&mut session, &reason).await;
+        return Err(Failure(reason));
+    }
 
     // `HashReady` is sent only once the Receiver has accepted, and only after the grant is
     // taken. Sent earlier, a Receiver holding the hash could dial the provider the moment
@@ -662,9 +681,7 @@ async fn welcome(
     keep_alive: &mut Vec<TempTag>,
 ) -> Result<Option<(Session, Grant)>, Failure> {
     if let Err(Failure(reason)) = check_files(sh, info, root, keep_alive).await {
-        let _ = write_frame(&mut session.send, &Message::Failed { reason: reason.clone() }).await;
-        let _ = session.send.finish();
-        let _ = tokio::time::timeout(CLOSE_GRACE, session.conn.closed()).await;
+        tell_failed(&mut session, &reason).await;
         return Err(Failure(reason));
     }
     let grant = sh.gate.allow(info.peer.endpoint_id(), root);
@@ -677,6 +694,14 @@ async fn welcome(
     }
 }
 
+/// Tells the Receiver the Transfer failed on this side, for this plain-language reason, and
+/// waits for it to hang up so the message is not cut off.
+async fn tell_failed(session: &mut Session, reason: &str) {
+    let _ = write_frame(&mut session.send, &Message::Failed { reason: reason.to_owned() }).await;
+    let _ = session.send.finish();
+    let _ = tokio::time::timeout(CLOSE_GRACE, session.conn.closed()).await;
+}
+
 /// Before serving again: every file must be as it was when the Offer was made, and the
 /// store must still hold their content. It may not if the Device was killed just after hashing
 /// it, as the store commits a moment later; the files are unchanged, so hashing them again
@@ -687,12 +712,22 @@ async fn check_files(
     root: Hash,
     keep_alive: &mut Vec<TempTag>,
 ) -> Result<(), Failure> {
-    let changed = |name: &str| {
-        Failure::with(
-            &format!("A file changed on the sending Device: {name}"),
-            "source check failed",
-        )
-    };
+    let sources = check_sources(sh, info).await?;
+    let content = HashAndFormat::hash_seq(root);
+    if !sh.blobs.remote().local(content).await.is_ok_and(|local| local.is_complete()) {
+        let (hash, tags) = import(sh.blobs.clone(), &sh.db, &sources).await?;
+        if hash != root {
+            return Err(changed(&info.name));
+        }
+        keep_alive.extend(tags);
+    }
+    Ok(())
+}
+
+/// Before the content is served, the first time or again after a resume: every file of the
+/// Transfer must still be there, with the size and modification time it had when the Offer was
+/// made (spec section 4). Returns the files as recorded.
+async fn check_sources(sh: &Shared, info: &TransferInfo) -> Result<Vec<Source>, Failure> {
     let sources = sh.db.sources(info.id).await.map_err(fail("Could not look up the Transfer."))?;
     let (sources, gone) = tokio::task::spawn_blocking(move || {
         let gone = sources.iter().find(|source| !is_unchanged(source)).map(|s| s.name.clone());
@@ -700,18 +735,15 @@ async fn check_files(
     })
     .await
     .map_err(fail("Could not check the files."))?;
-    if let Some(name) = gone {
-        return Err(changed(&name));
+    match gone {
+        Some(name) => Err(changed(&name)),
+        None => Ok(sources),
     }
-    let content = HashAndFormat::hash_seq(root);
-    if !sh.blobs.remote().local(content).await.is_ok_and(|local| local.is_complete()) {
-        let (hash, tags) = import(sh.blobs.clone(), &sources, Some(&texts_dir(&sh.data_dir))).await?;
-        if hash != root {
-            return Err(changed(&info.name));
-        }
-        keep_alive.extend(tags);
-    }
-    Ok(())
+}
+
+/// Why a Transfer fails when a file `name` (as the Offer called it) is not as it was.
+fn changed(name: &str) -> Failure {
+    Failure::with(&format!("A file changed on the sending Device: {name}"), "source check failed")
 }
 
 fn is_unchanged(source: &Source) -> bool {
@@ -812,36 +844,32 @@ const IMPORT_PARALLELISM: usize = 32;
 /// Imports the files by reference into the global store and wraps them in a Collection named
 /// by their manifest paths, in the order given: the shape the Receiver fetches. Returns the
 /// Collection's hash and the temp tags that keep everything alive.
+///
+/// A blob imported by reference is not copied: the store keeps the file's path. For each hash it
+/// keeps a sorted set of such paths, and whenever it needs the data it opens only the first
+/// (iroh-blobs 0.103, `BaoFileStorage::open`), never trying the others. Importing the same
+/// content from another path adds that path but does not drop a stale one. So once the file
+/// first imported has been deleted, the blob is "poisoned storage" for every read after, and
+/// once it has changed the blob reads back as garbage, however good the new file is. Either
+/// way a Receiver's fetch fails, and the store has no call to remove a blob. What it does do is
+/// let a copy replace the paths altogether (the copy wins when the entry is merged). So the
+/// files the store refers to are recorded per hash (`blob_files`), and a source whose content
+/// the store also refers to a file that has gone or changed for is imported again, by copy.
 async fn import(
     store: iroh_blobs::api::Store,
+    db: &Db,
     sources: &[Source],
-    copy_under: Option<&std::path::Path>,
 ) -> Result<(Hash, Vec<TempTag>), Failure> {
     // Each import owns what it uses: futures that borrow make the whole task fail to prove
     // that it can be sent between threads.
-    let jobs: Vec<_> = sources
-        .iter()
-        .map(|source| {
-            let copy = copy_under.is_some_and(|dir| source.path.starts_with(dir));
-            (store.clone(), source.path.clone(), if copy { ImportMode::Copy } else { ImportMode::TryReference })
-        })
-        .collect();
+    let jobs: Vec<_> = sources.iter().map(|source| (store.clone(), source.path.clone())).collect();
     let mut tags: Vec<TempTag> = stream::iter(jobs)
-        .map(|(store, path, mode)| async move {
-            store
-                .blobs()
-                .add_path_with_opts(AddPathOptions {
-                    path,
-                    format: BlobFormat::Raw,
-                    mode,
-                })
-                .temp_tag()
-                .await
-        })
+        .map(|(store, path)| async move { add(&store, path, ImportMode::TryReference).await })
         .buffered_ordered(IMPORT_PARALLELISM)
-    .try_collect()
-    .await
-    .map_err(fail("Could not read the files."))?;
+        .try_collect()
+        .await
+        .map_err(fail("Could not read the files."))?;
+    replace_stale(&store, db, sources, &tags).await?;
     let collection = Collection::from_iter(
         sources.iter().map(|source| source.name.clone()).zip(tags.iter().map(TempTag::hash)),
     );
@@ -852,6 +880,59 @@ async fn import(
     let hash = root.hash();
     tags.push(root);
     Ok((hash, tags))
+}
+
+async fn add(
+    store: &iroh_blobs::api::Store,
+    path: PathBuf,
+    mode: ImportMode,
+) -> Result<TempTag, iroh_blobs::api::RequestError> {
+    store
+        .blobs()
+        .add_path_with_opts(AddPathOptions { path, format: BlobFormat::Raw, mode })
+        .temp_tag()
+        .await
+}
+
+/// Records the files just imported, and imports again by copy those whose content the store
+/// also refers to a file for that has gone or changed since (see [`import`]). `tags` are the
+/// imports of `sources`, in order.
+async fn replace_stale(
+    store: &iroh_blobs::api::Store,
+    db: &Db,
+    sources: &[Source],
+    tags: &[TempTag],
+) -> Result<(), Failure> {
+    let hashes: Vec<[u8; 32]> = tags.iter().map(|tag| *tag.hash().as_bytes()).collect();
+    // Not knowing what the store refers to is no reason to refuse the files: it only keeps
+    // the next send of the same content from being repaired, not this one.
+    let known = db.blob_files(hashes.clone()).await.unwrap_or_else(|e| {
+        tracing::warn!("could not look up the files the store refers to: {e}");
+        HashMap::new()
+    });
+    let mut noted = Vec::new();
+    let mut forget = Vec::new();
+    for (source, hash) in sources.iter().zip(hashes) {
+        let stale = known
+            .get(&hash)
+            .is_some_and(|files| files.iter().any(|file| file.path != source.path && !is_unchanged(file)));
+        if !stale {
+            noted.push((hash, source.clone()));
+            continue;
+        }
+        let copy = add(store, source.path.clone(), ImportMode::Copy)
+            .await
+            .map_err(fail("Could not read the files."))?;
+        if copy.hash().as_bytes() != &hash {
+            // It changed between the two imports.
+            return Err(changed(&source.name));
+        }
+        forget.push(hash);
+    }
+    if let Err(e) = db.set_blob_files(noted, forget).await {
+        tracing::warn!("could not record the files the store refers to: {e}");
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -869,30 +950,120 @@ mod tests {
         Outgoing::new(scan, Payload::Paths(vec![path]), Arc::new(Semaphore::new(MAX_DOWNLOADS)))
     }
 
+    async fn db(dir: &std::path::Path) -> Db {
+        Db::open(&dir.join("t.db")).await.unwrap()
+    }
+
     #[tokio::test]
     async fn the_transfers_of_a_batch_share_one_hash() {
         let dir = tempfile::tempdir().unwrap();
-        let (out, store) = (outgoing(dir.path()), MemStore::new());
+        let (out, store, db) = (outgoing(dir.path()), MemStore::new(), db(dir.path()).await);
 
-        let hash = || out.hash((*store).clone());
+        let hash = || out.hash((*store).clone(), &db);
         let (a, b, c) = tokio::join!(hash(), hash(), hash());
 
         let (a, b, c) = (a.unwrap(), b.unwrap(), c.unwrap());
         assert_eq!((a, b), (b, c));
         // Asked again later it is not worked out again: the files can even be gone.
         std::fs::remove_file(dir.path().join("a.txt")).unwrap();
-        assert!(out.hash((*store).clone()).await.is_ok());
+        assert!(out.hash((*store).clone(), &db).await.is_ok());
     }
 
     #[tokio::test]
     async fn hashing_carries_on_when_the_transfer_that_began_it_is_dropped() {
         let dir = tempfile::tempdir().unwrap();
-        let (out, store) = (outgoing(dir.path()), MemStore::new());
+        let (out, store, db) = (outgoing(dir.path()), MemStore::new(), db(dir.path()).await);
 
         // Its Receiver declines while it is under way.
-        let started = tokio::time::timeout(Duration::ZERO, out.hash((*store).clone())).await;
+        let started = tokio::time::timeout(Duration::ZERO, out.hash((*store).clone(), &db)).await;
         assert!(started.is_err(), "still hashing when dropped");
 
-        assert!(out.hash((*store).clone()).await.is_ok());
+        assert!(out.hash((*store).clone(), &db).await.is_ok());
+    }
+
+    /// Over iroh-blobs' 16 KiB inline limit, so the store refers to the file.
+    const SIZE: usize = 1 << 20;
+
+    /// `<dir>/a/f` and `<dir>/b/f`, both holding the same `SIZE` bytes.
+    fn two_copies(dir: &std::path::Path) -> (PathBuf, PathBuf) {
+        for folder in ["a", "b"] {
+            std::fs::create_dir(dir.join(folder)).unwrap();
+            std::fs::write(dir.join(folder).join("f"), vec![7u8; SIZE]).unwrap();
+        }
+        (dir.join("a/f"), dir.join("b/f"))
+    }
+
+    /// Imports the file at `path`, as a send of it would, and returns its Collection.
+    async fn send(store: &crate::store::Store, db: &Db, path: &std::path::Path) -> Hash {
+        let scan = crate::scan::scan(&[path.to_owned()]).unwrap();
+        import((***store).clone(), db, &scan.sources).await.unwrap().0
+    }
+
+    /// What the store gives back for the one file in the Collection `root`.
+    async fn read(store: &crate::store::Store, root: Hash) -> Result<Vec<u8>, String> {
+        let collection = Collection::load(root, &***store).await.map_err(|e| e.to_string())?;
+        let (_, file) = collection.iter().next().expect("one file");
+        let bytes = store.blobs().get_bytes(*file).await.map_err(|e| e.to_string())?;
+        Ok(bytes.to_vec())
+    }
+
+    /// What goes wrong in iroh-blobs 0.103 (see [`import`]), without anything of ours: a file
+    /// imported by reference is gone, the same content is imported from another path that sorts
+    /// after it, and the blob cannot be read. A minimal reproduction; if iroh-blobs is changed to
+    /// try the paths it holds, this fails, and the replacing of stale files can go.
+    #[tokio::test]
+    async fn iroh_blobs_cannot_read_a_blob_once_the_first_file_it_refers_to_is_gone() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = crate::store::open(&dir.path().join("blobs")).await.unwrap();
+        let (first, second) = two_copies(dir.path());
+        let add = |path| async {
+            let options = AddPathOptions { path, format: BlobFormat::Raw, mode: ImportMode::TryReference };
+            store.blobs().add_path_with_opts(options).temp_tag().await.unwrap().hash()
+        };
+        let hash = add(first.clone()).await;
+        std::fs::remove_file(first).unwrap();
+        // The same content, from a file that is there.
+        assert_eq!(add(second).await, hash);
+
+        let read = store.blobs().get_bytes(hash).await;
+        assert!(read.is_err_and(|e| format!("{e:?}").contains("poisoned storage")));
+        store.shutdown().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn content_imported_again_can_be_read_after_the_first_file_is_gone_or_changed() {
+        for gone in [true, false] {
+            let dir = tempfile::tempdir().unwrap();
+            let db = db(dir.path()).await;
+            let store = crate::store::open(&dir.path().join("blobs")).await.unwrap();
+            let (first, second) = two_copies(dir.path());
+            send(&store, &db, &first).await;
+            if gone {
+                std::fs::remove_file(&first).unwrap();
+            } else {
+                std::fs::write(&first, vec![9u8; SIZE]).unwrap();
+            }
+
+            let root = send(&store, &db, &second).await;
+            assert_eq!(read(&store, root).await.unwrap(), vec![7u8; SIZE], "gone: {gone}");
+            store.shutdown().await.unwrap();
+        }
+    }
+
+    #[tokio::test]
+    async fn a_file_sent_again_unchanged_is_still_referred_to_not_copied() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = db(dir.path()).await;
+        let store = crate::store::open(&dir.path().join("blobs")).await.unwrap();
+        let (first, _) = two_copies(dir.path());
+
+        let once = send(&store, &db, &first).await;
+        let again = send(&store, &db, &first).await;
+
+        assert_eq!(once, again);
+        assert_eq!(read(&store, again).await.unwrap(), vec![7u8; SIZE]);
+        let owned = |name: &str| dir.path().join("blobs").join(name);
+        assert!(!owned("data").exists() || std::fs::read_dir(owned("data")).unwrap().next().is_none());
+        store.shutdown().await.unwrap();
     }
 }
