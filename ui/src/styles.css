@@ -230,3 +230,24 @@ progress {
   letter-spacing: 0.1em;
   text-align: center;
 }
+
+/* Text from another Device: plain characters, wrapped, scrolling when long. */
+.plain-text {
+  box-sizing: border-box;
+  max-height: 14rem;
+  margin: 0.25rem 0 0.75rem;
+  padding: 0.5rem 0.75rem;
+  overflow: auto;
+  border: 1px solid currentColor;
+  border-radius: 0.5rem;
+  font-family: inherit;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.sheet textarea {
+  display: block;
+  box-sizing: border-box;
+  width: 100%;
+  font-family: inherit;
+}

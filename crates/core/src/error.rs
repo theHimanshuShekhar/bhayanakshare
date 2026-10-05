@@ -29,6 +29,8 @@ pub enum Error {
     NotRunning(TransferId),
     #[error("Transfer {0} did not expire on this Device, so there is nothing to send again")]
     NothingToResend(TransferId),
+    #[error("There is no text to send.")]
+    EmptyText,
     #[error("A Batch needs at least one Receiver.")]
     NoReceivers,
     #[error("{} is chosen twice as a Receiver.", .0.fingerprint())]

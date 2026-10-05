@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import type { Api, Contact, SpaceCheck } from "./api";
 import { contactName, findContact } from "./contacts";
 import { t } from "./i18n";
+import { PlainText } from "./PlainText";
 import { adjustedNamesText, fingerprint, formatCountdown, formatSize, type TransferView } from "./transfers";
 
 /** How many top-level items the sheet lists before it says how many more there are: an Offer
@@ -47,8 +48,12 @@ export function OfferSheet({
     heading.current?.focus();
   }, [offer.id]);
 
-  // The checks run again whenever the folder changes.
+  const isText = offer.kind === "text";
+
+  // The checks run again whenever the folder changes. A text is kept by the app, not saved in
+  // a folder, so it has none.
   useEffect(() => {
+    if (isText) return;
     let live = true;
     setSpace(null);
     setFolderError(null);
@@ -59,7 +64,7 @@ export function OfferSheet({
     return () => {
       live = false;
     };
-  }, [api, offer.id, folder]);
+  }, [api, offer.id, folder, isText]);
 
   const short =
     space !== null && space.free !== null && space.free < space.needed
@@ -81,7 +86,7 @@ export function OfferSheet({
     <div className="overlay">
       <div role="dialog" aria-modal="true" aria-labelledby="offer-heading" className="sheet">
         <h2 id="offer-heading" tabIndex={-1} ref={heading}>
-          {t("offer.heading")}
+          {t(isText ? "offer.textHeading" : "offer.heading")}
         </h2>
         <dl>
           <dt>{t("offer.from")}</dt>
@@ -100,29 +105,39 @@ export function OfferSheet({
           </dd>
           <dt>{t("offer.fingerprint")}</dt>
           <dd>{fingerprint(offer.peer)}</dd>
-          <dt>{t("offer.items")}</dt>
-          <dd>
-            <ul>
-              {offer.items.slice(0, SHOWN_ITEMS).map((item) => (
-                <li key={item}>{item}</li>
-              ))}
-            </ul>
-            {offer.items.length > SHOWN_ITEMS && (
-              <>{t("offer.moreItems", { count: offer.items.length - SHOWN_ITEMS })}</>
-            )}
-          </dd>
-          <dt>{t("offer.files")}</dt>
-          <dd>{offer.fileCount}</dd>
-          <dt>{t("offer.size")}</dt>
-          <dd>{formatSize(offer.size)}</dd>
-          <dt>{t("offer.saveTo")}</dt>
-          <dd>
-            <code>{folder ?? saveFolder ?? ""}</code>{" "}
-            <button type="button" aria-label={t("offer.changeFolderLabel")} onClick={changeFolder}>
-              {t("offer.changeFolder")}
-            </button>
-          </dd>
+          {isText ? (
+            <>
+              <dt>{t("offer.size")}</dt>
+              <dd>{formatSize(offer.size)}</dd>
+            </>
+          ) : (
+            <>
+              <dt>{t("offer.items")}</dt>
+              <dd>
+                <ul>
+                  {offer.items.slice(0, SHOWN_ITEMS).map((item) => (
+                    <li key={item}>{item}</li>
+                  ))}
+                </ul>
+                {offer.items.length > SHOWN_ITEMS && (
+                  <>{t("offer.moreItems", { count: offer.items.length - SHOWN_ITEMS })}</>
+                )}
+              </dd>
+              <dt>{t("offer.files")}</dt>
+              <dd>{offer.fileCount}</dd>
+              <dt>{t("offer.size")}</dt>
+              <dd>{formatSize(offer.size)}</dd>
+              <dt>{t("offer.saveTo")}</dt>
+              <dd>
+                <code>{folder ?? saveFolder ?? ""}</code>{" "}
+                <button type="button" aria-label={t("offer.changeFolderLabel")} onClick={changeFolder}>
+                  {t("offer.changeFolder")}
+                </button>
+              </dd>
+            </>
+          )}
         </dl>
+        {isText && <PlainText text={offer.text ?? ""} />}
         <Countdown expiresAt={offer.expiresAt} />
         {short && (
           <p role="alert">

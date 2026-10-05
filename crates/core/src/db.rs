@@ -13,10 +13,10 @@ use crate::{
     contacts::{Contact, KnownAddress},
     identity::DeviceId,
     manifest::Manifest,
-    transfer::{BatchId, Role, TransferId, TransferState},
+    transfer::{BatchId, Role, TransferId, TransferKind, TransferState},
 };
 
-const SCHEMA_VERSION: i32 = 6;
+const SCHEMA_VERSION: i32 = 7;
 
 #[derive(Debug, thiserror::Error)]
 pub enum DbError {
@@ -39,7 +39,13 @@ pub struct TransferRecord {
     pub peer: String,
     /// The first of `items`: what the Transfer is called where there is room for one name.
     pub name: String,
+    /// What the Transfer carries: files, or text that went inline in the Offer.
+    pub kind: TransferKind,
+    /// Bytes of files, or of text.
     pub size: u64,
+    /// The whole text of a `Text` Transfer. A Receiver keeps it only once it has accepted:
+    /// text it declined, or that expired, is not kept. Untrusted when received.
+    pub text: Option<String>,
     /// The names at the top of what was offered: the files and folders the user picked.
     pub items: Vec<String>,
     pub file_count: u64,
@@ -242,8 +248,8 @@ impl Db {
             c.execute(
                 "INSERT INTO transfers
                  (id, role, peer, name, size, state, saved_to, error, created_at, updated_at,
-                  progress_at, items, file_count, skipped_links, adjusted_names, batch_id)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?9, ?11, ?12, ?13, ?14, ?15)",
+                  progress_at, items, file_count, skipped_links, adjusted_names, batch_id, kind, text)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?9, ?11, ?12, ?13, ?14, ?15, ?16, ?17)",
                 params![
                     t.id.to_string(),
                     t.role.as_str(),
@@ -259,7 +265,9 @@ impl Db {
                     t.file_count as i64,
                     t.skipped_links,
                     t.adjusted_names,
-                    t.batch_id.map(|batch| batch.to_string())
+                    t.batch_id.map(|batch| batch.to_string()),
+                    t.kind.as_str(),
+                    t.text
                 ],
             )?;
             Ok(())
@@ -285,6 +293,23 @@ impl Db {
                 // A Receiver kept the manifest only to carry on after a restart.
                 c.execute("DELETE FROM transfer_manifests WHERE transfer_id = ?1", [id.to_string()])?;
             }
+            Ok(())
+        })
+        .await
+    }
+
+    /// Keeps the text a Receiver accepted and completes the Transfer, in one write: a record
+    /// is never Completed without its text, nor holds the text of a Transfer that was not
+    /// accepted.
+    pub async fn complete_text(&self, id: TransferId, text: &str, now: UnixMillis) -> Result<(), DbError> {
+        let text = text.to_owned();
+        self.run(move |c| {
+            c.execute(
+                "UPDATE transfers
+                 SET text = ?2, state = 'completed', saved_to = NULL, error = NULL, updated_at = ?3
+                 WHERE id = ?1",
+                params![id.to_string(), text, now],
+            )?;
             Ok(())
         })
         .await
@@ -326,16 +351,22 @@ impl Db {
         .await
     }
 
-    /// Keeps the files and folders a Batch was made from, so a Transfer in it can be sent
-    /// again.
-    pub async fn insert_batch(&self, batch: BatchId, roots: &[PathBuf]) -> Result<(), DbError> {
+    /// Keeps what a Batch was made from, so a Transfer in it can be sent again: the files and
+    /// folders picked, or (a Batch of text, with no files) the text.
+    pub async fn insert_batch(
+        &self,
+        batch: BatchId,
+        roots: &[PathBuf],
+        text: Option<&str>,
+    ) -> Result<(), DbError> {
         let roots: Vec<String> = roots.iter().map(|root| root.to_string_lossy().into_owned()).collect();
         let bytes = postcard::to_stdvec(&roots)
             .map_err(|e| DbError::Corrupt(format!("batch roots do not encode: {e}")))?;
+        let text = text.map(str::to_owned);
         self.run(move |c| {
             c.execute(
-                "INSERT OR REPLACE INTO batches (id, roots) VALUES (?1, ?2)",
-                params![batch.to_string(), bytes],
+                "INSERT OR REPLACE INTO batches (id, roots, text) VALUES (?1, ?2, ?3)",
+                params![batch.to_string(), bytes, text],
             )?;
             Ok(())
         })
@@ -361,6 +392,18 @@ impl Db {
             .transpose()
     }
 
+    /// The text a Batch of text was made from; `None` for a Batch of files.
+    pub async fn batch_text(&self, batch: BatchId) -> Result<Option<String>, DbError> {
+        self.run(move |c| {
+            Ok(c.query_row("SELECT text FROM batches WHERE id = ?1", [batch.to_string()], |r| {
+                r.get::<_, Option<String>>(0)
+            })
+            .optional()?
+            .flatten())
+        })
+        .await
+    }
+
     /// Every Transfer that has not ended, oldest first.
     pub async fn unfinished(&self) -> Result<Vec<Unfinished>, DbError> {
         self.run(|c| {
@@ -371,9 +414,9 @@ impl Db {
             let rows = stmt.query_map([], |r| {
                 Ok((
                     read_row(r)?,
-                    r.get::<_, i64>(15)?,
-                    r.get::<_, Option<String>>(16)?,
-                    r.get::<_, Option<String>>(17)?,
+                    r.get::<_, i64>(17)?,
+                    r.get::<_, Option<String>>(18)?,
+                    r.get::<_, Option<String>>(19)?,
                 ))
             })?;
             let mut out = Vec::new();
@@ -527,7 +570,7 @@ impl Db {
     }
 }
 
-const COLUMNS: &str = "id, role, peer, name, size, state, saved_to, error, created_at, updated_at, items, file_count, skipped_links, adjusted_names, batch_id";
+const COLUMNS: &str = "id, role, peer, name, size, state, saved_to, error, created_at, updated_at, items, file_count, skipped_links, adjusted_names, batch_id, kind, text";
 
 type TransferRow = (
     String,
@@ -544,6 +587,8 @@ type TransferRow = (
     i64,
     u32,
     u32,
+    Option<String>,
+    String,
     Option<String>,
 );
 
@@ -564,6 +609,8 @@ fn read_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<TransferRow> {
         r.get(12)?,
         r.get(13)?,
         r.get(14)?,
+        r.get(15)?,
+        r.get(16)?,
     ))
 }
 
@@ -584,6 +631,8 @@ fn record(row: TransferRow) -> Result<TransferRecord, DbError> {
         skipped_links,
         adjusted_names,
         batch_id,
+        kind,
+        text,
     ) = row;
     let corrupt = |what: &str, v: &str| DbError::Corrupt(format!("{what} {v:?}"));
     Ok(TransferRecord {
@@ -591,7 +640,9 @@ fn record(row: TransferRow) -> Result<TransferRecord, DbError> {
         role: role.parse().map_err(|_| corrupt("role", &role))?,
         peer,
         name,
+        kind: kind.parse().map_err(|_| corrupt("kind", &kind))?,
         size: size as u64,
+        text,
         items: items.split('\n').filter(|item| !item.is_empty()).map(str::to_owned).collect(),
         file_count: file_count as u64,
         skipped_links,
@@ -752,6 +803,18 @@ fn migrate(conn: &Connection) -> Result<(), DbError> {
              COMMIT;",
         )?;
     }
+    if version < 7 {
+        // Text: what a Transfer carries, and the text itself (a Receiver's once accepted, a
+        // Sender's as sent), plus the text a Batch was made from, for sending it again.
+        conn.execute_batch(
+            "BEGIN;
+             ALTER TABLE transfers ADD COLUMN kind TEXT NOT NULL DEFAULT 'files';
+             ALTER TABLE transfers ADD COLUMN text TEXT;
+             ALTER TABLE batches ADD COLUMN text TEXT;
+             PRAGMA user_version = 7;
+             COMMIT;",
+        )?;
+    }
     Ok(())
 }
 
@@ -765,7 +828,9 @@ mod tests {
             role: Role::Sender,
             peer: "PEER".into(),
             name: "a.txt".into(),
+            kind: TransferKind::Files,
             size: 12,
+            text: None,
             items: vec!["a.txt".into(), "photos".into()],
             file_count: 3,
             skipped_links: 2,
@@ -832,13 +897,54 @@ mod tests {
                 .unwrap();
         }
         let roots = vec![PathBuf::from("/a/photos"), PathBuf::from("/a/b.txt")];
-        db.insert_batch(batch, &roots).await.unwrap();
+        db.insert_batch(batch, &roots, None).await.unwrap();
 
         let ids: Vec<_> = db.batch_transfers(batch).await.unwrap().iter().map(|t| t.id).collect();
         assert_eq!(ids, [TransferId::from_bytes([1; 16]), TransferId::from_bytes([2; 16])]);
         assert_eq!(db.transfer(ids[0]).await.unwrap().unwrap().batch_id, Some(batch));
         assert_eq!(db.batch_roots(batch).await.unwrap(), Some(roots));
         assert_eq!(db.batch_roots(other).await.unwrap(), None);
+        assert_eq!(db.batch_text(batch).await.unwrap(), None);
+    }
+
+    #[tokio::test]
+    async fn a_batch_of_text_keeps_the_text_to_send_again() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = Db::open(&dir.path().join("t.db")).await.unwrap();
+        let batch = BatchId::random();
+        db.insert_batch(batch, &[], Some("héllo\n<b>world</b>")).await.unwrap();
+
+        assert_eq!(db.batch_roots(batch).await.unwrap(), Some(vec![]));
+        assert_eq!(db.batch_text(batch).await.unwrap().as_deref(), Some("héllo\n<b>world</b>"));
+    }
+
+    #[tokio::test]
+    async fn accepted_text_is_kept_with_the_transfer_that_completes_with_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("t.db");
+        let db = Db::open(&path).await.unwrap();
+        let id = TransferId::from_bytes([8; 16]);
+        let offered = TransferRecord {
+            role: Role::Receiver,
+            kind: TransferKind::Text,
+            name: String::new(),
+            size: 5,
+            items: vec![],
+            file_count: 0,
+            ..record(8, TransferState::Offered)
+        };
+        db.insert_transfer(offered).await.unwrap();
+        // Until it is accepted the Receiver holds no text.
+        assert_eq!(db.transfer(id).await.unwrap().unwrap().text, None);
+
+        db.complete_text(id, "a\u{0}b <script>x</script>", 300).await.unwrap();
+        drop(db);
+
+        let back = Db::open(&path).await.unwrap().transfer(id).await.unwrap().unwrap();
+        assert_eq!(back.kind, TransferKind::Text);
+        assert_eq!(back.text.as_deref(), Some("a\u{0}b <script>x</script>"));
+        assert_eq!(back.state, TransferState::Completed { saved_to: None });
+        assert_eq!(back.updated_at, 300);
     }
 
     fn contact(n: u8) -> Contact {
@@ -1036,6 +1142,8 @@ mod tests {
         let old = db.transfer(id).await.unwrap().unwrap();
         assert_eq!((old.items, old.file_count, old.skipped_links), (vec!["a.txt".to_owned()], 1, 0));
         assert_eq!(old.adjusted_names, 0);
+        // Nothing from before text is text.
+        assert_eq!((old.kind, old.text), (TransferKind::Files, None));
         let source = Source { path: "/src/a.txt".into(), size: 7, mtime_ns: 99, name: "a.txt".into() };
         assert_eq!(db.sources(id).await.unwrap(), [source]);
 

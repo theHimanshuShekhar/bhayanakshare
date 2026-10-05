@@ -35,6 +35,8 @@ function transfer(
     role: extra.role ?? "receiver",
     peer: extra.peer ?? PEER,
     peer_name: null,
+    kind: "files",
+    text: null,
     name: "photo.jpg",
     items: ["photo.jpg"],
     file_count: 1,
@@ -73,6 +75,16 @@ describe("applyEvent", () => {
     expect(view).toMatchObject({ items: ["album", "notes.txt"], fileCount: 7, skippedLinks: 2 });
     expect(transferName(view)).toBe("album and 1 more");
     expect(transferName({ ...view, items: ["album"] })).toBe("album");
+  });
+
+  it("keeps a text Transfer's kind and text from its first event, and calls it Text", () => {
+    const event = { ...transfer(0, { kind: "offered" }), kind: "text", text: "<b>hi</b>", name: "", items: [] } as DeviceEvent;
+    const done = { ...transfer(1, { kind: "completed", saved_to: null }), kind: "text", text: "<b>hi</b>" } as DeviceEvent;
+    const view = run([event, done]).byId[ID];
+    expect(view).toMatchObject({ kind: "text", text: "<b>hi</b>" });
+    expect(transferName(view)).toBe("Text");
+    // A Transfer of files has no text.
+    expect(run([transfer(0, { kind: "offered" })]).byId[ID]).toMatchObject({ kind: "files", text: null });
   });
 
   it("keeps how many names the Receiver adjusted", () => {
@@ -174,7 +186,7 @@ describe("formatting", () => {
   });
 
   it("counts whole percent, and an empty file as complete", () => {
-    const base = { id: ID, role: "receiver", batch: null, peer: PEER, peerName: null, name: "x", items: ["x"] as string[], fileCount: 1, skippedLinks: 0, adjustedNames: 0, state: { kind: "transferring" }, expiresAt: 0, rate: null, progressAt: null } as const;
+    const base = { id: ID, role: "receiver", batch: null, peer: PEER, peerName: null, kind: "files", text: null, name: "x", items: ["x"] as string[], fileCount: 1, skippedLinks: 0, adjustedNames: 0, state: { kind: "transferring" }, expiresAt: 0, rate: null, progressAt: null } as const;
     expect(percent({ ...base, size: 1000, bytes: 999 })).toBe(99);
     expect(percent({ ...base, size: 1000, bytes: 1000 })).toBe(100);
     expect(percent({ ...base, size: 0, bytes: 0 })).toBe(100);

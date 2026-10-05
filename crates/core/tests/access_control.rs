@@ -96,7 +96,7 @@ impl RawReceiver {
         assert!(matches!(next(&mut incoming).await, Message::Hello(_)));
         write_frame(&mut send, &Message::Hello(Hello::current())).await.unwrap();
         let Message::Offer(offer) = next(&mut incoming).await else { panic!("expected an Offer") };
-        assert_eq!((offer.manifest.top_level_items(), offer.size), (vec![name.to_owned()], bytes.len() as u64));
+        assert_eq!((support::manifest_of(&offer).top_level_items(), offer.size), (vec![name.to_owned()], bytes.len() as u64));
         Self {
             id,
             root: root_hash(name, bytes).await,

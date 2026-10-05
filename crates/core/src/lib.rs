@@ -35,4 +35,4 @@ pub use identity::{DEVICE_ID_LEN, DeviceId, DeviceIdError, KeySource};
 pub use names::{NameError, validate_file_name};
 pub use receiver::INCOMING_DIR;
 pub use space::{FreeSpace, SpaceCheck, SystemFreeSpace};
-pub use transfer::{BatchId, OFFER_TTL_MS, Role, STALL_TTL_MS, TransferId, TransferState};
+pub use transfer::{BatchId, OFFER_TTL_MS, Role, STALL_TTL_MS, TransferId, TransferKind, TransferState};

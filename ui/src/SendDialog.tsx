@@ -1,10 +1,11 @@
 import { useEffect, useRef, useState, type KeyboardEvent } from "react";
 import type { Api } from "./api";
 import { t } from "./i18n";
+import { TextComposer } from "./TextComposer";
 import { baseName } from "./transfers";
 
 /**
- * "Send to ID…": paste a Device ID, pick files or a folder, and the Offer goes out. With `files`
+ * "Send to ID…": paste a Device ID, pick files or a folder or write text, and the Offer goes out. With `files`
  * already chosen (a second launch, or the tray's "Send files…"), there is nothing to pick: they
  * go out as soon as the Device is. Each of those is a Transfer of its own, files or folders.
  */
@@ -33,6 +34,8 @@ export function SendDialog({
   const [remaining, setRemaining] = useState(files);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // Writing text instead of picking files.
+  const [composing, setComposing] = useState(false);
   const input = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
@@ -96,7 +99,15 @@ export function SendDialog({
             {t("send.files")}: {remaining.map(baseName).join(", ")}
           </p>
         )}
-        {error !== null && <p role="alert">{error}</p>}
+        {error !== null && !composing && <p role="alert">{error}</p>}
+        {composing ? (
+          <TextComposer
+            send={(text) => api.sendText(to.trim(), text)}
+            onSent={onClose}
+            onBack={() => setComposing(false)}
+            disabled={to.trim() === ""}
+          />
+        ) : (
         <div className="actions">
           {remaining.length > 0 ? (
             <button type="button" onClick={() => send()} disabled={busy || to.trim() === ""}>
@@ -118,12 +129,16 @@ export function SendDialog({
               >
                 {t("send.chooseFolder")}
               </button>
+              <button type="button" onClick={() => setComposing(true)} disabled={busy || to.trim() === ""}>
+                {t("send.writeText")}
+              </button>
             </>
           )}
           <button type="button" onClick={onClose}>
             {t("send.cancel")}
           </button>
         </div>
+        )}
       </div>
     </div>
   );

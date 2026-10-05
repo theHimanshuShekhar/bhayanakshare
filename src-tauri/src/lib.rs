@@ -126,6 +126,28 @@ async fn send_batch(
     Ok(sent.id.to_string())
 }
 
+/// Offers `text` to the Device with the pasted Device ID `to`; resolves to the Transfer ID.
+#[tauri::command]
+#[specta::specta]
+async fn send_text(device: State<'_, Device>, to: String, text: String) -> Result<String, String> {
+    let id = device.send_text(parse_id(&to)?, &text).await.map_err(|e| e.to_string())?;
+    Ok(id.to_string())
+}
+
+/// Offers `text` to every Device in `to` at once, as a Batch of one Transfer each; resolves to
+/// the Batch ID.
+#[tauri::command]
+#[specta::specta]
+async fn send_text_batch(
+    device: State<'_, Device>,
+    to: Vec<String>,
+    text: String,
+) -> Result<String, String> {
+    let to = to.iter().map(|id| parse_id(id).map(DeviceAddr::from)).collect::<Result<Vec<_>, _>>()?;
+    let sent = device.send_text_batch(&to, &text).await.map_err(|e| e.to_string())?;
+    Ok(sent.id.to_string())
+}
+
 /// Stops every Transfer of a Batch that is still running.
 #[tauri::command]
 #[specta::specta]
@@ -314,6 +336,8 @@ pub fn specta_builder<R: Runtime>() -> Builder<R> {
             save_folder,
             send_files,
             send_batch,
+            send_text,
+            send_text_batch,
             cancel_batch,
             retry_transfer,
             check_offer,

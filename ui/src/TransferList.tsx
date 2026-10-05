@@ -2,6 +2,7 @@ import { useState } from "react";
 import type { Api, Contact } from "./api";
 import { peerName } from "./contacts";
 import { t, type MessageKey } from "./i18n";
+import { PlainText } from "./PlainText";
 import {
   adjustedNamesText,
   batchStatus,
@@ -104,6 +105,32 @@ function BatchRow({ api, contacts, batch }: { api: Api; contacts: Contact[]; bat
   );
 }
 
+/** A text that arrived: shown as plain text, with a button to copy it. */
+function ReceivedText({ api, text, peer }: { api: Api; text: string; peer: string }) {
+  const [copy, setCopy] = useState<"idle" | "copied" | "failed">("idle");
+  return (
+    <>
+      <PlainText text={text} />
+      <button
+        type="button"
+        aria-label={t("transfer.copyLabel", { peer })}
+        onClick={() =>
+          api.copyText(text).then(
+            () => setCopy("copied"),
+            () => setCopy("failed"),
+          )
+        }
+      >
+        {t("transfer.copy")}
+      </button>
+      <span role="status" className="note">
+        {copy === "copied" && t("transfer.copied")}
+        {copy === "failed" && t("transfer.copyFailed")}
+      </span>
+    </>
+  );
+}
+
 function TransferRow({
   api,
   contacts,
@@ -166,6 +193,9 @@ function TransferRow({
         </p>
       )}
       {showFailed && <p role="alert">{t("transfer.showInFolderFailed")}</p>}
+      {x.role === "receiver" && x.kind === "text" && x.state.kind === "completed" && (
+        <ReceivedText api={api} text={x.text ?? ""} peer={peer} />
+      )}
       {canCancel(x) && (
         <button
           type="button"

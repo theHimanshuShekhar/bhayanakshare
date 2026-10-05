@@ -17,6 +17,13 @@ export const commands = {
 	 *  IDs) at once, as a Batch of one Transfer each; resolves to the Batch ID.
 	 */
 	sendBatch: (to: string[], paths: string[]) => __TAURI_INVOKE<string>("send_batch", { to, paths }),
+	/**  Offers `text` to the Device with the pasted Device ID `to`; resolves to the Transfer ID. */
+	sendText: (to: string, text: string) => __TAURI_INVOKE<string>("send_text", { to, text }),
+	/**
+	 *  Offers `text` to every Device in `to` at once, as a Batch of one Transfer each; resolves to
+	 *  the Batch ID.
+	 */
+	sendTextBatch: (to: string[], text: string) => __TAURI_INVOKE<string>("send_text_batch", { to, text }),
 	/**  Stops every Transfer of a Batch that is still running. */
 	cancelBatch: (batchId: BatchId) => __TAURI_INVOKE<null>("cancel_batch", { batchId }),
 	/**  Sends a Failed Transfer of a Batch again, with a new Offer; resolves to the new Transfer ID. */
@@ -210,9 +217,17 @@ export type TransferEvent = {
 	 *  it next to the Fingerprint.
 	 */
 	peer_name: string | null,
-	/**  The first of `items`, for places with room for one name. */
+	/**  What the Transfer carries. */
+	kind: TransferKind,
+	/**  The first of `items`, for places with room for one name; empty for text. */
 	name: string,
+	/**  Bytes of files, or of text. */
 	size: number,
+	/**
+	 *  The text of a `Text` Transfer, whole, on every event of it. Untrusted when received:
+	 *  show it as plain text, never as markup.
+	 */
+	text: string | null,
 	/**
 	 *  The names at the top of what was offered: the files and folders the Sender picked, each
 	 *  once. All of them are listed, however many; a screen shows as many as fit.
@@ -244,6 +259,16 @@ export type TransferEvent = {
  *  the wire.
  */
 export type TransferId = string;
+
+/**  What a Transfer carries. */
+export type TransferKind = 
+/**  Files and folders, saved into the save folder. */
+"files" | 
+/**
+ *  A piece of text that travelled inline in the Offer. Text too long for that is sent as a
+ *  file, so it is a `Files` Transfer.
+ */
+"text";
 
 /**  Where a Transfer is in its lifecycle (spec section 4, the part the skeleton covers). */
 export type TransferState = { kind: "offered" } | { kind: "accepted" } | { kind: "declined" } | 

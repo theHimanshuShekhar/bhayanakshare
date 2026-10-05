@@ -29,11 +29,12 @@ use crate::{
     event::{EventKind, EventSink, EventStream, ProgressEvent, TransferEvent},
     gate::Gate,
     identity::{DeviceId, KeySource},
-    protocol, receiver, scan, sender,
+    protocol, receiver,
+    sender::{self, Outgoing, Payload},
     session::RESTARTED,
     space::{FreeSpace, SpaceCheck},
     store,
-    transfer::{BatchId, OFFER_TTL_MS, Role, TransferId, TransferState},
+    transfer::{BatchId, OFFER_TTL_MS, Role, TransferId, TransferKind, TransferState},
 };
 
 /// Which network a Device lives on.
@@ -107,6 +108,8 @@ pub(crate) struct PendingOffer {
     /// Bytes in the longest path the Offer would create, names as adjusted, relative to the
     /// save folder: what the path-length check needs.
     pub longest_path: usize,
+    /// A text Offer takes nothing from the save folder, so the checks about it always pass.
+    pub text: bool,
     pub decide: oneshot::Sender<Decision>,
 }
 
@@ -118,9 +121,12 @@ pub(crate) struct TransferInfo {
     pub peer: DeviceId,
     /// What the peer called itself in its Hello, once known.
     pub peer_name: Option<String>,
-    /// The first of `items`.
+    pub kind: TransferKind,
+    /// The first of `items`; empty for text.
     pub name: String,
     pub size: u64,
+    /// The text of a text Transfer, whole.
+    pub text: Option<String>,
     /// The names at the top of the Offer's tree.
     pub items: Vec<String>,
     pub file_count: u64,
@@ -134,6 +140,26 @@ pub(crate) struct TransferInfo {
 }
 
 impl TransferInfo {
+    /// What every Transfer of a send has in common, for the caller to fill in what it carries.
+    fn sending(peer: DeviceId, batch: Option<BatchId>, now: UnixMillis) -> Self {
+        Self {
+            id: TransferId::random(),
+            role: Role::Sender,
+            peer,
+            peer_name: None,
+            kind: TransferKind::Files,
+            name: String::new(),
+            size: 0,
+            text: None,
+            items: Vec::new(),
+            file_count: 0,
+            skipped_links: 0,
+            adjusted_names: 0,
+            batch,
+            expires_at: now + OFFER_TTL_MS,
+        }
+    }
+
     /// A Transfer read back from the database, or `None` if its peer cannot be read.
     pub(crate) fn from_record(record: &TransferRecord) -> Option<Self> {
         Some(Self {
@@ -142,8 +168,10 @@ impl TransferInfo {
             peer: record.peer.parse().ok()?,
             // Learned again from the peer's Hello when it next connects.
             peer_name: None,
+            kind: record.kind,
             name: record.name.clone(),
             size: record.size,
+            text: record.text.clone(),
             items: record.items.clone(),
             file_count: record.file_count,
             skipped_links: record.skipped_links,
@@ -166,6 +194,8 @@ pub(crate) struct Shared {
     pub discovery: Discovery,
     pub db: Db,
     pub clock: Arc<dyn Clock>,
+    /// Where settings, Transfer records and the Sender's store live.
+    pub data_dir: PathBuf,
     /// The folder an Offer is saved to unless the Receiver picks another.
     pub save_dir: PathBuf,
     pub free_space: Arc<dyn FreeSpace>,
@@ -178,7 +208,7 @@ pub(crate) struct Shared {
     pub cancels: Mutex<HashMap<TransferId, CancellationToken>>,
     /// Offers this Device sent that expired, with where they went and what they held, so the
     /// user can send them again in one step.
-    pub expired: Mutex<HashMap<TransferId, (DeviceAddr, Vec<PathBuf>)>>,
+    pub expired: Mutex<HashMap<TransferId, (DeviceAddr, sender::Payload)>>,
     /// Transfers this Device sends that are waiting for, or following, their Receiver, by
     /// Transfer ID: where a Receiver that dials back with `Resume` is handed over.
     pub resumers: Mutex<HashMap<TransferId, sender::Resumer>>,
@@ -287,7 +317,10 @@ impl Shared {
                 role: t.role,
                 peer: t.peer.to_string(),
                 name: t.name.clone(),
+                kind: t.kind,
                 size: t.size,
+                // A Receiver keeps the text only once it accepts it (see `complete_text`).
+                text: t.text.clone().filter(|_| t.role == Role::Sender),
                 items: t.items.clone(),
                 file_count: t.file_count,
                 skipped_links: t.skipped_links,
@@ -312,6 +345,17 @@ impl Shared {
         self.announce(t, state, now);
     }
 
+    /// Keeps the text of a text Transfer a Receiver accepted and completes the Transfer, then
+    /// announces it. The text is what is delivered, so unlike a state change this fails when
+    /// it cannot be kept.
+    pub async fn complete_text(&self, t: &TransferInfo) -> Result<(), Error> {
+        let now = self.now();
+        let text = t.text.as_deref().unwrap_or_default();
+        self.db.complete_text(t.id, text, now).await?;
+        self.announce(t, TransferState::Completed { saved_to: None }, now);
+        Ok(())
+    }
+
     /// Announces how many bytes of the Transfer's file have been received.
     pub fn progress(&self, t: &TransferInfo, bytes: u64) {
         let progress = ProgressEvent { transfer_id: t.id, bytes: bytes.min(t.size), total: t.size };
@@ -326,8 +370,10 @@ impl Shared {
                 role: t.role,
                 peer: t.peer,
                 peer_name: t.peer_name.clone(),
+                kind: t.kind,
                 name: t.name.clone(),
                 size: t.size,
+                text: t.text.clone(),
                 items: t.items.clone(),
                 file_count: t.file_count,
                 skipped_links: t.skipped_links,
@@ -399,6 +445,10 @@ async fn recover(sh: &Arc<Shared>) -> Result<(), Error> {
             sh.db.update_transfer(record.id, state, sh.now()).await?;
         }
     }
+    // Only now is it known which Transfers still need the files of the texts they are sending.
+    if let Err(e) = sender::sweep_texts(sh).await {
+        tracing::warn!("could not clear old texts: {e}");
+    }
     Ok(())
 }
 
@@ -427,6 +477,7 @@ impl Device {
         tokio::fs::create_dir_all(&data_dir).await.map_err(io("creating", &data_dir))?;
         tokio::fs::create_dir_all(&save_dir).await.map_err(io("creating", &save_dir))?;
         let save_dir = std::path::absolute(&save_dir).map_err(io("resolving", &save_dir))?;
+        let data_dir = std::path::absolute(&data_dir).map_err(io("resolving", &data_dir))?;
 
         let secret = key_source
             .load_or_create()
@@ -460,6 +511,7 @@ impl Device {
             discovery: Discovery::new(network, &endpoint),
             db,
             clock,
+            data_dir,
             save_dir,
             free_space,
             events,
@@ -515,7 +567,14 @@ impl Device {
         to: impl Into<DeviceAddr>,
         paths: &[PathBuf],
     ) -> Result<TransferId, Error> {
-        Ok(self.send_to(&[to.into()], paths, None).await?.remove(0))
+        Ok(self.send_to(&[to.into()], Payload::Paths(paths.to_owned()), None).await?.remove(0))
+    }
+
+    /// Offers `text` to the Device at `to`. Up to 64 KiB of UTF-8 goes in the Offer itself:
+    /// the Receiver sees it before answering, and nothing is hashed or fetched. Longer text
+    /// is sent as a file called `text.txt`, like any other. Empty text is refused here.
+    pub async fn send_text(&self, to: impl Into<DeviceAddr>, text: &str) -> Result<TransferId, Error> {
+        Ok(self.send_to(&[to.into()], Payload::Text(text.to_owned()), None).await?.remove(0))
     }
 
     /// Offers the files and folders at `paths` to every Device in `to` at once: a Batch, with
@@ -532,7 +591,21 @@ impl Device {
             return Err(Error::DuplicateReceiver(twice.1.id));
         }
         let id = BatchId::random();
-        let transfers = self.send_to(to, paths, Some(id)).await?;
+        let transfers = self.send_to(to, Payload::Paths(paths.to_owned()), Some(id)).await?;
+        Ok(SentBatch { id, transfers })
+    }
+
+    /// Offers `text` to every Device in `to` at once, as a Batch like [`Device::send_batch`]'s.
+    /// Text that goes in the Offer has nothing to download, so it never waits for a slot.
+    pub async fn send_text_batch(&self, to: &[DeviceAddr], text: &str) -> Result<SentBatch, Error> {
+        if to.is_empty() {
+            return Err(Error::NoReceivers);
+        }
+        if let Some(twice) = to.iter().enumerate().find(|(i, a)| to[..*i].iter().any(|b| b.id == a.id)) {
+            return Err(Error::DuplicateReceiver(twice.1.id));
+        }
+        let id = BatchId::random();
+        let transfers = self.send_to(to, Payload::Text(text.to_owned()), Some(id)).await?;
         Ok(SentBatch { id, transfers })
     }
 
@@ -562,57 +635,67 @@ impl Device {
         }
         let roots =
             sh.db.batch_roots(batch).await?.ok_or_else(|| not("what it sent is no longer known"))?;
-        Ok(self.send_to(&[DeviceAddr::from(peer)], &roots, Some(batch)).await?[0])
+        let payload = match sh.db.batch_text(batch).await? {
+            Some(text) => Payload::Text(text),
+            None => Payload::Paths(roots),
+        };
+        Ok(self.send_to(&[DeviceAddr::from(peer)], payload, Some(batch)).await?[0])
     }
 
-    /// Scans `paths` once and starts a Transfer to each of `to`, in `batch` if there is one.
+    /// Reads `payload` once and starts a Transfer to each of `to`, in `batch` if there is one.
     async fn send_to(
         &self,
         to: &[DeviceAddr],
-        paths: &[PathBuf],
+        payload: Payload,
         batch: Option<BatchId>,
     ) -> Result<Vec<TransferId>, Error> {
         let sh = &self.inner.shared;
         if sh.cancel.is_cancelled() {
             return Err(Error::ShuttingDown);
         }
-        let roots = paths
-            .iter()
-            .map(|path| std::path::absolute(path).map_err(|e| Error::io("resolving the path", e)))
-            .collect::<Result<Vec<_>, _>>()?;
-        let scanned = roots.clone();
-        let scan = tokio::task::spawn_blocking(move || scan::scan(&scanned))
-            .await
-            .map_err(|e| Error::io("reading the files", std::io::Error::other(e)))??;
+        let out = Arc::new(Outgoing::prepare(sh, payload, sh.slots(batch)).await?);
 
         if let Some(batch) = batch {
-            sh.db.insert_batch(batch, &roots).await?;
+            let (roots, text) = match out.payload() {
+                Payload::Paths(roots) => (roots.as_slice(), None),
+                Payload::Text(text) => (&[][..], Some(text.as_str())),
+            };
+            sh.db.insert_batch(batch, roots, text).await?;
         }
 
-        let items = scan.manifest.top_level_items();
-        let template = TransferInfo {
-            id: TransferId::random(),
-            role: Role::Sender,
-            peer: to[0].id,
-            peer_name: None,
-            name: items[0].clone(),
-            // The scan has been validated, so the total fits.
-            size: scan.manifest.total_size().unwrap_or(u64::MAX),
-            items,
-            file_count: scan.manifest.file_count(),
-            skipped_links: scan.skipped_links,
-            adjusted_names: 0,
-            batch,
-            expires_at: sh.now() + OFFER_TTL_MS,
+        let template = match out.inline_text() {
+            // Nothing but the text: no names, no files.
+            Some(text) => TransferInfo {
+                kind: TransferKind::Text,
+                name: String::new(),
+                size: text.len() as u64,
+                text: Some(text.to_owned()),
+                items: Vec::new(),
+                file_count: 0,
+                skipped_links: 0,
+                ..TransferInfo::sending(to[0].id, batch, sh.now())
+            },
+            None => {
+                let items = out.manifest().top_level_items();
+                TransferInfo {
+                    name: items[0].clone(),
+                    // The scan has been validated, so the total fits.
+                    size: out.manifest().total_size().unwrap_or(u64::MAX),
+                    items,
+                    file_count: out.manifest().file_count(),
+                    skipped_links: out.skipped_links(),
+                    ..TransferInfo::sending(to[0].id, batch, sh.now())
+                }
+            }
         };
-        let sources = scan.sources.clone();
-        let out = Arc::new(sender::Outgoing::new(scan, roots, sh.slots(batch)));
         let mut ids = Vec::with_capacity(to.len());
         for to in to {
             let info = TransferInfo { id: TransferId::random(), peer: to.id, ..template.clone() };
             sh.begin(&info, TransferState::Offered).await?;
             // The files as they are now, for the check before they are served again.
-            sh.db.insert_sources(info.id, sources.clone()).await?;
+            if !out.sources().is_empty() {
+                sh.db.insert_sources(info.id, out.sources().to_vec()).await?;
+            }
             ids.push(info.id);
             let cancel = sh.track(info.id);
             sh.tasks.spawn(sender::run(sh.clone(), info, to.clone(), out.clone(), cancel));
@@ -624,14 +707,14 @@ impl Device {
     /// files have gone in the meantime.
     pub async fn resend(&self, id: TransferId) -> Result<TransferId, Error> {
         let sh = &self.inner.shared;
-        let (to, paths) = sh
+        let (to, payload) = sh
             .expired
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .get(&id)
             .cloned()
             .ok_or(Error::NothingToResend(id))?;
-        let new = self.send(to, &paths).await?;
+        let new = self.send_to(&[to], payload, None).await?.remove(0);
         sh.expired.lock().unwrap_or_else(|e| e.into_inner()).remove(&id);
         Ok(new)
     }
@@ -705,17 +788,21 @@ impl Device {
         folder: Option<&Path>,
     ) -> Result<(PathBuf, SpaceCheck), Error> {
         let sh = &self.inner.shared;
-        let (needed, longest_path) = sh
+        let (needed, longest_path, text) = sh
             .pending
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .get(&id)
-            .map(|offer| (offer.size, offer.longest_path))
+            .map(|offer| (offer.size, offer.longest_path, offer.text))
             .ok_or(Error::UnknownTransfer(id))?;
         let folder = match folder {
             Some(folder) => std::path::absolute(folder).map_err(|e| Error::io("resolving the folder", e))?,
             None => sh.save_dir.clone(),
         };
+        if text {
+            // Kept in the database, not the folder: there is nothing to run out of room for.
+            return Ok((folder, SpaceCheck { needed: 0, free: None, paths_too_long: false }));
+        }
         let check = sh.space_check(id, needed, longest_path, &folder).await?;
         Ok((folder, check))
     }

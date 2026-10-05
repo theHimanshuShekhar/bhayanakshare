@@ -51,6 +51,8 @@ function fakeApi(overrides: Partial<Api> = {}, initialContacts: Contact[] = []) 
     saveFolder: () => Promise.resolve("/home/me/Downloads/BhayanakShare"),
     sendFiles: vi.fn((_to: string, _paths: string[]) => Promise.resolve(TRANSFER)),
     sendBatch: vi.fn((_to: string[], _paths: string[]) => Promise.resolve(BATCH)),
+    sendText: vi.fn((_to: string, _text: string) => Promise.resolve(TRANSFER)),
+    sendTextBatch: vi.fn((_to: string[], _text: string) => Promise.resolve(BATCH)),
     cancelBatch: vi.fn((_id: string) => Promise.resolve(null)),
     retryTransfer: vi.fn((_id: string) => Promise.resolve("ef".repeat(16))),
     checkOffer: vi.fn((_id: string, _folder: string | null) =>
@@ -107,6 +109,8 @@ function fakeApi(overrides: Partial<Api> = {}, initialContacts: Contact[] = []) 
   /** What an Offer holds when it is not just `photo.jpg`: a folder, several files, links skipped,
    * names adjusted. */
   type Contents = Partial<{
+    kind: "files" | "text";
+    text: string | null;
     name: string;
     items: string[];
     file_count: number;
@@ -125,6 +129,8 @@ function fakeApi(overrides: Partial<Api> = {}, initialContacts: Contact[] = []) 
       role,
       peer: PEER_ID,
       peer_name: peerName,
+      kind: "files",
+      text: null,
       name: "photo.jpg",
       items: ["photo.jpg"],
       file_count: 1,
@@ -265,6 +271,8 @@ describe("sending", () => {
       role: "sender",
       peer: PEER_ID,
       peer_name: null,
+      kind: "files",
+      text: null,
       name: "pack",
       items: ["pack"],
       file_count: 2,
@@ -345,6 +353,8 @@ describe("sending", () => {
       role: "sender",
       peer: PEER_ID,
       peer_name: null,
+      kind: "files",
+      text: null,
       name: "b.bin",
       items: ["b.bin"],
       file_count: 1,
@@ -526,6 +536,8 @@ describe("receiving", () => {
       role: "receiver",
       peer: PEER_ID,
       peer_name: null,
+      kind: "files",
+      text: null,
       name: "b.bin",
       items: ["b.bin"],
       file_count: 1,
@@ -715,6 +727,8 @@ describe("cancelling, expiry and the Offer countdown", () => {
       role: "sender",
       peer: PEER_ID,
       peer_name: null,
+      kind: "files",
+      text: null,
       name: "photo.jpg",
       items: ["photo.jpg"],
       file_count: 1,
@@ -876,6 +890,8 @@ describe("Contacts", () => {
       role: "sender",
       peer: "Z".repeat(52),
       peer_name: null,
+      kind: "files",
+      text: null,
       name: "b.bin",
       items: ["b.bin"],
       file_count: 1,
@@ -1272,6 +1288,8 @@ describe("a clicked notification", () => {
       role: "receiver",
       peer: PEER_ID,
       peer_name: null,
+      kind: "files",
+      text: null,
       name: "older.txt",
       items: ["older.txt"],
       file_count: 1,
@@ -1358,6 +1376,8 @@ describe("Batches", () => {
       role: "sender",
       peer,
       peer_name: null,
+      kind: "files",
+      text: null,
       name: "photo.jpg",
       items: ["photo.jpg"],
       file_count: 1,
@@ -1512,5 +1532,172 @@ describe("Batches", () => {
     fireEvent.click(screen.getByRole("button", { name: /Show each Device/ }));
     fireEvent.click(screen.getByRole("button", { name: "Retry photo.jpg to Mum" }));
     expect((await screen.findByRole("alert")).textContent).toContain("it has been retried already");
+  });
+});
+
+describe("Text", () => {
+  /** Text that would do harm if it were ever taken for markup. */
+  const HOSTILE = '<img src=x onerror="window.pwned = 1"><script>window.pwned = 2</script> <b>bold</b> &amp;';
+  const MUM = PEER_ID;
+  const DAD = "Q2WERTYU" + "C".repeat(44);
+  const contacts = [
+    contact({ id: MUM, nickname: "Mum", added_at: 1 }),
+    contact({ id: DAD, nickname: "Dad", added_at: 2 }),
+  ];
+  const write = (text: string) =>
+    fireEvent.change(screen.getByLabelText("Text"), { target: { value: text } });
+
+  it("offers a text composer next to the file picker and sends exactly what was typed", async () => {
+    const device = await start();
+    fireEvent.click(screen.getByRole("button", { name: "Send to ID…" }));
+    fireEvent.change(screen.getByLabelText("Device ID"), { target: { value: ` ${PEER_ID} ` } });
+    expect(screen.getByRole("button", { name: "Choose files…" })).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Write text…" }));
+
+    // Nothing to send until something is written.
+    const send = screen.getByRole("button", { name: "Send text" }) as HTMLButtonElement;
+    expect(send.disabled).toBe(true);
+    write("  \n ");
+    expect(send.disabled).toBe(true);
+    write("  hello\nworld  ");
+    fireEvent.click(send);
+
+    await waitFor(() => expect(device.api.sendText).toHaveBeenCalled());
+    // The ID is trimmed, the text is not.
+    expect(device.api.sendText).toHaveBeenCalledWith(PEER_ID, "  hello\nworld  ");
+    expect(device.api.sendFiles).not.toHaveBeenCalled();
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+  });
+
+  it("needs a Device ID before text can be written, and can go back to the pickers", async () => {
+    await start();
+    fireEvent.click(screen.getByRole("button", { name: "Send to ID…" }));
+    expect((screen.getByRole("button", { name: "Write text…" }) as HTMLButtonElement).disabled).toBe(true);
+    fireEvent.change(screen.getByLabelText("Device ID"), { target: { value: PEER_ID } });
+    fireEvent.click(screen.getByRole("button", { name: "Write text…" }));
+    fireEvent.click(screen.getByRole("button", { name: "Back" }));
+    expect(screen.getByRole("button", { name: "Choose files…" })).toBeTruthy();
+  });
+
+  it("says why the text could not be sent and keeps it", async () => {
+    const sendText = vi.fn(() => Promise.reject(new Error("There is no text to send.")));
+    await start(fakeApi({ sendText }));
+    fireEvent.click(screen.getByRole("button", { name: "Send to ID…" }));
+    fireEvent.change(screen.getByLabelText("Device ID"), { target: { value: PEER_ID } });
+    fireEvent.click(screen.getByRole("button", { name: "Write text…" }));
+    write("keep me");
+    fireEvent.click(screen.getByRole("button", { name: "Send text" }));
+    expect((await screen.findByRole("alert")).textContent).toContain("Could not send. There is no text to send.");
+    expect((screen.getByLabelText("Text") as HTMLTextAreaElement).value).toBe("keep me");
+  });
+
+  it("sends text to one selected Device as an ordinary Transfer, and to several as a Batch", async () => {
+    const device = await start(fakeApi({}, contacts));
+    await screen.findByRole("button", { name: "Send to Mum" });
+    const select = (name: string) =>
+      fireEvent.click(screen.getByRole("checkbox", { name: `Select ${name} to send to several Devices at once` }));
+
+    select("Mum");
+    fireEvent.click(screen.getByRole("button", { name: "Write text…" }));
+    write("just Mum");
+    fireEvent.click(screen.getByRole("button", { name: "Send text" }));
+    await waitFor(() => expect(device.api.sendText).toHaveBeenCalledWith(MUM, "just Mum"));
+    expect(device.api.sendTextBatch).not.toHaveBeenCalled();
+    await waitFor(() => expect(screen.queryByText("1 Device selected")).toBeNull());
+
+    select("Mum");
+    select("Dad");
+    fireEvent.click(screen.getByRole("button", { name: "Write text…" }));
+    write("everyone");
+    fireEvent.click(screen.getByRole("button", { name: "Send text" }));
+    await waitFor(() => expect(device.api.sendTextBatch).toHaveBeenCalledWith([MUM, DAD], "everyone"));
+    expect(device.api.sendText).toHaveBeenCalledTimes(1);
+    await waitFor(() => expect(screen.queryByText("2 Devices selected")).toBeNull());
+  });
+
+  it("shows an incoming text in the Offer sheet as plain text, with nothing to save and nothing to check", async () => {
+    const device = await start();
+    await device.transfer("receiver", { kind: "offered" }, "Laptop", {
+      kind: "text",
+      text: HOSTILE,
+      name: "",
+      items: [],
+      file_count: 0,
+    });
+
+    const sheet = await screen.findByRole("dialog", { name: "Incoming text" });
+    // Every character of it is shown as text: none of it became an element.
+    expect(within(sheet).getByRole("region", { name: "Text" }).textContent).toBe(HOSTILE);
+    expect(sheet.querySelector("img, script, b")).toBeNull();
+    expect((window as unknown as { pwned?: number }).pwned).toBeUndefined();
+    // It is no file: no folder, no space check, no items.
+    expect(sheet.textContent).not.toContain("Will be saved to");
+    expect(sheet.textContent).not.toContain("Items");
+    expect(device.api.checkOffer).not.toHaveBeenCalled();
+    expect((within(sheet).getByRole("button", { name: "Accept" }) as HTMLButtonElement).disabled).toBe(false);
+
+    fireEvent.click(within(sheet).getByRole("button", { name: "Accept" }));
+    expect(device.api.acceptOffer).toHaveBeenCalledWith(TRANSFER, null);
+  });
+
+  it("can decline an incoming text", async () => {
+    const device = await start();
+    await device.transfer("receiver", { kind: "offered" }, null, { kind: "text", text: "hi", name: "", items: [] });
+    fireEvent.click(await screen.findByRole("button", { name: "Decline" }));
+    expect(device.api.declineOffer).toHaveBeenCalledWith(TRANSFER);
+  });
+
+  it("shows the received text in the app as plain text, with a Copy button that copies it exactly", async () => {
+    const device = await start();
+    const incoming = { kind: "text" as const, text: HOSTILE, name: "", items: [], file_count: 0, size: 99 };
+    await device.transfer("receiver", { kind: "offered" }, "Laptop", incoming);
+    await device.transfer("receiver", { kind: "accepted" }, "Laptop", incoming);
+    await device.transfer("receiver", { kind: "completed", saved_to: null }, "Laptop", incoming);
+
+    expect(screen.queryByRole("dialog")).toBeNull();
+    const row = screen.getByText("Text from Laptop · K3QF-7XNA").closest("li")!;
+    expect(within(row).getByRole("region", { name: "Text" }).textContent).toBe(HOSTILE);
+    expect(row.querySelector("img, script, b")).toBeNull();
+    // A text has no folder to show.
+    expect(within(row).queryByRole("button", { name: /Show/ })).toBeNull();
+
+    fireEvent.click(within(row).getByRole("button", { name: "Copy the text from Laptop · K3QF-7XNA" }));
+    await waitFor(() => expect(device.api.copyText).toHaveBeenCalledWith(HOSTILE));
+    expect(await within(row).findByText("Copied")).toBeTruthy();
+  });
+
+  it("says when the text could not be copied", async () => {
+    const copyText = vi.fn(() => Promise.reject(new Error("no clipboard")));
+    const device = await start(fakeApi({ copyText }));
+    await device.transfer("receiver", { kind: "completed", saved_to: null }, "Laptop", {
+      kind: "text",
+      text: "hi",
+      name: "",
+      items: [],
+    });
+    fireEvent.click(screen.getByRole("button", { name: /^Copy the text/ }));
+    expect(await screen.findByText(/Could not copy/)).toBeTruthy();
+  });
+
+  it("names a text Transfer 'Text' on the Sender's row, without showing what it says", async () => {
+    const device = await start();
+    await device.transfer("sender", { kind: "completed", saved_to: null }, "Laptop", {
+      kind: "text",
+      text: "a secret",
+      name: "",
+      items: [],
+    });
+    expect(screen.getByText("Text to Laptop · K3QF-7XNA")).toBeTruthy();
+    expect(screen.getByText("Sent.")).toBeTruthy();
+    expect(screen.queryByText("a secret")).toBeNull();
+    expect(screen.queryByRole("button", { name: /^Copy the text/ })).toBeNull();
+  });
+
+  it("does not show a file's name for a long text sent as text.txt: it is an ordinary file", async () => {
+    const device = await start();
+    await device.transfer("receiver", { kind: "offered" }, null, { name: "text.txt", items: ["text.txt"] });
+    const sheet = await screen.findByRole("dialog", { name: "Incoming files" });
+    expect(sheet.textContent).toContain("text.txt");
+    expect(device.api.checkOffer).toHaveBeenCalled();
   });
 });

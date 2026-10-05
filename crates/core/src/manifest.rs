@@ -87,9 +87,13 @@ pub enum ManifestError {
     /// The entry sits inside another entry, which is a file or a folder said to be empty.
     #[error("Couldn't be sent: invalid file names")]
     InsideEntry(usize),
-    /// An Offer's total size or file count is not what its manifest adds up to.
+    /// An Offer's total size or file count is not what its manifest (or text) adds up to.
     #[error("The Offer does not add up.")]
     Inconsistent,
+    /// Not about a manifest: an Offer's inline text is over the 64 KiB limit. A Sender sends
+    /// longer text as a file.
+    #[error("The text is too long to send inline.")]
+    TextTooLong,
 }
 
 impl Manifest {
