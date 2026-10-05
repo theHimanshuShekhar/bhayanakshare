@@ -60,6 +60,35 @@ code {
   flex: 1;
 }
 
+/* The Devices ticked for a send to several, with what to send them. */
+.selection {
+  margin-block: 0.75rem;
+  padding: 0.5rem 0.75rem;
+  border: 2px solid currentColor;
+  border-radius: 0.5rem;
+}
+
+.selection p {
+  margin: 0.25rem 0;
+}
+
+.selection .actions {
+  justify-content: flex-start;
+}
+
+/* A Batch's own rows sit inside its row. */
+.transfers .members {
+  list-style: none;
+  display: grid;
+  gap: 0.5rem;
+  margin-block: 0.5rem 0;
+  padding-inline-start: 0;
+}
+
+.transfers li > button + button {
+  margin-inline-start: 0.5rem;
+}
+
 .transfers {
   list-style: none;
   padding: 0;

@@ -15,8 +15,8 @@ use std::{
 };
 
 use bhayanakshare_core::{
-    Contact, Device, DeviceConfig, DeviceId, Event, KeySource, Network, SpaceCheck, SystemClock,
-    SystemFreeSpace, TransferId, Visibility,
+    BatchId, Contact, Device, DeviceAddr, DeviceConfig, DeviceId, Event, KeySource, Network,
+    SpaceCheck, SystemClock, SystemFreeSpace, TransferId, Visibility,
 };
 use serde::Serialize;
 use specta::Type;
@@ -108,6 +108,36 @@ async fn send_files(
     let to: DeviceId = to.trim().parse().map_err(|e| format!("{e}"))?;
     let paths: Vec<PathBuf> = paths.into_iter().map(PathBuf::from).collect();
     let id = device.send(to, &paths).await.map_err(|e| e.to_string())?;
+    Ok(id.to_string())
+}
+
+/// Offers the files and folders at `paths` to every Device in `to` (pasted or chosen Device
+/// IDs) at once, as a Batch of one Transfer each; resolves to the Batch ID.
+#[tauri::command]
+#[specta::specta]
+async fn send_batch(
+    device: State<'_, Device>,
+    to: Vec<String>,
+    paths: Vec<String>,
+) -> Result<String, String> {
+    let to = to.iter().map(|id| parse_id(id).map(DeviceAddr::from)).collect::<Result<Vec<_>, _>>()?;
+    let paths: Vec<PathBuf> = paths.into_iter().map(PathBuf::from).collect();
+    let sent = device.send_batch(&to, &paths).await.map_err(|e| e.to_string())?;
+    Ok(sent.id.to_string())
+}
+
+/// Stops every Transfer of a Batch that is still running.
+#[tauri::command]
+#[specta::specta]
+async fn cancel_batch(device: State<'_, Device>, batch_id: BatchId) -> Result<(), String> {
+    device.cancel_batch(batch_id).await.map_err(|e| e.to_string())
+}
+
+/// Sends a Failed Transfer of a Batch again, with a new Offer; resolves to the new Transfer ID.
+#[tauri::command]
+#[specta::specta]
+async fn retry_transfer(device: State<'_, Device>, transfer_id: TransferId) -> Result<String, String> {
+    let id = device.retry(transfer_id).await.map_err(|e| e.to_string())?;
     Ok(id.to_string())
 }
 
@@ -283,6 +313,9 @@ pub fn specta_builder<R: Runtime>() -> Builder<R> {
             my_id,
             save_folder,
             send_files,
+            send_batch,
+            cancel_batch,
+            retry_transfer,
             check_offer,
             accept_offer,
             decline_offer,

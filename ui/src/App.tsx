@@ -6,13 +6,14 @@ import { MyDeviceId } from "./MyDeviceId";
 import { OfferSheet } from "./OfferSheet";
 import { QuitDialog } from "./QuitDialog";
 import { RemoveContactDialog } from "./RemoveContactDialog";
+import { SelectBox, SelectionBar } from "./SelectionBar";
 import { SendDialog } from "./SendDialog";
 import { SettingsScreen } from "./SettingsScreen";
 import { TransferList } from "./TransferList";
 import { peerName, sortedContacts } from "./contacts";
 import { t, type MessageKey } from "./i18n";
 import { FIREWALL_DOCS_URL, NEARBY_WAIT_MS, applyNearby, nearbyStrangers } from "./nearby";
-import { applyEvent, baseName, fingerprint, newestFirst, noTransfers, pendingOffer } from "./transfers";
+import { applyEvent, baseName, fingerprint, listItems, noTransfers, pendingOffer } from "./transfers";
 
 const TABS = [
   { id: "home", label: "tab.home", placeholder: "home.placeholder" },
@@ -33,6 +34,8 @@ export function App({ api = tauriApi }: AppProps) {
   // Sending to a pasted ID (`to` empty) or to a Contact, whose ID is filled in.
   const [sending, setSending] = useState<{ to: string; name: string | null } | null>(null);
   const [contacts, setContacts] = useState<Contact[]>([]);
+  // Device IDs ticked on Home, to send the same files to all of them as a Batch.
+  const [selected, setSelected] = useState<string[]>([]);
   const [adding, setAdding] = useState(false);
   // A Nearby Device being saved as a Contact: its ID is already known.
   const [saving, setSaving] = useState<{ id: string; name: string | null } | null>(null);
@@ -60,6 +63,13 @@ export function App({ api = tauriApi }: AppProps) {
     quit !== null;
 
   const loadContacts = useCallback(() => api.contacts().then(setContacts, () => {}), [api]);
+
+  const strangers = nearbyStrangers(nearby, contacts);
+  // A Device that has gone from Home cannot stay chosen: there is no tile to untick.
+  const shown = new Set([...contacts.map((c) => c.id), ...strangers.map((d) => d.id)]);
+  const chosen = selected.filter((id) => shown.has(id));
+  const toggle = (id: string) =>
+    setSelected((now) => (now.includes(id) ? now.filter((x) => x !== id) : [...now, id]));
 
   useEffect(() => {
     let live = true;
@@ -156,21 +166,23 @@ export function App({ api = tauriApi }: AppProps) {
                   const here = nearby.find((d) => d.id === c.id);
                   const name = peerName(c.id, contacts, here?.name ?? null);
                   return (
-                    <button
-                      key={c.id}
-                      type="button"
-                      className="tile"
-                      aria-label={t("home.sendToContact", { name })}
-                      onClick={() => setSending({ to: c.id, name })}
-                    >
-                      <strong>{name}</strong>
-                      <span className="badge">{t("contacts.badge")}</span>
-                      <span className="note">{fingerprint(c.id)}</span>
-                      {here && <span className="note">{t("home.nearby")}</span>}
-                    </button>
+                    <div key={c.id} className="tile-group">
+                      <button
+                        type="button"
+                        className="tile"
+                        aria-label={t("home.sendToContact", { name })}
+                        onClick={() => setSending({ to: c.id, name })}
+                      >
+                        <strong>{name}</strong>
+                        <span className="badge">{t("contacts.badge")}</span>
+                        <span className="note">{fingerprint(c.id)}</span>
+                        {here && <span className="note">{t("home.nearby")}</span>}
+                      </button>
+                      <SelectBox name={name} checked={chosen.includes(c.id)} onChange={() => toggle(c.id)} />
+                    </div>
                   );
                 })}
-                {nearbyStrangers(nearby, contacts).map((d) => {
+                {strangers.map((d) => {
                   const label = peerName(d.id, contacts, d.name);
                   return (
                     <div key={d.id} className="tile-group">
@@ -191,6 +203,7 @@ export function App({ api = tauriApi }: AppProps) {
                       >
                         {t("home.saveAsContact")}
                       </button>
+                      <SelectBox name={label} checked={chosen.includes(d.id)} onChange={() => toggle(d.id)} />
                     </div>
                   );
                 })}
@@ -202,6 +215,16 @@ export function App({ api = tauriApi }: AppProps) {
                   {t("home.sendToId")}
                 </button>
               </div>
+              {chosen.length > 0 && (
+                <SelectionBar
+                  api={api}
+                  ids={chosen}
+                  files={queued}
+                  onClear={() => setSelected([])}
+                  onSent={() => setSelected([])}
+                  onFilesSent={() => setQueued([])}
+                />
+              )}
               {waited && nearby.length === 0 && (
                 <p role="status" className="hint">
                   {t("home.firewallHint")}{" "}
@@ -223,7 +246,7 @@ export function App({ api = tauriApi }: AppProps) {
               {transfers.order.length === 0 ? (
                 <p>{t("home.noTransfers")}</p>
               ) : (
-                <TransferList api={api} contacts={contacts} transfers={newestFirst(transfers)} />
+                <TransferList api={api} contacts={contacts} items={listItems(transfers)} />
               )}
             </section>
           </>

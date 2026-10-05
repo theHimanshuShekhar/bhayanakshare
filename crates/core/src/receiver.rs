@@ -251,6 +251,8 @@ async fn flow(
         file_count: offer.file_count,
         skipped_links: offer.skipped_links,
         adjusted_names: adjusted.count,
+        // The Sender's Batch is its own business; the Offer does not mention it.
+        batch: None,
         expires_at: sh.now() + OFFER_TTL_MS,
     };
 

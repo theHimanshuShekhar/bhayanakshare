@@ -62,6 +62,38 @@ impl<'de> Deserialize<'de> for TransferId {
     }
 }
 
+/// A random 128-bit Batch ID, chosen by the Sender: what ties together the Transfers made by
+/// one send to several Receivers. It stays on the Sender; no Receiver is told it.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, specta::Type)]
+#[specta(type = String)] // serialized as hex in JSON
+pub struct BatchId(TransferId);
+
+impl BatchId {
+    pub fn random() -> Self {
+        Self(TransferId::random())
+    }
+}
+
+impl fmt::Display for BatchId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        fmt::Display::fmt(&self.0, f)
+    }
+}
+
+impl fmt::Debug for BatchId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "BatchId({self})")
+    }
+}
+
+impl FromStr for BatchId {
+    type Err = ();
+
+    fn from_str(s: &str) -> Result<Self, ()> {
+        s.parse().map(Self)
+    }
+}
+
 /// Which side of a Transfer a Device plays.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, specta::Type)]
 #[serde(rename_all = "snake_case")]
@@ -105,6 +137,10 @@ pub enum TransferState {
     Offered,
     Accepted,
     Declined,
+    /// Sender only: the Receiver has accepted, but the Batch already has its limit of Receivers
+    /// downloading, so this one waits for a slot. The Receiver shows Accepted meanwhile: it is
+    /// not told, and fetches once the Sender sends `HashReady`.
+    Waiting,
     /// The Receiver is fetching the content.
     Transferring,
     /// The Receiver lost the Sender part-way through and is redialling it (Receiver only;
@@ -128,6 +164,7 @@ impl TransferState {
             Self::Offered => "offered",
             Self::Accepted => "accepted",
             Self::Declined => "declined",
+            Self::Waiting => "waiting",
             Self::Transferring => "transferring",
             Self::Reconnecting => "reconnecting",
             Self::Saving => "saving",
@@ -154,6 +191,7 @@ impl TransferState {
             "offered" => Self::Offered,
             "accepted" => Self::Accepted,
             "declined" => Self::Declined,
+            "waiting" => Self::Waiting,
             "transferring" => Self::Transferring,
             "reconnecting" => Self::Reconnecting,
             "saving" => Self::Saving,
@@ -168,7 +206,10 @@ impl TransferState {
     /// Whether content is moving, or about to: the Transfers a clean shutdown leaves to
     /// resume on the next start. An unanswered Offer is not one (it lapses instead).
     pub fn is_in_progress(&self) -> bool {
-        matches!(self, Self::Accepted | Self::Transferring | Self::Reconnecting | Self::Saving)
+        matches!(
+            self,
+            Self::Accepted | Self::Waiting | Self::Transferring | Self::Reconnecting | Self::Saving
+        )
     }
 
     pub fn is_terminal(&self) -> bool {
@@ -198,6 +239,15 @@ mod tests {
     }
 
     #[test]
+    fn batch_id_is_hex_like_a_transfer_id() {
+        let id = BatchId::random();
+        assert_eq!(serde_json::to_string(&id).unwrap(), format!("\"{id}\""));
+        assert_eq!(id.to_string().len(), 32);
+        assert_eq!(id.to_string().parse::<BatchId>(), Ok(id));
+        assert!("ab".parse::<BatchId>().is_err());
+    }
+
+    #[test]
     fn transfer_id_rejects_bad_text() {
         assert!("zz".parse::<TransferId>().is_err());
         assert!("ab".parse::<TransferId>().is_err());
@@ -207,6 +257,7 @@ mod tests {
     fn only_accepted_work_is_in_progress() {
         let progressing = [
             TransferState::Accepted,
+            TransferState::Waiting,
             TransferState::Transferring,
             TransferState::Reconnecting,
             TransferState::Saving,
@@ -228,6 +279,7 @@ mod tests {
         let states = [
             TransferState::Offered,
             TransferState::Declined,
+            TransferState::Waiting,
             TransferState::Reconnecting,
             TransferState::Completed { saved_to: Some("/x/y".into()) },
             TransferState::Failed { reason: "nope".into() },

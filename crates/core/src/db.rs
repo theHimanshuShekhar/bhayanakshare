@@ -13,10 +13,10 @@ use crate::{
     contacts::{Contact, KnownAddress},
     identity::DeviceId,
     manifest::Manifest,
-    transfer::{Role, TransferId, TransferState},
+    transfer::{BatchId, Role, TransferId, TransferState},
 };
 
-const SCHEMA_VERSION: i32 = 5;
+const SCHEMA_VERSION: i32 = 6;
 
 #[derive(Debug, thiserror::Error)]
 pub enum DbError {
@@ -47,6 +47,9 @@ pub struct TransferRecord {
     pub skipped_links: u32,
     /// Names a Receiver changed to make them safe to write (spec section 6).
     pub adjusted_names: u32,
+    /// The Batch a Sender made this Transfer in; `None` for a Transfer sent on its own and for
+    /// every Receiver's (a Receiver is never told about the Batch).
+    pub batch_id: Option<BatchId>,
     pub state: TransferState,
     pub created_at: UnixMillis,
     pub updated_at: UnixMillis,
@@ -239,8 +242,8 @@ impl Db {
             c.execute(
                 "INSERT INTO transfers
                  (id, role, peer, name, size, state, saved_to, error, created_at, updated_at,
-                  progress_at, items, file_count, skipped_links, adjusted_names)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?9, ?11, ?12, ?13, ?14)",
+                  progress_at, items, file_count, skipped_links, adjusted_names, batch_id)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?9, ?11, ?12, ?13, ?14, ?15)",
                 params![
                     t.id.to_string(),
                     t.role.as_str(),
@@ -255,7 +258,8 @@ impl Db {
                     t.items.join("\n"),
                     t.file_count as i64,
                     t.skipped_links,
-                    t.adjusted_names
+                    t.adjusted_names,
+                    t.batch_id.map(|batch| batch.to_string())
                 ],
             )?;
             Ok(())
@@ -310,6 +314,53 @@ impl Db {
         .await
     }
 
+    /// The Transfers of a Batch, oldest first.
+    pub async fn batch_transfers(&self, batch: BatchId) -> Result<Vec<TransferRecord>, DbError> {
+        self.run(move |c| {
+            let mut stmt = c.prepare(&format!(
+                "SELECT {COLUMNS} FROM transfers WHERE batch_id = ?1 ORDER BY created_at, rowid"
+            ))?;
+            let rows = stmt.query_map([batch.to_string()], read_row)?;
+            rows.map(|row| record(row?)).collect()
+        })
+        .await
+    }
+
+    /// Keeps the files and folders a Batch was made from, so a Transfer in it can be sent
+    /// again.
+    pub async fn insert_batch(&self, batch: BatchId, roots: &[PathBuf]) -> Result<(), DbError> {
+        let roots: Vec<String> = roots.iter().map(|root| root.to_string_lossy().into_owned()).collect();
+        let bytes = postcard::to_stdvec(&roots)
+            .map_err(|e| DbError::Corrupt(format!("batch roots do not encode: {e}")))?;
+        self.run(move |c| {
+            c.execute(
+                "INSERT OR REPLACE INTO batches (id, roots) VALUES (?1, ?2)",
+                params![batch.to_string(), bytes],
+            )?;
+            Ok(())
+        })
+        .await
+    }
+
+    /// What [`Db::insert_batch`] kept; `None` for a Batch this Device does not know.
+    pub async fn batch_roots(&self, batch: BatchId) -> Result<Option<Vec<PathBuf>>, DbError> {
+        let bytes = self
+            .run(move |c| {
+                Ok(c.query_row("SELECT roots FROM batches WHERE id = ?1", [batch.to_string()], |r| {
+                    r.get::<_, Vec<u8>>(0)
+                })
+                .optional()?)
+            })
+            .await?;
+        bytes
+            .map(|bytes| {
+                postcard::from_bytes::<Vec<String>>(&bytes)
+                    .map(|roots| roots.into_iter().map(PathBuf::from).collect())
+                    .map_err(|e| DbError::Corrupt(format!("roots of batch {batch}: {e}")))
+            })
+            .transpose()
+    }
+
     /// Every Transfer that has not ended, oldest first.
     pub async fn unfinished(&self) -> Result<Vec<Unfinished>, DbError> {
         self.run(|c| {
@@ -320,9 +371,9 @@ impl Db {
             let rows = stmt.query_map([], |r| {
                 Ok((
                     read_row(r)?,
-                    r.get::<_, i64>(14)?,
-                    r.get::<_, Option<String>>(15)?,
+                    r.get::<_, i64>(15)?,
                     r.get::<_, Option<String>>(16)?,
+                    r.get::<_, Option<String>>(17)?,
                 ))
             })?;
             let mut out = Vec::new();
@@ -476,7 +527,7 @@ impl Db {
     }
 }
 
-const COLUMNS: &str = "id, role, peer, name, size, state, saved_to, error, created_at, updated_at, items, file_count, skipped_links, adjusted_names";
+const COLUMNS: &str = "id, role, peer, name, size, state, saved_to, error, created_at, updated_at, items, file_count, skipped_links, adjusted_names, batch_id";
 
 type TransferRow = (
     String,
@@ -493,6 +544,7 @@ type TransferRow = (
     i64,
     u32,
     u32,
+    Option<String>,
 );
 
 fn read_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<TransferRow> {
@@ -511,6 +563,7 @@ fn read_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<TransferRow> {
         r.get(11)?,
         r.get(12)?,
         r.get(13)?,
+        r.get(14)?,
     ))
 }
 
@@ -530,6 +583,7 @@ fn record(row: TransferRow) -> Result<TransferRecord, DbError> {
         file_count,
         skipped_links,
         adjusted_names,
+        batch_id,
     ) = row;
     let corrupt = |what: &str, v: &str| DbError::Corrupt(format!("{what} {v:?}"));
     Ok(TransferRecord {
@@ -542,6 +596,9 @@ fn record(row: TransferRow) -> Result<TransferRecord, DbError> {
         file_count: file_count as u64,
         skipped_links,
         adjusted_names,
+        batch_id: batch_id
+            .map(|batch| batch.parse().map_err(|_| corrupt("batch id", &batch)))
+            .transpose()?,
         state: TransferState::from_parts(&state, saved_to, error)
             .ok_or_else(|| corrupt("state", &state))?,
         created_at,
@@ -681,6 +738,20 @@ fn migrate(conn: &Connection) -> Result<(), DbError> {
              COMMIT;",
         )?;
     }
+    if version < 6 {
+        // Batches: the Batch a Sender's Transfer belongs to, and what each Batch was made of
+        // (the paths picked), so a Failed Transfer can be sent again.
+        conn.execute_batch(
+            "BEGIN;
+             ALTER TABLE transfers ADD COLUMN batch_id TEXT;
+             CREATE TABLE batches (
+                 id TEXT PRIMARY KEY,
+                 roots BLOB NOT NULL
+             );
+             PRAGMA user_version = 6;
+             COMMIT;",
+        )?;
+    }
     Ok(())
 }
 
@@ -699,6 +770,7 @@ mod tests {
             file_count: 3,
             skipped_links: 2,
             adjusted_names: 4,
+            batch_id: None,
             state,
             created_at: 100,
             updated_at: 100,
@@ -747,6 +819,26 @@ mod tests {
         assert_eq!(rows[0].state, TransferState::Completed { saved_to: Some("/saved/a.txt".into()) });
         assert_eq!(rows[0].updated_at, 200);
         assert_eq!(rows[1].state, TransferState::Offered);
+    }
+
+    #[tokio::test]
+    async fn a_batch_keeps_its_transfers_and_what_it_was_made_from() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = Db::open(&dir.path().join("t.db")).await.unwrap();
+        let (batch, other) = (BatchId::random(), BatchId::random());
+        for (id, batch) in [(1, Some(batch)), (2, Some(batch)), (3, Some(other)), (4, None)] {
+            db.insert_transfer(TransferRecord { batch_id: batch, ..record(id, TransferState::Offered) })
+                .await
+                .unwrap();
+        }
+        let roots = vec![PathBuf::from("/a/photos"), PathBuf::from("/a/b.txt")];
+        db.insert_batch(batch, &roots).await.unwrap();
+
+        let ids: Vec<_> = db.batch_transfers(batch).await.unwrap().iter().map(|t| t.id).collect();
+        assert_eq!(ids, [TransferId::from_bytes([1; 16]), TransferId::from_bytes([2; 16])]);
+        assert_eq!(db.transfer(ids[0]).await.unwrap().unwrap().batch_id, Some(batch));
+        assert_eq!(db.batch_roots(batch).await.unwrap(), Some(roots));
+        assert_eq!(db.batch_roots(other).await.unwrap(), None);
     }
 
     fn contact(n: u8) -> Contact {

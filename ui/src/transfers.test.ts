@@ -3,11 +3,14 @@ import type { DeviceEvent, TransferState } from "./bindings";
 import {
   adjustedNamesText,
   applyEvent,
+  batchStatus,
   canCancel,
   canResend,
+  canRetry,
   fingerprint,
   formatCountdown,
   formatSize,
+  listItems,
   newestFirst,
   noTransfers,
   pendingOffer,
@@ -19,20 +22,25 @@ import {
 const ID = "ab".repeat(16);
 const PEER = "K3QF7XNA" + "A".repeat(44);
 
-function transfer(seq: number, state: TransferState, extra: Partial<{ id: string; role: "sender" | "receiver" }> = {}): DeviceEvent {
+function transfer(
+  seq: number,
+  state: TransferState,
+  extra: Partial<{ id: string; role: "sender" | "receiver"; peer: string; batch: string }> = {},
+): DeviceEvent {
   return {
     seq,
     at: 1_000 + seq,
     type: "transfer",
     transfer_id: extra.id ?? ID,
     role: extra.role ?? "receiver",
-    peer: PEER,
+    peer: extra.peer ?? PEER,
     peer_name: null,
     name: "photo.jpg",
     items: ["photo.jpg"],
     file_count: 1,
     skipped_links: 0,
     adjusted_names: 0,
+    batch_id: extra.batch ?? null,
     size: 1000,
     expires_at: 601_000,
     state,
@@ -166,7 +174,7 @@ describe("formatting", () => {
   });
 
   it("counts whole percent, and an empty file as complete", () => {
-    const base = { id: ID, role: "receiver", peer: PEER, peerName: null, name: "x", items: ["x"] as string[], fileCount: 1, skippedLinks: 0, adjustedNames: 0, state: { kind: "transferring" }, expiresAt: 0, rate: null, progressAt: null } as const;
+    const base = { id: ID, role: "receiver", batch: null, peer: PEER, peerName: null, name: "x", items: ["x"] as string[], fileCount: 1, skippedLinks: 0, adjustedNames: 0, state: { kind: "transferring" }, expiresAt: 0, rate: null, progressAt: null } as const;
     expect(percent({ ...base, size: 1000, bytes: 999 })).toBe(99);
     expect(percent({ ...base, size: 1000, bytes: 1000 })).toBe(100);
     expect(percent({ ...base, size: 0, bytes: 0 })).toBe(100);
@@ -215,5 +223,92 @@ describe("expiry and cancelling", () => {
     expect(canResend(view("receiver", { kind: "expired" }))).toBe(false);
     expect(canResend(view("sender", { kind: "declined" }))).toBe(false);
     expect(canResend(view("sender", { kind: "failed", reason: "x" }))).toBe(false);
+  });
+});
+
+describe("Batches", () => {
+  const BATCH = "ba".repeat(16);
+  const peers = ["A", "B", "C"].map((c) => c.repeat(52));
+  const [a, b, c] = peers;
+  const id = (n: number) => String(n).padStart(2, "0").repeat(16);
+  const delivered: TransferState = { kind: "completed", saved_to: null };
+  const failed: TransferState = { kind: "failed", reason: "x" };
+  /** One Transfer per Receiver in a Batch, each in the given state. */
+  const batch = (...states: TransferState[]) =>
+    run(
+      states.map((state, i) =>
+        transfer(i, state, { id: id(i + 1), role: "sender", peer: peers[i], batch: BATCH }),
+      ),
+    );
+  const only = (state: Transfers) => {
+    const items = listItems(state);
+    expect(items).toHaveLength(1);
+    const [item] = items;
+    if (item.kind !== "batch") throw new Error("expected a Batch row");
+    return item.batch;
+  };
+
+  it("shows a Batch's Transfers as one row, with each Receiver in it", () => {
+    const row = only(batch({ kind: "offered" }, { kind: "accepted" }, { kind: "waiting" }));
+    expect(row.id).toBe(BATCH);
+    expect(row.members.map((m) => m.peer)).toEqual([a, b, c]);
+    expect(row.members.map((m) => m.state.kind)).toEqual(["offered", "accepted", "waiting"]);
+  });
+
+  it("lists a Batch where it began among the other Transfers, newest first", () => {
+    const state = run([
+      transfer(0, { kind: "offered" }, { id: id(1), role: "sender" }),
+      transfer(1, { kind: "offered" }, { id: id(2), role: "sender", peer: a, batch: BATCH }),
+      transfer(2, { kind: "offered" }, { id: id(3), role: "sender", peer: b, batch: BATCH }),
+      transfer(3, { kind: "offered" }, { id: id(4), role: "sender" }),
+    ]);
+    expect(listItems(state).map((i) => (i.kind === "batch" ? "batch" : i.transfer.id))).toEqual([
+      id(4),
+      "batch",
+      id(1),
+    ]);
+  });
+
+  it("never groups a Receiver's Transfers, which have no Batch", () => {
+    const state = run([transfer(0, { kind: "offered" }), transfer(1, { kind: "offered" }, { id: id(2) })]);
+    expect(listItems(state).map((i) => i.kind)).toEqual(["transfer", "transfer"]);
+  });
+
+  it("lets a retry stand in for the Failed Transfer it retries, in the same place", () => {
+    const retry = transfer(3, { kind: "offered" }, { id: id(9), role: "sender", peer: b, batch: BATCH });
+    const row = only(applyEvent(batch(delivered, failed, { kind: "declined" }), retry));
+    expect(row.members.map((m) => [m.peer, m.id])).toEqual([
+      [a, id(1)],
+      [b, id(9)],
+      [c, id(3)],
+    ]);
+  });
+
+  it("says how many arrived and what became of the rest", () => {
+    expect(batchStatus(only(batch(delivered, delivered, { kind: "declined" })))).toBe(
+      "2 of 3 delivered, 1 declined",
+    );
+    expect(batchStatus(only(batch(delivered, { kind: "transferring" }, { kind: "waiting" })))).toBe(
+      "1 of 3 delivered, 2 in progress",
+    );
+    expect(batchStatus(only(batch(failed, { kind: "cancelled", by: "sender" }, { kind: "expired" })))).toBe(
+      "0 of 3 delivered, 1 failed, 1 cancelled, 1 expired",
+    );
+  });
+
+  it("lets a Failed Transfer in a Batch be retried, and nothing else", () => {
+    const inBatch = (state: TransferState) =>
+      run([transfer(0, state, { role: "sender", batch: BATCH })]).byId[ID];
+    expect(canRetry(inBatch(failed))).toBe(true);
+    expect(canRetry(inBatch({ kind: "declined" }))).toBe(false);
+    expect(canRetry(inBatch({ kind: "expired" }))).toBe(false);
+    expect(canRetry(inBatch({ kind: "transferring" }))).toBe(false);
+    // Not one sent on its own, and not a Receiver's.
+    expect(canRetry(run([transfer(0, failed, { role: "sender" })]).byId[ID])).toBe(false);
+    expect(canRetry(run([transfer(0, failed)]).byId[ID])).toBe(false);
+  });
+
+  it("lets the Sender cancel a Transfer that is waiting for a slot", () => {
+    expect(canCancel(run([transfer(0, { kind: "waiting" }, { role: "sender" })]).byId[ID])).toBe(true);
   });
 });

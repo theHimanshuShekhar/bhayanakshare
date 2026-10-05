@@ -212,6 +212,7 @@ mod tests {
             file_count: 1,
             skipped_links: 0,
             adjusted_names: 0,
+            batch_id: None,
             expires_at: 0,
             state,
         }
