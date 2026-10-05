@@ -14,7 +14,7 @@ use std::{
 use bhayanakshare_core::{
     Clock, Device, DeviceAddr, DeviceConfig, Event, EventKind, EventStream, FreeSpace, KeySource,
     ManualClock, NearbyDevice, Network, ProgressEvent, SystemFreeSpace, TransferEvent, TransferId,
-    TransferState,
+    TransferState, VersionMismatchEvent,
     manifest::{Entry, Manifest},
     protocol::{Offer, OfferKind},
 };
@@ -148,6 +148,20 @@ impl TestDevice {
         }
     }
 
+    /// Waits for the Device to report a refused connection for the versions of BhayanakShare.
+    pub async fn wait_version_mismatch(&mut self) -> VersionMismatchEvent {
+        loop {
+            let seen = self.log.iter().find_map(|e| match &e.kind {
+                EventKind::VersionMismatch(m) => Some(m.clone()),
+                _ => None,
+            });
+            if let Some(mismatch) = seen {
+                return mismatch;
+            }
+            self.read_next("a version mismatch").await;
+        }
+    }
+
     /// Reads the next event into the log, or fails the test if none comes in time.
     async fn read_next(&mut self, what: &str) {
         match tokio::time::timeout(EVENT_TIMEOUT, self.events.next()).await {
@@ -224,7 +238,10 @@ impl TestDevice {
             .iter()
             .filter_map(|e| match &e.kind {
                 EventKind::Transfer(t) => Some(t),
-                EventKind::Progress(_) | EventKind::Preparing(_) | EventKind::Nearby(_) => None,
+                EventKind::Progress(_)
+                | EventKind::Preparing(_)
+                | EventKind::Nearby(_)
+                | EventKind::VersionMismatch(_) => None,
             })
             .filter(|t| t.transfer_id == id)
             .map(|t| t.state.label())

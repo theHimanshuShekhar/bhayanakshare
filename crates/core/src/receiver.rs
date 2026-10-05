@@ -63,7 +63,7 @@ use crate::{
     names::{adjust_names, numbered},
     protocol::{self, FrameError, Message, OfferKind, spawn_reader, write_frame},
     session::{
-        CLOSE_GRACE, FORGOTTEN, Failure, LOST, STALLED, Session, Stall, Stop, UNEXPECTED,
+        CLOSE_GRACE, FORGOTTEN, Failure, HelloError, LOST, STALLED, Session, Stall, Stop, UNEXPECTED,
         expect_hello, fail, made_progress, retry_delay, save_progress, stop,
     },
     store,
@@ -215,7 +215,9 @@ async fn flow(
     write_frame(&mut send, &Message::Hello(protocol::Hello::named(sh.device_name().await)))
         .await
         .map_err(fail(LOST))?;
-    let peer_name = expect_hello(&mut incoming).await?;
+    let peer_name = expect_hello(sh, DeviceId::from_endpoint_id(peer_endpoint), &mut send, &mut incoming)
+        .await
+        .map_err(HelloError::failure)?;
     sh.remember_peer(DeviceId::from_endpoint_id(peer_endpoint), conn, peer_name.clone()).await;
     let mut session = Session { conn: conn.clone(), send, incoming };
 
@@ -702,14 +704,20 @@ async fn try_resume(sh: &Shared, info: &TransferInfo) -> Resumed {
         let mut incoming = spawn_reader(recv);
         let hello = Message::Hello(protocol::Hello::named(sh.device_name().await));
         write_frame(&mut send, &hello).await.map_err(|e| e.to_string())?;
-        let peer_name = expect_hello(&mut incoming).await.map_err(|Failure(reason)| reason)?;
+        let peer_name = match expect_hello(sh, info.peer, &mut send, &mut incoming).await {
+            Ok(name) => name,
+            Err(HelloError::Incompatible(reason)) => return Ok(Err(reason)),
+            Err(HelloError::Failed(Failure(reason))) => return Err(reason),
+        };
         sh.remember_peer(info.peer, &conn, peer_name).await;
         let resume = Message::Resume { transfer_id: *info.id.as_bytes() };
         write_frame(&mut send, &resume).await.map_err(|e| e.to_string())?;
-        Ok::<_, String>(Session { conn, send, incoming })
+        Ok::<_, String>(Ok(Session { conn, send, incoming }))
     };
     let mut live = match tokio::time::timeout(CONNECT_TIMEOUT, dialled).await {
-        Ok(Ok(live)) => live,
+        Ok(Ok(Ok(live))) => live,
+        // Redialling will not help until one of the two has updated.
+        Ok(Ok(Err(reason))) => return Resumed::Refused(reason),
         Ok(Err(e)) => {
             tracing::debug!(transfer = %info.id, "could not reach the Sender: {e}");
             return Resumed::Unreachable;

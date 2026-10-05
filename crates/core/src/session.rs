@@ -9,7 +9,9 @@ use crate::{
     clock::UnixMillis,
     device::{Shared, TransferInfo},
     device_name,
-    protocol::{FrameError, Message, PROTOCOL_VERSION, write_frame},
+    event::{EventKind, Outdated, VersionMismatchEvent},
+    identity::DeviceId,
+    protocol::{FrameError, Hello, Message, PROTOCOL_VERSION, write_frame},
     transfer::{Role, STALL_TTL_MS, TransferState},
 };
 
@@ -22,7 +24,6 @@ pub(crate) const UNEXPECTED: &str = "The other Device sent something unexpected.
 pub(crate) const BUSY: &str =
     "The other Device already has too many Offers from you waiting for an answer. Try again once it has answered some.";
 pub(crate) const INVALID_NAMES: &str = "Couldn't be sent: invalid file names";
-pub(crate) const INCOMPATIBLE: &str = "The other Device runs an incompatible version of BhayanakShare.";
 pub(crate) const STALLED: &str = "The Transfer made no progress for 24 hours, so it was given up.";
 pub(crate) const RESTARTED: &str = "This Device restarted before the Transfer could carry on.";
 pub(crate) const FORGOTTEN: &str = "The other Device no longer has this Transfer.";
@@ -54,23 +55,94 @@ pub(crate) fn fail<E: Display>(reason: &'static str) -> impl Fn(E) -> Failure {
     move |cause| Failure::with(reason, cause)
 }
 
+/// Why [`expect_hello`] did not get a usable `Hello`.
+pub(crate) enum HelloError {
+    /// The peer runs another protocol version. The reason says who has to update.
+    Incompatible(String),
+    Failed(Failure),
+}
+
+impl HelloError {
+    pub fn failure(self) -> Failure {
+        match self {
+            Self::Incompatible(reason) => Failure(reason),
+            Self::Failed(failure) => failure,
+        }
+    }
+}
+
+/// How long a refused connection waits for the other side to finish its stream, so that our
+/// `Hello` is not cut off by us hanging up first.
+const REFUSE_GRACE: Duration = Duration::from_secs(5);
+
 /// Reads the peer's `Hello` and checks that the protocol versions match. Returns the peer's
-/// Device Name, cleaned, if it sent one.
-pub(crate) async fn expect_hello(incoming: &mut Incoming) -> Result<Option<String>, Failure> {
+/// Device Name, cleaned, if it sent one. Both sides send `Hello` before reading the other's,
+/// so on a mismatch each sees the other's version, and each says who has to update: in the
+/// returned reason, and in a [`VersionMismatchEvent`] for a side that has no Transfer to fail.
+/// Before returning a mismatch the connection is wound down, so the other side gets our
+/// `Hello` too.
+pub(crate) async fn expect_hello(
+    sh: &Shared,
+    peer: DeviceId,
+    send: &mut SendStream,
+    incoming: &mut Incoming,
+) -> Result<Option<String>, HelloError> {
     match incoming.recv().await {
         Some(Ok(Message::Hello(hello))) if hello.protocol_version == PROTOCOL_VERSION => {
             Ok(device_name::sanitize(&hello.device_name))
         }
-        Some(Ok(Message::Hello(hello))) => Err(Failure::with(
-            INCOMPATIBLE,
-            format!(
-                "protocol {} vs {}, app {}",
-                hello.protocol_version, PROTOCOL_VERSION, hello.app_version
-            ),
-        )),
-        Some(Ok(_)) => Err(Failure::with(UNEXPECTED, "expected Hello")),
-        Some(Err(e)) => Err(Failure::with(LOST, e)),
-        None => Err(Failure::with(LOST, "closed before Hello")),
+        Some(Ok(Message::Hello(hello))) => {
+            Err(HelloError::Incompatible(refuse(sh, peer, hello, send, incoming).await))
+        }
+        Some(Ok(_)) => Err(HelloError::Failed(Failure::with(UNEXPECTED, "expected Hello"))),
+        Some(Err(e)) => Err(HelloError::Failed(Failure::with(LOST, e))),
+        None => Err(HelloError::Failed(Failure::with(LOST, "closed before Hello"))),
+    }
+}
+
+/// Announces a version mismatch with the Device that sent `hello`, winds the connection down,
+/// and returns the sentence for the user.
+async fn refuse(
+    sh: &Shared,
+    peer: DeviceId,
+    hello: Hello,
+    send: &mut SendStream,
+    incoming: &mut Incoming,
+) -> String {
+    let outdated =
+        if hello.protocol_version > PROTOCOL_VERSION { Outdated::ThisDevice } else { Outdated::Peer };
+    tracing::warn!(
+        "Refused a Device on protocol {} (app {}); this one is on {PROTOCOL_VERSION}",
+        hello.protocol_version,
+        hello.app_version
+    );
+    let peer_name = device_name::sanitize(&hello.device_name);
+    let reason = mismatch_reason(outdated, peer_name.as_deref());
+    sh.events.emit(
+        sh.now(),
+        EventKind::VersionMismatch(VersionMismatchEvent {
+            peer,
+            peer_name,
+            peer_app_version: device_name::sanitize(&hello.app_version),
+            outdated,
+        }),
+    );
+    let _ = send.finish();
+    // The other side finishes its stream once it has read our `Hello`; if it never does (a
+    // hand-written peer, say) this ends after the grace.
+    let _ = tokio::time::timeout(REFUSE_GRACE, async { while let Some(Ok(_)) = incoming.recv().await {} })
+        .await;
+    reason
+}
+
+/// What a Transfer that was refused for its versions says, naming the Device if it has a name.
+fn mismatch_reason(outdated: Outdated, name: Option<&str>) -> String {
+    let who = name.unwrap_or("The other Device");
+    match outdated {
+        Outdated::Peer => format!("{who} is running an older BhayanakShare. Ask them to update."),
+        Outdated::ThisDevice => {
+            format!("{who} is running a newer BhayanakShare. Update this Device, then try again.")
+        }
     }
 }
 
@@ -189,6 +261,18 @@ pub(crate) fn retry_delay(attempt: u32) -> Duration {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_refusal_says_who_has_to_update() {
+        assert_eq!(
+            mismatch_reason(Outdated::Peer, Some("Alice's Laptop")),
+            "Alice's Laptop is running an older BhayanakShare. Ask them to update."
+        );
+        assert_eq!(
+            mismatch_reason(Outdated::ThisDevice, None),
+            "The other Device is running a newer BhayanakShare. Update this Device, then try again."
+        );
+    }
 
     #[test]
     fn redialling_starts_fast_and_settles_at_about_once_a_minute() {

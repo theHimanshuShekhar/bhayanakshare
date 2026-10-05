@@ -79,40 +79,6 @@ async fn an_offer_with_a_path_in_its_name_is_refused_and_nothing_is_written() {
 }
 
 #[tokio::test]
-async fn a_peer_on_another_protocol_version_is_refused_before_any_offer() {
-    let mut bob = TestDevice::start("bob").await;
-    let peer = raw_peer().await;
-    let conn = peer.connect(dial_addr(&bob), protocol::ALPN).await.unwrap();
-    let (mut send, mut recv) = conn.open_bi().await.unwrap();
-
-    let hello = Hello {
-        protocol_version: protocol::PROTOCOL_VERSION + 1,
-        app_version: "9.9.9".into(),
-        device_name: String::new(),
-    };
-    write_frame(&mut send, &Message::Hello(hello)).await.unwrap();
-    write_frame(
-        &mut send,
-        &Message::Offer(one_file_offer([6; 16], "ok.txt", 1)),
-    )
-    .await
-    .unwrap();
-
-    // Bob says Hello, then drops the stream rather than reading the Offer.
-    let mut closed = false;
-    for _ in 0..2 {
-        match tokio::time::timeout(Duration::from_secs(10), read_frame(&mut recv)).await {
-            Ok(Ok(Message::Hello(_))) => {}
-            Ok(Err(_)) => closed = true,
-            other => panic!("unexpected reply {other:?}"),
-        }
-    }
-    assert!(closed);
-    bob.shutdown().await;
-    assert!(bob.log.is_empty(), "{:?}", bob.log);
-}
-
-#[tokio::test]
 async fn a_sender_that_disappears_before_the_decision_fails_the_offer() {
     let mut bob = TestDevice::start("bob").await;
     let peer = raw_peer().await;

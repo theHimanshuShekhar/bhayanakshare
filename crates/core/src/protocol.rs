@@ -19,6 +19,14 @@ pub const ALPN: &[u8] = b"bhayanakshare/ctrl/1";
 /// Bumped whenever this protocol or the pinned iroh-blobs version changes incompatibly.
 pub const PROTOCOL_VERSION: u32 = 3;
 
+/// The iroh-blobs version [`PROTOCOL_VERSION`] stands for. iroh-blobs has no version
+/// negotiation of its own, so a Device on another one would fail halfway through a Transfer.
+/// The test `the_protocol_version_stands_for_the_pinned_iroh_blobs` fails when the pin in
+/// Cargo.toml no longer matches this, so whoever changes the pin has to bump the protocol
+/// version here as well.
+#[cfg(test)]
+const IROH_BLOBS_PINNED: &str = "=0.103.0";
+
 /// Largest frame body accepted from a peer (the spec's 64 MiB Offer limit).
 pub const MAX_FRAME_LEN: u32 = 64 * 1024 * 1024;
 
@@ -288,6 +296,16 @@ mod tests {
             write_frame(&mut a, &msg).await.unwrap();
             assert_eq!(read_frame(&mut b).await.unwrap(), msg);
         }
+    }
+
+    #[test]
+    fn the_protocol_version_stands_for_the_pinned_iroh_blobs() {
+        let manifest = include_str!("../Cargo.toml");
+        let pin = format!("iroh-blobs = {{ version = \"{IROH_BLOBS_PINNED}\"");
+        assert!(
+            manifest.contains(&pin),
+            "iroh-blobs changed: bump PROTOCOL_VERSION and set IROH_BLOBS_PINNED to the new pin"
+        );
     }
 
     #[test]
