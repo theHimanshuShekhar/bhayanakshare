@@ -4,9 +4,9 @@ import { t } from "./i18n";
 import { baseName } from "./transfers";
 
 /**
- * "Send to ID…": paste a Device ID, pick a file, and the Offer goes out. With `files` already
- * chosen (a second launch, or the tray's "Send files…"), there is nothing to pick: they go out
- * as soon as the Device is.
+ * "Send to ID…": paste a Device ID, pick files or a folder, and the Offer goes out. With `files`
+ * already chosen (a second launch, or the tray's "Send files…"), there is nothing to pick: they
+ * go out as soon as the Device is. Each of those is a Transfer of its own, files or folders.
  */
 export function SendDialog({
   api,
@@ -22,7 +22,7 @@ export function SendDialog({
   /** What the tile calls the Device (a Contact's name, or a Nearby Device's name and
    * Fingerprint); null when the ID is typed. */
   contactName: string | null;
-  /** Files to send instead of asking for one. */
+  /** Files and folders to send instead of asking for some. */
   files?: string[];
   /** Called once every one of `files` has been offered. */
   onSent?: () => void;
@@ -44,17 +44,18 @@ export function SendDialog({
     };
   }, []);
 
-  const send = async () => {
+  /** Sends what `pick` asks the user for, or the files already chosen if there are some. */
+  const send = async (pick?: () => Promise<string[] | null>) => {
     setError(null);
     setBusy(true);
     try {
-      if (remaining.length === 0) {
-        const path = await api.pickFile();
-        if (path === null) return;
-        await api.sendFile(to.trim(), path);
+      if (pick !== undefined) {
+        const paths = await pick();
+        if (paths === null) return;
+        await api.sendFiles(to.trim(), paths);
       } else {
         for (const path of remaining) {
-          await api.sendFile(to.trim(), path);
+          await api.sendFiles(to.trim(), [path]);
           setRemaining((left) => left.slice(1));
         }
         onSent?.();
@@ -97,9 +98,28 @@ export function SendDialog({
         )}
         {error !== null && <p role="alert">{error}</p>}
         <div className="actions">
-          <button type="button" onClick={send} disabled={busy || to.trim() === ""}>
-            {remaining.length > 0 ? t("send.sendFiles") : t("send.chooseFile")}
-          </button>
+          {remaining.length > 0 ? (
+            <button type="button" onClick={() => send()} disabled={busy || to.trim() === ""}>
+              {t("send.sendFiles")}
+            </button>
+          ) : (
+            <>
+              <button
+                type="button"
+                onClick={() => send(api.pickFiles)}
+                disabled={busy || to.trim() === ""}
+              >
+                {t("send.chooseFiles")}
+              </button>
+              <button
+                type="button"
+                onClick={() => send(() => api.pickFolder().then((folder) => (folder === null ? null : [folder])))}
+                disabled={busy || to.trim() === ""}
+              >
+                {t("send.chooseFolder")}
+              </button>
+            </>
+          )}
           <button type="button" onClick={onClose}>
             {t("send.cancel")}
           </button>

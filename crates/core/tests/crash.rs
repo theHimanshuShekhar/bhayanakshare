@@ -120,16 +120,43 @@ impl Drop for ChildReceiver {
     }
 }
 
-fn big_file(len: u64) -> (TempDir, PathBuf) {
-    let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("movie.bin");
-    let mut file = std::fs::File::create(&path).unwrap();
+fn write_big(path: &Path, len: u64) {
+    let mut file = std::fs::File::create(path).unwrap();
     file.set_len(len).unwrap();
     for (i, at) in [0, len / 7, len / 3, len / 2, len - 100].into_iter().enumerate() {
         file.seek(SeekFrom::Start(at)).unwrap();
         file.write_all(format!("mark {i} at {at}").as_bytes()).unwrap();
     }
+}
+
+fn big_file(len: u64) -> (TempDir, PathBuf) {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("movie.bin");
+    write_big(&path, len);
     (dir, path)
+}
+
+/// What to send: the big file alone, or `album/` holding it, a small file and an empty folder.
+#[derive(Clone, Copy, PartialEq)]
+enum Shape {
+    File,
+    Folder,
+}
+
+/// Returns the folder to keep alive and the path to offer.
+fn big_thing(shape: Shape, len: u64) -> (TempDir, PathBuf) {
+    match shape {
+        Shape::File => big_file(len),
+        Shape::Folder => {
+            let dir = tempfile::tempdir().unwrap();
+            let album = dir.path().join("album");
+            std::fs::create_dir_all(album.join("empty")).unwrap();
+            std::fs::create_dir_all(album.join("notes")).unwrap();
+            write_big(&album.join("movie.bin"), len);
+            std::fs::write(album.join("notes/a.txt"), b"alpha").unwrap();
+            (dir, album)
+        }
+    }
 }
 
 /// What a crash left behind and what the next Device made of it.
@@ -142,7 +169,11 @@ struct Crashed {
 
 /// Alice offers a big file to a Receiver in a child process, which is killed with SIGKILL
 /// once `kill_when` says so; then a new Device on the child's folders finishes the Transfer.
-async fn crash_and_resume(size: u64, kill_when: impl Fn(Instant, u64) -> bool) -> Crashed {
+async fn crash_and_resume(
+    shape: Shape,
+    size: u64,
+    kill_when: impl Fn(Instant, u64) -> bool,
+) -> Crashed {
     let mut alice = TestDevice::start("alice").await;
     let tmp = tempfile::tempdir().unwrap();
     let mut child = ChildReceiver::start(tmp.path());
@@ -151,7 +182,7 @@ async fn crash_and_resume(size: u64, kill_when: impl Fn(Instant, u64) -> bool) -
         id: id.parse::<DeviceId>().unwrap(),
         direct: vec![addr.parse().unwrap()],
     };
-    let (_src, path) = big_file(size);
+    let (_src, path) = big_thing(shape, size);
     let transfer: TransferId = alice.device.send_file(bob, &path).await.unwrap();
 
     let mut first = None;
@@ -178,9 +209,20 @@ async fn crash_and_resume(size: u64, kill_when: impl Fn(Instant, u64) -> bool) -
     bob.wait_state(transfer, "completed").await;
     alice.wait_state(transfer, "completed").await;
 
-    let saved = std::fs::read(bob.save_dir.join("movie.bin")).unwrap();
-    let sent = std::fs::read(&path).unwrap();
-    assert!(saved == sent, "the file that arrived differs from the one sent");
+    let (saved, sent) = match shape {
+        Shape::File => (bob.save_dir.join("movie.bin"), path.clone()),
+        Shape::Folder => {
+            let got = bob.save_dir.join("album");
+            // The manifest the dead Device stored is what builds the tree.
+            assert_eq!(std::fs::read(got.join("notes/a.txt")).unwrap(), b"alpha");
+            assert!(got.join("empty").is_dir());
+            (got.join("movie.bin"), path.join("movie.bin"))
+        }
+    };
+    assert!(
+        std::fs::read(saved).unwrap() == std::fs::read(sent).unwrap(),
+        "the file that arrived differs from the one sent"
+    );
     let found = bob.progress(transfer).first().expect("a report when the fetch resumed").bytes;
     alice.shutdown().await;
     bob.shutdown().await;
@@ -191,7 +233,7 @@ async fn crash_and_resume(size: u64, kill_when: impl Fn(Instant, u64) -> bool) -
 #[tokio::test]
 async fn a_receiver_killed_mid_fetch_resumes_without_fetching_verified_data_again() {
     let kill = |began: Instant, bytes| bytes > 0 && began.elapsed() >= PAST_THE_FIRST_SECOND;
-    let crashed = crash_and_resume(SIZE, kill).await;
+    let crashed = crash_and_resume(Shape::File, SIZE, kill).await;
 
     // What the child had reported was received and written before the kill, and the store
     // keeps it: the new Device finds it again by re-hashing, instead of fetching it again.
@@ -212,7 +254,22 @@ async fn a_receiver_killed_in_the_first_second_still_finishes_but_may_have_lost_
     // nothing in it (iroh-blobs #254), and then the Transfer fetches it all again. All this
     // can assert is that it still completes, with the right bytes (`crash_and_resume`); what
     // the store kept is not defined, so it is only reported.
-    let crashed = crash_and_resume(SMALL, |_, bytes| bytes > 0).await;
+    let crashed = crash_and_resume(Shape::File, SMALL, |_, bytes| bytes > 0).await;
 
     eprintln!("reported before the kill: {}, found after: {}", crashed.reported, crashed.found);
+}
+
+#[tokio::test]
+async fn a_receiver_killed_mid_fetch_of_a_folder_resumes_and_builds_the_whole_tree() {
+    let kill = |began: Instant, bytes| bytes > 0 && began.elapsed() >= PAST_THE_FIRST_SECOND;
+    let crashed = crash_and_resume(Shape::Folder, SIZE, kill).await;
+
+    eprintln!("reported before the kill: {}, found after: {}", crashed.reported, crashed.found);
+    assert!(
+        crashed.found * 10 >= crashed.reported * 9,
+        "found {} bytes in the store after a kill at {}",
+        crashed.found,
+        crashed.reported
+    );
+    assert!(crashed.found < SIZE);
 }

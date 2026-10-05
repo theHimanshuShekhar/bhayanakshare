@@ -21,6 +21,7 @@ pub(crate) const LOST: &str = "The other Device went away.";
 pub(crate) const UNEXPECTED: &str = "The other Device sent something unexpected.";
 pub(crate) const BUSY: &str =
     "The other Device already has too many Offers from you waiting for an answer. Try again once it has answered some.";
+pub(crate) const INVALID_NAMES: &str = "Couldn't be sent: invalid file names";
 pub(crate) const INCOMPATIBLE: &str = "The other Device runs an incompatible version of BhayanakShare.";
 pub(crate) const STALLED: &str = "The Transfer made no progress for 24 hours, so it was given up.";
 pub(crate) const RESTARTED: &str = "This Device restarted before the Transfer could carry on.";

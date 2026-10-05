@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 
 use bhayanakshare_core::{
     Error, INCOMING_DIR, SpaceCheck, TransferState,
-    protocol::{self, Hello, Message, Offer, read_frame, write_frame},
+    protocol::{self, Hello, Message, read_frame, write_frame},
 };
 use iroh::protocol::Router;
 use iroh_blobs::{BlobsProtocol, Hash, format::collection::Collection, store::mem::MemStore};
@@ -141,7 +141,7 @@ async fn a_sender_that_sends_more_than_it_offered_is_cut_off() {
     let id = protocol_id(7);
     write_frame(
         &mut send,
-        &Message::Offer(Offer { transfer_id: *id.as_bytes(), name: "big.bin".into(), size: 512 }),
+        &Message::Offer(support::one_file_offer(*id.as_bytes(), "big.bin", 512)),
     )
     .await
     .unwrap();

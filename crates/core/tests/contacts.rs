@@ -321,7 +321,7 @@ async fn an_offer_from_a_non_contact_carries_the_senders_device_name() {
 
 #[tokio::test]
 async fn a_sender_that_sends_no_name_or_a_hostile_one_is_shown_cleaned() {
-    use bhayanakshare_core::protocol::{self, Hello, Message, Offer, read_frame, write_frame};
+    use bhayanakshare_core::protocol::{self, Hello, Message, read_frame, write_frame};
 
     let mut bob = TestDevice::start("bob").await;
     let peer = support::raw_peer().await;
@@ -334,7 +334,7 @@ async fn a_sender_that_sends_no_name_or_a_hostile_one_is_shown_cleaned() {
     let id = bhayanakshare_core::TransferId::from_bytes([3; 16]);
     write_frame(
         &mut send,
-        &Message::Offer(Offer { transfer_id: *id.as_bytes(), name: "a.txt".into(), size: 1 }),
+        &Message::Offer(support::one_file_offer(*id.as_bytes(), "a.txt", 1)),
     )
     .await
     .unwrap();

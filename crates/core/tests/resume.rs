@@ -29,13 +29,53 @@ const SEVERAL_CHECKS: Duration = Duration::from_millis(600);
 fn big_file(name: &str, len: u64) -> (TempDir, PathBuf) {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join(name);
-    let mut file = std::fs::File::create(&path).unwrap();
+    write_big(&path, len);
+    (dir, path)
+}
+
+fn write_big(path: &Path, len: u64) {
+    let mut file = std::fs::File::create(path).unwrap();
     file.set_len(len).unwrap();
     for (i, at) in [0, len / 7, len / 3, len / 2, len - 100].into_iter().enumerate() {
         file.seek(SeekFrom::Start(at)).unwrap();
         file.write_all(format!("mark {i} at {at}").as_bytes()).unwrap();
     }
-    (dir, path)
+}
+
+/// `album/`: the big file, a small one in a folder with a time of its own, an empty folder
+/// and an executable, so that what the manifest carries can be checked after a Transfer
+/// that was interrupted. Returns the folder to keep alive and the path of `album`.
+fn big_album(len: u64) -> (TempDir, PathBuf) {
+    let dir = tempfile::tempdir().unwrap();
+    let album = dir.path().join("album");
+    std::fs::create_dir_all(album.join("notes")).unwrap();
+    std::fs::create_dir_all(album.join("empty")).unwrap();
+    write_big(&album.join("movie.bin"), len);
+    std::fs::write(album.join("notes/a.txt"), b"alpha").unwrap();
+    std::fs::write(album.join("run.sh"), b"#!/bin/sh\n").unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(album.join("run.sh"), std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    let at = std::time::UNIX_EPOCH + Duration::new(1_600_000_000, 123_456_789);
+    let notes = std::fs::OpenOptions::new().write(true).open(album.join("notes/a.txt")).unwrap();
+    notes.set_modified(at).unwrap();
+    (dir, album)
+}
+
+/// Checks that what `big_album` made arrived whole in `got`, with what the manifest carries.
+fn assert_album_arrived(sent: &Path, got: &Path) {
+    assert!(same_content(&sent.join("movie.bin"), &got.join("movie.bin")));
+    assert_eq!(std::fs::read(got.join("notes/a.txt")).unwrap(), b"alpha");
+    let at = std::time::UNIX_EPOCH + Duration::new(1_600_000_000, 123_456_789);
+    assert_eq!(std::fs::metadata(got.join("notes/a.txt")).unwrap().modified().unwrap(), at);
+    assert!(got.join("empty").is_dir());
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        assert_ne!(std::fs::metadata(got.join("run.sh")).unwrap().permissions().mode() & 0o111, 0);
+    }
 }
 
 fn same_content(a: &Path, b: &Path) -> bool {
@@ -152,6 +192,54 @@ async fn the_sender_restarts_cleanly_and_the_transfer_carries_on() {
 }
 
 #[tokio::test]
+async fn a_folder_carries_on_after_the_receiver_restarts_and_is_built_from_the_saved_manifest() {
+    let mut alice = TestDevice::start("alice").await;
+    let mut bob = TestDevice::start("bob").await;
+    let (_src, album) = big_album(BIG);
+    let (id, before) = part_way(&mut alice, &mut bob, &album).await;
+
+    bob.restart().await;
+    bob.device.note_address(alice.addr());
+    let seen = bob.log.len();
+
+    bob.wait_state(id, "reconnecting").await;
+    bob.wait_state(id, "transferring").await;
+    bob.wait_state(id, "completed").await;
+    alice.wait_state(id, "completed").await;
+    assert_album_arrived(&album, &bob.save_dir.join("album"));
+    assert_picked_up(&progress_after(&bob, seen, id), before, BIG + 5 + 10);
+    // The events of a resumed Transfer still say what it holds.
+    let record = &bob.device.transfers().await.unwrap()[0];
+    assert_eq!((record.items.as_slice(), record.file_count), (["album".to_owned()].as_slice(), 3));
+    let resumed = bob.log[seen..].iter().find_map(|e| match &e.kind {
+        EventKind::Transfer(t) if t.state.label() == "reconnecting" => Some(t.clone()),
+        _ => None,
+    });
+    assert_eq!(resumed.unwrap().items, ["album"]);
+    alice.shutdown().await;
+    bob.shutdown().await;
+    assert_incoming_empty(&bob).await;
+}
+
+#[tokio::test]
+async fn a_folder_carries_on_after_the_sender_restarts() {
+    let mut alice = TestDevice::start("alice").await;
+    let mut bob = TestDevice::start("bob").await;
+    let (_src, album) = big_album(BIG);
+    let (id, _) = part_way(&mut alice, &mut bob, &album).await;
+
+    alice.restart().await;
+    bob.device.note_address(alice.addr());
+
+    bob.wait_state(id, "completed").await;
+    alice.wait_state(id, "completed").await;
+    assert_album_arrived(&album, &bob.save_dir.join("album"));
+    alice.shutdown().await;
+    bob.shutdown().await;
+    assert_incoming_empty(&bob).await;
+}
+
+#[tokio::test]
 async fn shutdown_does_not_wait_past_its_deadline() {
     let mut alice = TestDevice::start("alice").await;
     let mut bob = TestDevice::start("bob").await;
@@ -258,6 +346,38 @@ async fn a_source_file_that_changed_while_the_receiver_was_away_fails_the_transf
         }
         assert_incoming_empty(&bob).await;
         assert!(!bob.save_dir.join("movie.bin").exists());
+        alice.shutdown().await;
+        bob.shutdown().await;
+    }
+}
+
+#[tokio::test]
+async fn a_file_in_a_folder_that_changed_while_the_receiver_was_away_fails_the_transfer() {
+    for delete in [false, true] {
+        let mut alice = TestDevice::start("alice").await;
+        let mut bob = TestDevice::start("bob").await;
+        let (_src, album) = big_album(BIG);
+        let (id, _) = part_way(&mut alice, &mut bob, &album).await;
+        bob.shutdown().await;
+
+        // Not the big file that is being served, but one of the small ones around it.
+        let small = album.join("notes/a.txt");
+        if delete {
+            std::fs::remove_file(&small).unwrap();
+        } else {
+            let mut file = std::fs::OpenOptions::new().append(true).open(&small).unwrap();
+            file.write_all(b"more").unwrap();
+        }
+        bob.restart().await;
+        bob.device.note_address(alice.addr());
+
+        let want = "A file changed on the sending Device: album/notes/a.txt";
+        for device in [&mut bob, &mut alice] {
+            let failed = device.wait_state(id, "failed").await;
+            assert_eq!(failed.state, TransferState::Failed { reason: want.into() }, "{}", device.name);
+        }
+        assert_incoming_empty(&bob).await;
+        assert!(!bob.save_dir.join("album").exists());
         alice.shutdown().await;
         bob.shutdown().await;
     }

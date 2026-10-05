@@ -7,10 +7,11 @@ use crate::{db::DbError, identity::DeviceId, store::StoreError, transfer::Transf
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
-    #[error("{0} is not a file")]
+    #[error("{0} is not a file or folder")]
     NotAFile(PathBuf),
+    /// What was chosen to send cannot be sent: a limit is passed, or a name is not usable.
     #[error("{0}")]
-    InvalidName(#[from] crate::names::NameError),
+    Manifest(#[from] crate::manifest::ManifestError),
     #[error("no pending Offer with Transfer ID {0}")]
     UnknownTransfer(TransferId),
     #[error("{0} is not a folder")]

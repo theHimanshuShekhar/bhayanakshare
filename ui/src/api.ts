@@ -22,8 +22,9 @@ export interface Api {
   myId(): Promise<MyId>;
   /** The folder accepted files are saved to. */
   saveFolder(): Promise<string>;
-  /** Offers the file at `path` to the Device with ID `to`; resolves to the Transfer ID. */
-  sendFile(to: string, path: string): Promise<string>;
+  /** Offers the files and folders at `paths` to the Device with ID `to` as one Transfer;
+   * resolves to the Transfer ID. */
+  sendFiles(to: string, paths: string[]): Promise<string>;
   /** Whether a pending Offer fits in `folder` (the save folder when null). */
   checkOffer(id: TransferId, folder: string | null): Promise<SpaceCheck>;
   /** Accepts into `folder` for this Offer only (the save folder when null). */
@@ -51,8 +52,8 @@ export interface Api {
   setAutoAccept(id: string, on: boolean): Promise<Contact>;
   /** Forgets a Contact; its Transfer records stay. */
   removeContact(id: string): Promise<unknown>;
-  /** Asks the user for a file; null if they cancel. */
-  pickFile(): Promise<string | null>;
+  /** Asks the user for one or more files; null if they cancel. */
+  pickFiles(): Promise<string[] | null>;
   /** Asks the user for a folder; null if they cancel. */
   pickFolder(): Promise<string | null>;
   showInFolder(path: string): Promise<void>;
@@ -88,7 +89,7 @@ async function copyText(text: string): Promise<void> {
 export const tauriApi: Api = {
   myId: commands.myId,
   saveFolder: commands.saveFolder,
-  sendFile: commands.sendFile,
+  sendFiles: commands.sendFiles,
   checkOffer: commands.checkOffer,
   acceptOffer: commands.acceptOffer,
   declineOffer: commands.declineOffer,
@@ -104,9 +105,9 @@ export const tauriApi: Api = {
   setNickname: commands.setNickname,
   setAutoAccept: commands.setAutoAccept,
   removeContact: commands.removeContact,
-  pickFile: async () => {
-    const picked = await open({ multiple: false, directory: false });
-    return typeof picked === "string" ? picked : null;
+  pickFiles: async () => {
+    const picked = await open({ multiple: true, directory: false });
+    return Array.isArray(picked) && picked.length > 0 ? picked : null;
   },
   pickFolder: async () => {
     const picked = await open({ multiple: false, directory: true });

@@ -96,13 +96,18 @@ fn save_folder(folder: State<'_, SaveFolder>) -> String {
     folder.0.to_string_lossy().into_owned()
 }
 
-/// Offers the file at `path` to the Device with the pasted Device ID `to`; resolves to the
-/// Transfer ID.
+/// Offers the files and folders at `paths` to the Device with the pasted Device ID `to`, as
+/// one Transfer; resolves to the Transfer ID.
 #[tauri::command]
 #[specta::specta]
-async fn send_file(device: State<'_, Device>, to: String, path: String) -> Result<String, String> {
+async fn send_files(
+    device: State<'_, Device>,
+    to: String,
+    paths: Vec<String>,
+) -> Result<String, String> {
     let to: DeviceId = to.trim().parse().map_err(|e| format!("{e}"))?;
-    let id = device.send_file(to, &PathBuf::from(path)).await.map_err(|e| e.to_string())?;
+    let paths: Vec<PathBuf> = paths.into_iter().map(PathBuf::from).collect();
+    let id = device.send(to, &paths).await.map_err(|e| e.to_string())?;
     Ok(id.to_string())
 }
 
@@ -277,7 +282,7 @@ pub fn specta_builder<R: Runtime>() -> Builder<R> {
         .commands(collect_commands![
             my_id,
             save_folder,
-            send_file,
+            send_files,
             check_offer,
             accept_offer,
             decline_offer,

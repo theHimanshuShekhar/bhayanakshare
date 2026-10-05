@@ -12,10 +12,11 @@ use crate::{
     clock::UnixMillis,
     contacts::{Contact, KnownAddress},
     identity::DeviceId,
+    manifest::Manifest,
     transfer::{Role, TransferId, TransferState},
 };
 
-const SCHEMA_VERSION: i32 = 3;
+const SCHEMA_VERSION: i32 = 4;
 
 #[derive(Debug, thiserror::Error)]
 pub enum DbError {
@@ -36,8 +37,14 @@ pub struct TransferRecord {
     pub role: Role,
     /// The other Device's ID (base32).
     pub peer: String,
+    /// The first of `items`: what the Transfer is called where there is room for one name.
     pub name: String,
     pub size: u64,
+    /// The names at the top of what was offered: the files and folders the user picked.
+    pub items: Vec<String>,
+    pub file_count: u64,
+    /// Symlinks the Sender left out.
+    pub skipped_links: u32,
     pub state: TransferState,
     pub created_at: UnixMillis,
     pub updated_at: UnixMillis,
@@ -62,6 +69,8 @@ pub(crate) struct Source {
     pub size: u64,
     /// Modification time in nanoseconds since the Unix epoch.
     pub mtime_ns: i64,
+    /// Its path in the Offer's manifest.
+    pub name: String,
 }
 
 /// The states that end a Transfer, as stored. Must list what [`TransferState::is_terminal`]
@@ -228,8 +237,8 @@ impl Db {
             c.execute(
                 "INSERT INTO transfers
                  (id, role, peer, name, size, state, saved_to, error, created_at, updated_at,
-                  progress_at)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?9)",
+                  progress_at, items, file_count, skipped_links)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?9, ?11, ?12, ?13)",
                 params![
                     t.id.to_string(),
                     t.role.as_str(),
@@ -240,7 +249,10 @@ impl Db {
                     saved_to,
                     error,
                     t.created_at,
-                    t.updated_at
+                    t.updated_at,
+                    t.items.join("\n"),
+                    t.file_count as i64,
+                    t.skipped_links
                 ],
             )?;
             Ok(())
@@ -262,6 +274,10 @@ impl Db {
                  WHERE id = ?1",
                 params![id.to_string(), state.label(), saved_to, error, now],
             )?;
+            if state.is_terminal() {
+                // A Receiver kept the manifest only to carry on after a restart.
+                c.execute("DELETE FROM transfer_manifests WHERE transfer_id = ?1", [id.to_string()])?;
+            }
             Ok(())
         })
         .await
@@ -301,9 +317,9 @@ impl Db {
             let rows = stmt.query_map([], |r| {
                 Ok((
                     read_row(r)?,
-                    r.get::<_, i64>(10)?,
-                    r.get::<_, Option<String>>(11)?,
-                    r.get::<_, Option<String>>(12)?,
+                    r.get::<_, i64>(13)?,
+                    r.get::<_, Option<String>>(14)?,
+                    r.get::<_, Option<String>>(15)?,
                 ))
             })?;
             let mut out = Vec::new();
@@ -371,27 +387,47 @@ impl Db {
         sources: Vec<Source>,
     ) -> Result<(), DbError> {
         self.run(move |c| {
-            for s in sources {
-                c.execute(
-                    "INSERT INTO transfer_sources (transfer_id, path, size, mtime_ns)
-                     VALUES (?1, ?2, ?3, ?4)",
-                    params![id.to_string(), s.path.to_string_lossy(), s.size as i64, s.mtime_ns],
+            // One transaction, not one per file: a folder can hold hundreds of thousands.
+            let tx = c.unchecked_transaction()?;
+            {
+                let mut insert = tx.prepare(
+                    "INSERT INTO transfer_sources (transfer_id, path, size, mtime_ns, name)
+                     VALUES (?1, ?2, ?3, ?4, ?5)",
                 )?;
+                for s in sources {
+                    insert.execute(params![
+                        id.to_string(),
+                        s.path.to_string_lossy(),
+                        s.size as i64,
+                        s.mtime_ns,
+                        s.name
+                    ])?;
+                }
             }
+            tx.commit()?;
             Ok(())
         })
         .await
     }
 
+    /// A Transfer's files in the order they were offered.
     pub async fn sources(&self, id: TransferId) -> Result<Vec<Source>, DbError> {
         self.run(move |c| {
             let mut stmt = c.prepare(
-                "SELECT path, size, mtime_ns FROM transfer_sources WHERE transfer_id = ?1
+                "SELECT path, size, mtime_ns, name FROM transfer_sources WHERE transfer_id = ?1
                  ORDER BY rowid",
             )?;
             let rows = stmt.query_map([id.to_string()], |r| {
+                let path = PathBuf::from(r.get::<_, String>(0)?);
+                let name: String = r.get(3)?;
                 Ok(Source {
-                    path: PathBuf::from(r.get::<_, String>(0)?),
+                    // A Transfer from before folders was one file, called as the file is.
+                    name: if name.is_empty() {
+                        path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default()
+                    } else {
+                        name
+                    },
+                    path,
                     size: r.get::<_, i64>(1)? as u64,
                     mtime_ns: r.get(2)?,
                 })
@@ -400,11 +436,60 @@ impl Db {
         })
         .await
     }
+
+    /// Keeps the manifest of a Transfer a Receiver accepted, so it can carry on after a
+    /// restart: the manifest says what to make of the files once they are fetched.
+    pub async fn insert_manifest(&self, id: TransferId, manifest: &Manifest) -> Result<(), DbError> {
+        let bytes = postcard::to_stdvec(manifest)
+            .map_err(|e| DbError::Corrupt(format!("manifest does not encode: {e}")))?;
+        self.run(move |c| {
+            c.execute(
+                "INSERT OR REPLACE INTO transfer_manifests (transfer_id, manifest) VALUES (?1, ?2)",
+                params![id.to_string(), bytes],
+            )?;
+            Ok(())
+        })
+        .await
+    }
+
+    /// The manifest kept by [`Db::insert_manifest`], until the Transfer ends.
+    pub async fn manifest(&self, id: TransferId) -> Result<Option<Manifest>, DbError> {
+        let bytes = self
+            .run(move |c| {
+                Ok(c.query_row(
+                    "SELECT manifest FROM transfer_manifests WHERE transfer_id = ?1",
+                    [id.to_string()],
+                    |r| r.get::<_, Vec<u8>>(0),
+                )
+                .optional()?)
+            })
+            .await?;
+        bytes
+            .map(|bytes| {
+                postcard::from_bytes(&bytes)
+                    .map_err(|e| DbError::Corrupt(format!("manifest of {id}: {e}")))
+            })
+            .transpose()
+    }
 }
 
-const COLUMNS: &str = "id, role, peer, name, size, state, saved_to, error, created_at, updated_at";
+const COLUMNS: &str = "id, role, peer, name, size, state, saved_to, error, created_at, updated_at, items, file_count, skipped_links";
 
-type TransferRow = (String, String, String, String, i64, String, Option<String>, Option<String>, i64, i64);
+type TransferRow = (
+    String,
+    String,
+    String,
+    String,
+    i64,
+    String,
+    Option<String>,
+    Option<String>,
+    i64,
+    i64,
+    String,
+    i64,
+    u32,
+);
 
 fn read_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<TransferRow> {
     Ok((
@@ -418,11 +503,15 @@ fn read_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<TransferRow> {
         r.get(7)?,
         r.get(8)?,
         r.get(9)?,
+        r.get(10)?,
+        r.get(11)?,
+        r.get(12)?,
     ))
 }
 
 fn record(row: TransferRow) -> Result<TransferRecord, DbError> {
-    let (id, role, peer, name, size, state, saved_to, error, created_at, updated_at) = row;
+    let (id, role, peer, name, size, state, saved_to, error, created_at, updated_at, items, file_count, skipped_links) =
+        row;
     let corrupt = |what: &str, v: &str| DbError::Corrupt(format!("{what} {v:?}"));
     Ok(TransferRecord {
         id: id.parse().map_err(|_| corrupt("transfer id", &id))?,
@@ -430,6 +519,9 @@ fn record(row: TransferRow) -> Result<TransferRecord, DbError> {
         peer,
         name,
         size: size as u64,
+        items: items.split('\n').filter(|item| !item.is_empty()).map(str::to_owned).collect(),
+        file_count: file_count as u64,
+        skipped_links,
         state: TransferState::from_parts(&state, saved_to, error)
             .ok_or_else(|| corrupt("state", &state))?,
         created_at,
@@ -529,6 +621,37 @@ fn migrate(conn: &Connection) -> Result<(), DbError> {
              COMMIT;",
         )?;
     }
+    if version < 4 {
+        // Folders: what an Offer holds (a Transfer from before was one file, so its one item
+        // is its name), the name of each source file in the Offer (which is what is unique:
+        // one file can be chosen twice, as itself and inside a folder), and the manifest a
+        // Receiver keeps for a Transfer it has accepted.
+        conn.execute_batch(
+            "BEGIN;
+             ALTER TABLE transfers ADD COLUMN items TEXT NOT NULL DEFAULT '';
+             ALTER TABLE transfers ADD COLUMN file_count INTEGER NOT NULL DEFAULT 1;
+             ALTER TABLE transfers ADD COLUMN skipped_links INTEGER NOT NULL DEFAULT 0;
+             UPDATE transfers SET items = name;
+             CREATE TABLE transfer_sources_new (
+                 transfer_id TEXT NOT NULL,
+                 name TEXT NOT NULL,
+                 path TEXT NOT NULL,
+                 size INTEGER NOT NULL,
+                 mtime_ns INTEGER NOT NULL,
+                 PRIMARY KEY (transfer_id, name)
+             );
+             INSERT INTO transfer_sources_new (transfer_id, name, path, size, mtime_ns)
+                 SELECT transfer_id, '', path, size, mtime_ns FROM transfer_sources ORDER BY rowid;
+             DROP TABLE transfer_sources;
+             ALTER TABLE transfer_sources_new RENAME TO transfer_sources;
+             CREATE TABLE transfer_manifests (
+                 transfer_id TEXT PRIMARY KEY,
+                 manifest BLOB NOT NULL
+             );
+             PRAGMA user_version = 4;
+             COMMIT;",
+        )?;
+    }
     Ok(())
 }
 
@@ -543,6 +666,9 @@ mod tests {
             peer: "PEER".into(),
             name: "a.txt".into(),
             size: 12,
+            items: vec!["a.txt".into(), "photos".into()],
+            file_count: 3,
+            skipped_links: 2,
             state,
             created_at: 100,
             updated_at: 100,
@@ -702,7 +828,12 @@ mod tests {
         assert_eq!(db.unfinished().await.unwrap()[0].progress_at, 100, "starts at creation");
         db.start_transfer(id, Some([7; 32]), Some(Path::new("/save")), 150).await.unwrap();
         db.set_progress_at(id, 175).await.unwrap();
-        let source = Source { path: "/src/a.txt".into(), size: 12, mtime_ns: 1_700_000_000_123_456_789 };
+        let source = Source {
+            path: "/src/a.txt".into(),
+            size: 12,
+            mtime_ns: 1_700_000_000_123_456_789,
+            name: "photos/a.txt".into(),
+        };
         db.insert_sources(id, vec![source.clone()]).await.unwrap();
         drop(db);
 
@@ -743,6 +874,96 @@ mod tests {
         let db = Db::open(&path).await.unwrap();
         let [open] = db.unfinished().await.unwrap().try_into().unwrap();
         assert_eq!((open.record.state, open.root, open.progress_at), (TransferState::Offered, None, 0));
+    }
+
+    #[tokio::test]
+    async fn a_version_3_database_is_upgraded_in_place_and_keeps_its_transfers() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("t.db");
+        {
+            let conn = Connection::open(&path).unwrap();
+            conn.execute_batch(
+                "CREATE TABLE settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+                 CREATE TABLE transfers (
+                     id TEXT PRIMARY KEY, role TEXT NOT NULL, peer TEXT NOT NULL,
+                     name TEXT NOT NULL, size INTEGER NOT NULL, state TEXT NOT NULL,
+                     saved_to TEXT, error TEXT, created_at INTEGER NOT NULL,
+                     updated_at INTEGER NOT NULL, progress_at INTEGER NOT NULL DEFAULT 0,
+                     root_hash TEXT, save_dir TEXT);
+                 CREATE TABLE contacts (
+                     id TEXT PRIMARY KEY, nickname TEXT, device_name TEXT,
+                     auto_accept INTEGER NOT NULL DEFAULT 0, relay_url TEXT,
+                     direct_addrs TEXT NOT NULL DEFAULT '', added_at INTEGER NOT NULL);
+                 CREATE TABLE transfer_sources (
+                     transfer_id TEXT NOT NULL, path TEXT NOT NULL, size INTEGER NOT NULL,
+                     mtime_ns INTEGER NOT NULL, PRIMARY KEY (transfer_id, path));
+                 INSERT INTO transfers (id, role, peer, name, size, state, created_at, updated_at)
+                     VALUES ('01010101010101010101010101010101', 'sender', 'P', 'a.txt', 7,
+                             'transferring', 5, 5);
+                 INSERT INTO transfer_sources VALUES
+                     ('01010101010101010101010101010101', '/src/a.txt', 7, 99);
+                 PRAGMA user_version = 3;",
+            )
+            .unwrap();
+        }
+        let db = Db::open(&path).await.unwrap();
+        let id = TransferId::from_bytes([1; 16]);
+
+        // What was one file before is one item, one file, no links; its source is still there,
+        // named as the file is.
+        let old = db.transfer(id).await.unwrap().unwrap();
+        assert_eq!((old.items, old.file_count, old.skipped_links), (vec!["a.txt".to_owned()], 1, 0));
+        let source = Source { path: "/src/a.txt".into(), size: 7, mtime_ns: 99, name: "a.txt".into() };
+        assert_eq!(db.sources(id).await.unwrap(), [source]);
+
+        // And a file can now be a source twice over, under two names.
+        let other = TransferId::from_bytes([2; 16]);
+        let twice = ["a.txt", "dir/a.txt"].map(|name| Source {
+            path: "/src/a.txt".into(),
+            size: 7,
+            mtime_ns: 99,
+            name: name.into(),
+        });
+        db.insert_sources(other, twice.to_vec()).await.unwrap();
+        assert_eq!(db.sources(other).await.unwrap(), twice);
+    }
+
+    #[tokio::test]
+    async fn what_an_offer_holds_persists_with_its_transfer() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = Db::open(&dir.path().join("t.db")).await.unwrap();
+        db.insert_transfer(record(6, TransferState::Offered)).await.unwrap();
+        let back = db.transfer(TransferId::from_bytes([6; 16])).await.unwrap().unwrap();
+        assert_eq!(back.items, ["a.txt", "photos"]);
+        assert_eq!((back.file_count, back.skipped_links), (3, 2));
+    }
+
+    #[tokio::test]
+    async fn a_receivers_manifest_is_kept_until_its_transfer_ends() {
+        use crate::manifest::Entry;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("t.db");
+        let id = TransferId::from_bytes([8; 16]);
+        let manifest = Manifest {
+            entries: vec![
+                Entry::File { path: "a/b".into(), size: 3, mtime_ns: 77, executable: true },
+                Entry::empty_dir("e"),
+            ],
+        };
+        let db = Db::open(&path).await.unwrap();
+        db.insert_transfer(record(8, TransferState::Accepted)).await.unwrap();
+        assert_eq!(db.manifest(id).await.unwrap(), None);
+        db.insert_manifest(id, &manifest).await.unwrap();
+        drop(db);
+
+        // It survives a restart ...
+        let db = Db::open(&path).await.unwrap();
+        assert_eq!(db.manifest(id).await.unwrap(), Some(manifest));
+        // ... and goes when the Transfer ends, one way or another.
+        db.update_transfer(id, TransferState::Transferring, 200).await.unwrap();
+        assert!(db.manifest(id).await.unwrap().is_some());
+        db.update_transfer(id, TransferState::Failed { reason: "x".into() }, 300).await.unwrap();
+        assert_eq!(db.manifest(id).await.unwrap(), None);
     }
 
     #[tokio::test]

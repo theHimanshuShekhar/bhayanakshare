@@ -12,7 +12,7 @@ use std::{
 
 use bhayanakshare_core::{
     Error, OFFER_TTL_MS, Role, TransferId, TransferState,
-    protocol::{self, FrameError, Hello, Message, Offer, spawn_reader, write_frame},
+    protocol::{self, FrameError, Hello, Message, spawn_reader, write_frame},
 };
 use iroh::endpoint::{Connection, SendStream};
 use support::{TestDevice, dial_addr, list_dir, raw_peer};
@@ -94,7 +94,7 @@ impl RawSender {
         let mut incoming = spawn_reader(recv);
         write_frame(&mut send, &Message::Hello(Hello::current())).await.unwrap();
         assert!(matches!(next(&mut incoming).await, Message::Hello(_)));
-        let offer = Offer { transfer_id: *id.as_bytes(), name: name.to_owned(), size };
+        let offer = support::one_file_offer(*id.as_bytes(), name, size);
         write_frame(&mut send, &Message::Offer(offer)).await.unwrap();
         Self { id, send, incoming, _conn: conn, _holding: holding }
     }
