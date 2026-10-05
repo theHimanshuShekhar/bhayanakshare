@@ -939,7 +939,7 @@ describe("Visibility", () => {
     );
     expect(described).toEqual([
       "Anyone on your network can see this Device and its name.",
-      "Only Devices that already have your Device ID can see it.",
+      "Only Devices that already have your Device ID can see it and its name.",
       "No one sees this Device on your network. People with your ID can still send to it.",
     ]);
   });

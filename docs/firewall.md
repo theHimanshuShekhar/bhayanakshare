@@ -2,7 +2,7 @@
 
 BhayanakShare finds Nearby Devices with mDNS: Devices send small multicast packets to `224.0.0.251` (and `ff02::fb`) on **UDP port 5353**. If a firewall drops those packets, no Nearby Devices appear, and Home suggests this page after 30 seconds. Sending to a Device by its Device ID still works over the internet.
 
-A Device only shows up for others when its Visibility is **Everyone** (Settings). Check that on the Device you expect to see before changing a firewall.
+A Device shows up for others according to its Visibility (Settings): to everyone on **Everyone**, only to Devices that already have its Device ID on **People who have my ID** (the default), and to nobody on **Hidden**. Check that on the Device you expect to see, and that this Device has the other's ID saved as a Contact if it is not on Everyone, before changing a firewall.
 
 Two things must be allowed:
 

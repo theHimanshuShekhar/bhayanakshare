@@ -14,17 +14,21 @@ mod support;
 
 use std::{
     mem::MaybeUninit,
-    net::{Ipv4Addr, SocketAddrV4},
-    sync::OnceLock,
+    net::{IpAddr, Ipv4Addr, SocketAddrV4},
+    sync::{Arc, Mutex, OnceLock},
     time::Duration,
 };
 
 use bhayanakshare_core::{DeviceId, NearbyDevice, Visibility};
 use socket2::{Domain, Protocol, Socket, Type};
 use support::TestDevice;
+use swarm_discovery::{Discoverer, DropGuard};
 
 /// How long to wait to be sure a Device is not heard. The announcements come about every second.
 const SILENCE: Duration = Duration::from_secs(4);
+
+/// How long a beacon label lasts (`beacon::EPOCH_MS`), which is part of the design.
+const EPOCH_MS: i64 = 10 * 60 * 1000;
 
 /// Why multicast on the loopback interface cannot be used here, or `None` if it can. Does what
 /// swarm-discovery does: binds port 5353 shared, joins the mDNS group on 127.0.0.1, and sends to
@@ -137,12 +141,12 @@ async fn a_nearby_device_can_be_sent_to_by_its_id_alone() {
 }
 
 #[tokio::test]
-async fn only_everyone_is_announced() {
+async fn only_everyone_is_announced_in_the_clear() {
     if !multicast_available() {
         return;
     }
-    // Neither the default nor Hidden announces anything yet, so the Everyone Device sees both
-    // of them only once they could have been heard.
+    // The default announces a beacon and Hidden announces nothing, and the Everyone Device
+    // holds neither ID, so it sees neither of them once they could have been heard.
     let mut listener = everyone("listener", "Listener").await;
     let mut quiet = TestDevice::start_discovering("quiet").await;
     let mut hidden = TestDevice::start_discovering("hidden").await;
@@ -244,4 +248,262 @@ async fn the_visibility_defaults_to_people_who_have_my_id_and_is_kept() {
     // Without discovery nothing is ever Nearby.
     assert!(alice.device.nearby().is_empty());
     alice.shutdown().await;
+}
+
+// "People who have my ID": the blinded beacon. Alice is at the default Visibility throughout.
+
+/// A device that does what a stranger on the LAN can: listens to the service and notes everything
+/// announced, without being able to read it.
+struct Onlooker {
+    heard: Arc<Mutex<Vec<Announced>>>,
+    _guard: DropGuard,
+}
+
+struct Announced {
+    label: String,
+    addrs: Vec<(IpAddr, u16)>,
+    txt: Vec<(String, Option<String>)>,
+}
+
+impl Onlooker {
+    fn start() -> Self {
+        let heard = Arc::new(Mutex::new(Vec::new()));
+        let sink = heard.clone();
+        let guard = Discoverer::new_interactive("bhayanakshare".to_owned(), "onlooker".to_owned())
+            .with_multicast_interfaces_v4(vec![Ipv4Addr::LOCALHOST])
+            .with_callback(move |label, peer| {
+                sink.lock().unwrap().push(Announced {
+                    label: label.to_owned(),
+                    addrs: peer.addrs().to_vec(),
+                    txt: peer
+                        .txt_attributes()
+                        .map(|(k, v)| (k.to_owned(), v.map(str::to_owned)))
+                        .collect(),
+                });
+            })
+            .spawn(&tokio::runtime::Handle::current())
+            .unwrap();
+        Self { heard, _guard: guard }
+    }
+
+    /// Everything heard so far, as one text to search.
+    fn transcript(&self) -> String {
+        let heard = self.heard.lock().unwrap();
+        heard.iter().map(|a| format!("{} {:?} {:?}\n", a.label, a.addrs, a.txt)).collect()
+    }
+
+    /// How many announcements were beacons: a 32-character hex label and a `b` attribute.
+    fn beacons(&self) -> usize {
+        let heard = self.heard.lock().unwrap();
+        let is_beacon = |a: &&Announced| {
+            a.label.len() == 32
+                && a.label.bytes().all(|b| b.is_ascii_hexdigit())
+                && a.txt.iter().any(|(k, _)| k == "b")
+        };
+        heard.iter().filter(is_beacon).count()
+    }
+}
+
+/// Waits until `bob`'s Contact `id` has `name` as its Device Name. As long as the other tests'
+/// waits for an event: with many Devices on the multicast group, a Device is answered less often.
+async fn wait_contact_name(bob: &TestDevice, id: DeviceId, name: &str) {
+    for _ in 0..300 {
+        let contacts = bob.device.contacts().await.unwrap();
+        if contacts.iter().any(|c| c.id == id && c.device_name.as_deref() == Some(name)) {
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    panic!("the Contact never got the Device Name {name:?}: {:?}", bob.device.contacts().await);
+}
+
+#[tokio::test]
+async fn a_device_that_holds_the_id_sees_the_device_nearby_with_its_name() {
+    if !multicast_available() {
+        return;
+    }
+    let mut alice = TestDevice::start_discovering("alice").await;
+    alice.device.set_device_name("Alice's laptop").await.unwrap();
+    assert_eq!(alice.device.visibility().await, Visibility::IdHolders, "the default");
+    let mut bob = TestDevice::start_discovering("bob").await;
+    let alice_id = alice.device.device_id();
+
+    // Bob does not have Alice's ID yet, so Alice is not there to be seen...
+    bob.quiet_for(SILENCE).await;
+    assert!(is_absent(alice_id)(&bob.device.nearby()));
+    // ...and once he saves it, she is, with her name.
+    bob.device.add_contact(alice_id, None).await.unwrap();
+    let seen = bob.wait_nearby("Alice nearby", is(alice_id, Some("Alice's laptop"))).await;
+    assert!(is(alice_id, Some("Alice's laptop"))(&seen));
+    assert!(is(alice_id, Some("Alice's laptop"))(&bob.device.nearby()));
+
+    // It is one-sided: Alice does not hold Bob's ID, so she does not see him.
+    alice.quiet_for(SILENCE).await;
+    assert!(is_absent(bob.device.device_id())(&alice.device.nearby()));
+
+    alice.shutdown().await;
+    bob.shutdown().await;
+}
+
+#[tokio::test]
+async fn a_device_found_by_its_beacon_can_be_sent_to_by_its_id_alone() {
+    if !multicast_available() {
+        return;
+    }
+    // The ports are sealed in the beacon, and are what reaches Alice: nothing else hands Bob
+    // an address.
+    let mut alice = TestDevice::start_discovering("alice").await;
+    let mut bob = TestDevice::start_discovering("bob").await;
+    let alice_id = alice.device.device_id();
+    bob.device.add_contact(alice_id, None).await.unwrap();
+    bob.wait_nearby("Alice nearby", is(alice_id, None)).await;
+
+    let src = tempfile::tempdir().unwrap();
+    let path = src.path().join("hello.txt");
+    std::fs::write(&path, b"hello by beacon").unwrap();
+    let id = bob.device.send_file(alice_id, &path).await.unwrap();
+    alice.wait_offer().await;
+    alice.device.accept(id).await.unwrap();
+    alice.wait_state(id, "completed").await;
+    bob.wait_state(id, "completed").await;
+    assert_eq!(std::fs::read(alice.save_dir.join("hello.txt")).unwrap(), b"hello by beacon");
+
+    alice.shutdown().await;
+    bob.shutdown().await;
+}
+
+#[tokio::test]
+async fn a_device_without_the_id_sees_nothing_identifying() {
+    if !multicast_available() {
+        return;
+    }
+    let onlooker = Onlooker::start();
+    let mut alice = TestDevice::start_discovering("alice").await;
+    // Not a name any other test uses, so what is said below is about Alice alone.
+    alice.device.set_device_name("Beacon-test Alice 7Q").await.unwrap();
+    let mut bob = TestDevice::start_discovering("bob").await;
+    let mut carol = TestDevice::start_discovering("carol").await;
+    let (alice_id, carol_id) = (alice.device.device_id(), carol.device.device_id());
+    // Bob holds the ID, so Alice is certainly announcing; Carol does not. Carol holds Bob's
+    // instead: a Device with Contacts recognises the beacons of those and no others.
+    bob.device.add_contact(alice_id, None).await.unwrap();
+    carol.device.add_contact(bob.device.device_id(), None).await.unwrap();
+    bob.wait_nearby("Alice nearby", is(alice_id, Some("Beacon-test Alice 7Q"))).await;
+    carol.wait_nearby("Bob nearby", is(bob.device.device_id(), None)).await;
+    carol.quiet_for(SILENCE).await;
+
+    // Carol sees no trace of her: not by ID, and not in a Device list under any name.
+    let heard = carol.device.nearby();
+    assert!(is_absent(alice_id)(&heard), "{heard:?}");
+    assert!(heard.iter().all(|d| d.name.as_deref() != Some("Beacon-test Alice 7Q")), "{heard:?}");
+    assert!(is_absent(carol_id)(&alice.device.nearby()));
+
+    // Nor does anything on the wire: the onlooker heard beacons, and none of what Alice is
+    // (her ID, her name, her real ports) was in any of the announcements.
+    assert!(onlooker.beacons() > 0, "no beacon was announced:\n{}", onlooker.transcript());
+    let transcript = onlooker.transcript().to_lowercase();
+    assert!(!transcript.contains(&alice_id.to_string().to_lowercase()));
+    assert!(!transcript.contains("beacon-test alice"));
+    for addr in alice.addr().direct {
+        assert!(
+            !transcript.contains(&format!("{:?}", (addr.ip(), addr.port())).to_lowercase()),
+            "Alice's real address {addr} was announced in the clear:\n{transcript}"
+        );
+    }
+
+    alice.shutdown().await;
+    bob.shutdown().await;
+    carol.shutdown().await;
+}
+
+#[tokio::test]
+async fn the_beacon_changes_with_the_epoch_and_the_id_holder_follows_it() {
+    if !multicast_available() {
+        return;
+    }
+    let mut alice = TestDevice::start_discovering("alice").await;
+    alice.device.set_device_name("Alice's laptop").await.unwrap();
+    let mut bob = TestDevice::start_discovering("bob").await;
+    let alice_id = alice.device.device_id();
+    bob.device.add_contact(alice_id, None).await.unwrap();
+    bob.wait_nearby("Alice nearby", is(alice_id, Some("Alice's laptop"))).await;
+
+    // One epoch on, Alice announces under a new label. Bob's clock is a whole epoch behind hers,
+    // which his window allows, so he keeps seeing her without a break.
+    alice.clock.advance(EPOCH_MS);
+    bob.quiet_for(SILENCE).await;
+    assert!(is(alice_id, Some("Alice's laptop"))(&bob.device.nearby()));
+    let seen_at = bob.log.iter().position(|e| is_nearby_with(e, alice_id)).unwrap();
+    assert!(
+        bob.log[seen_at..].iter().all(|e| !is_nearby_without(e, alice_id)),
+        "Alice dropped out of the list when her beacon rotated: {:#?}",
+        bob.log
+    );
+
+    // Three epochs on she is outside the window: the beacon of that epoch is not one Bob
+    // recognises, which also shows the old one is no longer announced...
+    alice.clock.advance(2 * EPOCH_MS);
+    bob.wait_nearby("Alice out of reach of Bob's clock", is_absent(alice_id)).await;
+    // ...until his clock has caught up.
+    bob.clock.advance(3 * EPOCH_MS);
+    bob.wait_nearby("Alice again", is(alice_id, Some("Alice's laptop"))).await;
+
+    alice.shutdown().await;
+    bob.shutdown().await;
+}
+
+fn is_nearby_with(event: &bhayanakshare_core::Event, id: DeviceId) -> bool {
+    matches!(&event.kind, bhayanakshare_core::EventKind::Nearby(n) if is(id, None)(&n.devices))
+}
+
+fn is_nearby_without(event: &bhayanakshare_core::Event, id: DeviceId) -> bool {
+    matches!(&event.kind, bhayanakshare_core::EventKind::Nearby(n) if is_absent(id)(&n.devices))
+}
+
+#[tokio::test]
+async fn a_contacts_device_name_refreshes_from_its_beacon_and_the_nickname_stays() {
+    if !multicast_available() {
+        return;
+    }
+    let mut alice = TestDevice::start_discovering("alice").await;
+    alice.device.set_device_name("Alice's laptop").await.unwrap();
+    let mut bob = TestDevice::start_discovering("bob").await;
+    let alice_id = alice.device.device_id();
+    bob.device.add_contact(alice_id, Some("Old name from a link")).await.unwrap();
+
+    wait_contact_name(&bob, alice_id, "Alice's laptop").await;
+    alice.device.set_device_name("Alice's desktop").await.unwrap();
+    wait_contact_name(&bob, alice_id, "Alice's desktop").await;
+
+    // A Nickname is still what Bob sees, whatever Alice calls herself.
+    bob.device.set_nickname(alice_id, Some("Mum")).await.unwrap();
+    alice.device.set_device_name("Alice's tablet").await.unwrap();
+    wait_contact_name(&bob, alice_id, "Alice's tablet").await;
+    let contact = bob.device.contacts().await.unwrap().remove(0);
+    assert_eq!(contact.display_name(), Some("Mum"));
+
+    alice.shutdown().await;
+    bob.shutdown().await;
+}
+
+#[tokio::test]
+async fn removing_a_contact_takes_its_beacon_out_of_the_nearby_list() {
+    if !multicast_available() {
+        return;
+    }
+    let mut alice = TestDevice::start_discovering("alice").await;
+    let mut bob = TestDevice::start_discovering("bob").await;
+    let alice_id = alice.device.device_id();
+    bob.device.add_contact(alice_id, None).await.unwrap();
+    bob.wait_nearby("Alice nearby", is(alice_id, None)).await;
+
+    // Bob no longer holds her ID, so her beacon means nothing to him, though she goes on
+    // announcing it.
+    bob.device.remove_contact(alice_id).await.unwrap();
+    bob.wait_nearby("Alice gone", is_absent(alice_id)).await;
+    bob.quiet_for(SILENCE).await;
+    assert!(is_absent(alice_id)(&bob.device.nearby()));
+
+    alice.shutdown().await;
+    bob.shutdown().await;
 }

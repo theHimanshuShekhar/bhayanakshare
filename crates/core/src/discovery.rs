@@ -2,27 +2,37 @@
 //! `swarm-discovery` under our own service name (never iroh's `irohv1`, so other iroh apps on
 //! the network neither show up here nor see us).
 //!
-//! One `Discoverer` runs for the Device's whole life. It always listens; what it announces
-//! follows the [`Visibility`] setting and is changed while it runs. Only **Everyone** announces
-//! so far: a plain announcement whose instance label is the Device ID and whose TXT carries the
-//! Device Name. The other settings announce nothing yet: [`announcement`] is where a setting
-//! chooses what to say and [`hear`] is where a heard label becomes a Device. (A beacon with a
-//! label of its own needs the `Discoverer` restarted, since swarm-discovery fixes the label
-//! when it starts.)
+//! One `Discoverer` runs at a time. It always listens; what it announces follows the
+//! [`Visibility`] setting and is changed while it runs:
+//!
+//! - **Everyone**: a plain announcement whose instance label is the Device ID and whose TXT
+//!   carries the Device Name.
+//! - **People who have my ID**: the blinded beacon of [`crate::beacon`], whose label and sealed
+//!   TXT only a Device holding this Device's ID can recognise and open.
+//! - **Hidden**: nothing yet (the responder is another ticket).
+//!
+//! [`announcement`] is where a setting chooses what to say and [`hear`] is where a heard label
+//! becomes a Device. swarm-discovery fixes the label when it starts, so a different label (a
+//! new beacon epoch, or a change between plain and beacon) means a new `Discoverer`.
 //!
 //! What is heard is kept as a table of Nearby Devices, reported on the event stream whenever it
 //! changes, and its addresses are handed to iroh, so dialling a Nearby Device by its ID alone
 //! reaches it. `UserData` is never set on the endpoint: the Device Name stays on the LAN and
 //! is not published to n0.
 //!
-//! Everything heard is unauthenticated, so a name is only shown (cleaned, with the Fingerprint
-//! next to it) and never stored in a Contact (a Contact's name is refreshed by `Hello`, over an
-//! authenticated connection), and addresses are only used to dial, where iroh checks the key.
+//! A plain announcement is unauthenticated, so its name is only shown (cleaned, with the
+//! Fingerprint next to it) and never stored in a Contact. A beacon can only be made by a Device
+//! holding the ID, so the name in one does refresh the Contact's stored Device Name (as `Hello`,
+//! over an authenticated connection, also does), while a Nickname still takes priority. Addresses
+//! are only used to dial, where iroh checks the key.
 
 use std::{
-    collections::{BTreeSet, HashMap},
+    collections::{BTreeMap, BTreeSet, HashMap, HashSet},
     net::{IpAddr, Ipv4Addr, SocketAddr},
-    sync::{Arc, Mutex},
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicBool, Ordering},
+    },
 };
 
 use iroh::{Endpoint, EndpointAddr, TransportAddr, Watcher, address_lookup::MemoryLookup};
@@ -31,6 +41,9 @@ use swarm_discovery::{Discoverer, DropGuard};
 use tokio::sync::mpsc;
 
 use crate::{
+    beacon::{self, Index},
+    clock,
+    contacts::KnownAddress,
     db::{Db, DbError},
     device::{Network, Shared, direct_addrs},
     device_name,
@@ -61,7 +74,7 @@ const MAX_NEARBY: usize = 256;
 pub enum Visibility {
     /// A plain announcement with the Device Name: anyone on the LAN sees it.
     Everyone,
-    /// Only Devices that hold this Device's ID. Announces nothing until the beacon exists.
+    /// Only Devices that hold this Device's ID: a blinded beacon only they can recognise.
     #[default]
     IdHolders,
     /// Nobody. Announces nothing until the responder exists.
@@ -113,18 +126,70 @@ pub struct NearbyDevice {
     pub name: Option<String>,
 }
 
-/// The TXT attributes this Device announces under `visibility`, or `None` to stay silent.
-fn announcement(visibility: Visibility, name: &str) -> Option<Vec<(String, String)>> {
+/// What this Device says on the LAN.
+#[derive(Debug, PartialEq, Eq)]
+struct Announcement {
+    /// The instance label to announce under.
+    label: String,
+    /// The addresses to announce, by port.
+    ports: Vec<(u16, Vec<IpAddr>)>,
+    txt: Vec<(String, String)>,
+}
+
+/// What this Device announces under `visibility`, or `None` to stay silent. `addrs` are the
+/// addresses another Device could dial it on, and `epoch` is the beacon time.
+fn announcement(
+    visibility: Visibility,
+    id: DeviceId,
+    name: &str,
+    epoch: beacon::Epoch,
+    addrs: &[SocketAddr],
+) -> Option<Announcement> {
     match visibility {
         Visibility::Everyone => {
-            let mut end = name.len().min(MAX_NAME_BYTES);
-            while !name.is_char_boundary(end) {
-                end -= 1;
+            let mut ports: BTreeMap<u16, Vec<IpAddr>> = BTreeMap::new();
+            for addr in addrs {
+                ports.entry(addr.port()).or_default().push(addr.ip());
             }
-            Some(vec![(NAME_KEY.to_owned(), name[..end].to_owned())])
+            Some(Announcement {
+                label: plain_label(id),
+                ports: ports.into_iter().collect(),
+                txt: vec![(
+                    NAME_KEY.to_owned(),
+                    device_name::truncate_bytes(name, MAX_NAME_BYTES).to_owned(),
+                )],
+            })
         }
-        Visibility::IdHolders | Visibility::Hidden => None,
+        Visibility::IdHolders => {
+            // The real ports are sealed; the SRV record carries a constant one.
+            let port_of = |family: fn(&SocketAddr) -> bool| {
+                addrs.iter().find(|a| family(a)).map_or(0, SocketAddr::port)
+            };
+            let (label, sealed) = beacon::seal(
+                &id,
+                epoch,
+                name,
+                port_of(SocketAddr::is_ipv4),
+                port_of(SocketAddr::is_ipv6),
+            );
+            let ips: BTreeSet<IpAddr> = addrs.iter().map(SocketAddr::ip).collect();
+            Some(Announcement {
+                label,
+                ports: if ips.is_empty() {
+                    Vec::new()
+                } else {
+                    vec![(beacon::DECOY_PORT, ips.into_iter().collect())]
+                },
+                txt: vec![(beacon::TXT_KEY.to_owned(), sealed)],
+            })
+        }
+        Visibility::Hidden => None,
     }
+}
+
+/// The instance label of a plain announcement: the Device ID.
+fn plain_label(id: DeviceId) -> String {
+    id.to_string().to_lowercase()
 }
 
 /// Whether another Device could dial `addr`. A Device on the real network does not announce a
@@ -140,27 +205,61 @@ fn dialable(addr: &SocketAddr, loopback_ok: bool) -> bool {
         && (loopback_ok || !ip.is_loopback())
 }
 
-/// What the `Discoverer` heard about one instance.
-#[derive(Debug, PartialEq, Eq)]
-enum Heard {
-    Seen { id: DeviceId, name: Option<String>, addrs: Vec<SocketAddr> },
-    Gone(DeviceId),
+/// One instance as the `Discoverer` heard it, before it is read.
+struct Instance {
+    label: String,
+    addrs: Vec<(IpAddr, u16)>,
+    /// The TXT `name` of a plain announcement.
+    name: Option<String>,
+    /// The TXT value of a beacon, still sealed.
+    beacon: Option<String>,
 }
 
-/// Reads one heard instance: its label, addresses and TXT name. `None` for anything that is not
-/// another Device's plain announcement (our own, or a label that is not a Device ID).
-fn hear(
-    own: DeviceId,
-    loopback_ok: bool,
-    label: &str,
-    addrs: &[(IpAddr, u16)],
-    name: Option<&str>,
-) -> Option<Heard> {
-    let id: DeviceId = label.parse().ok().filter(|id| *id != own)?;
-    // swarm-discovery reports an instance that expired as one with no addresses.
-    if addrs.is_empty() {
-        return Some(Heard::Gone(id));
+/// What an instance means.
+#[derive(Debug, PartialEq, Eq)]
+enum Heard {
+    Seen {
+        id: DeviceId,
+        /// The label it was heard under: a beacon's changes every epoch.
+        label: String,
+        name: Option<String>,
+        addrs: Vec<SocketAddr>,
+        /// Whether it came in a beacon, so only a Device holding the ID can have made it.
+        sealed: bool,
+    },
+    /// The instance that was heard under `label` has expired.
+    Gone { label: String },
+}
+
+/// Reads one heard instance: a plain announcement, or a beacon of a Device whose ID this Device
+/// holds (`index`). `None` for anything else, and for this Device's own.
+fn hear(own: DeviceId, loopback_ok: bool, index: &Index, heard: &Instance) -> Option<Heard> {
+    let label = heard.label.as_str();
+    let plain: Option<DeviceId> = label.parse().ok();
+    if plain == Some(own) {
+        return None;
     }
+    // swarm-discovery reports an instance that expired as one with no addresses.
+    if heard.addrs.is_empty() {
+        return Some(Heard::Gone { label: label.to_owned() });
+    }
+    let (id, name, addrs, sealed) = match plain {
+        Some(id) => (id, heard.name.clone(), heard.addrs.clone(), false),
+        None => {
+            let (id, epoch) = index.recognise(label)?;
+            let contents = beacon::open(&id, epoch, label, heard.beacon.as_deref()?)?;
+            // The ports are in the seal; the addresses of the announcement say where.
+            let addrs = heard
+                .addrs
+                .iter()
+                .filter_map(|&(ip, _)| {
+                    let port = if ip.is_ipv4() { contents.v4_port } else { contents.v6_port };
+                    (port != 0).then_some((ip, port))
+                })
+                .collect();
+            (id, contents.name, addrs, true)
+        }
+    };
     let addrs: Vec<SocketAddr> = addrs
         .iter()
         .map(|&(ip, port)| SocketAddr::new(ip, port))
@@ -169,46 +268,85 @@ fn hear(
     if addrs.is_empty() {
         return None;
     }
-    Some(Heard::Seen { id, name: name.and_then(device_name::sanitize), addrs })
+    Some(Heard::Seen {
+        id,
+        label: label.to_owned(),
+        name: name.as_deref().and_then(device_name::sanitize),
+        addrs,
+        sealed,
+    })
+}
+
+/// One Nearby Device in the [`Table`].
+struct Entry {
+    name: Option<String>,
+    label: String,
+    sealed: bool,
 }
 
 /// The Nearby Devices heard so far, by ID.
 #[derive(Default)]
-struct Table(HashMap<DeviceId, Option<String>>);
+struct Table(HashMap<DeviceId, Entry>);
 
 impl Table {
     /// Applies what was heard; `true` if the list a user would see changed. Hearing a Device
-    /// again unchanged (it answers every query) is not a change.
+    /// again unchanged (it answers every query), or under a new label, is not a change.
     fn apply(&mut self, heard: &Heard) -> bool {
         match heard {
-            Heard::Seen { id, name, .. } => {
+            Heard::Seen { id, label, name, sealed, .. } => {
                 if !self.0.contains_key(id) && self.0.len() >= MAX_NEARBY {
                     return false;
                 }
-                self.0.insert(*id, name.clone()).as_ref() != Some(name)
+                let entry = Entry { name: name.clone(), label: label.clone(), sealed: *sealed };
+                self.0.insert(*id, entry).is_none_or(|old| old.name != *name)
             }
-            Heard::Gone(id) => self.0.remove(id).is_some(),
+            Heard::Gone { label } => match self.id_with_label(label) {
+                Some(id) => self.0.remove(&id).is_some(),
+                None => false,
+            },
         }
+    }
+
+    /// The Device last heard under `label`. A Device heard under a newer label has moved on,
+    /// so the expiry of an older one is not its departure.
+    fn id_with_label(&self, label: &str) -> Option<DeviceId> {
+        self.0.iter().find(|(_, e)| e.label == label).map(|(id, _)| *id)
     }
 
     /// The list, by name (ignoring case) then ID, so it does not shuffle between events.
     fn snapshot(&self) -> Vec<NearbyDevice> {
-        let mut list: Vec<_> =
-            self.0.iter().map(|(id, name)| NearbyDevice { id: *id, name: name.clone() }).collect();
+        let mut list: Vec<_> = self
+            .0
+            .iter()
+            .map(|(id, e)| NearbyDevice { id: *id, name: e.name.clone() })
+            .collect();
         list.sort_by_cached_key(|d| (d.name.as_deref().map(str::to_lowercase), d.id.to_string()));
         list
     }
 }
 
+/// The running `Discoverer` and what it was started with.
+struct Running {
+    /// `None` if it could not start, which the next [`Discovery::refresh`] tries again.
+    guard: Option<DropGuard>,
+    /// The instance label `guard` was started with.
+    label: String,
+    tx: mpsc::UnboundedSender<Instance>,
+    interfaces: Vec<Ipv4Addr>,
+}
+
 /// A Device's LAN discovery, owned by [`Shared`].
 pub(crate) struct Discovery {
     network: Network,
-    /// The running `Discoverer`; `None` before it starts, after shutdown, or if it could not
-    /// start. Also serialises changes to what it announces.
-    discoverer: tokio::sync::Mutex<Option<DropGuard>>,
+    /// `None` before it starts, and after shutdown. Also serialises changes to what is
+    /// announced.
+    running: tokio::sync::Mutex<Option<Running>>,
     table: Mutex<Table>,
     /// Where Nearby Devices' addresses go, for iroh to dial with.
     lookup: MemoryLookup,
+    /// Set when Contacts are added or removed: the beacons to recognise are those of the
+    /// Devices whose IDs this Device holds.
+    contacts_changed: AtomicBool,
 }
 
 impl Discovery {
@@ -222,9 +360,10 @@ impl Discovery {
         }
         Self {
             network,
-            discoverer: tokio::sync::Mutex::new(None),
+            running: tokio::sync::Mutex::new(None),
             table: Mutex::default(),
             lookup,
+            contacts_changed: AtomicBool::new(false),
         }
     }
 
@@ -233,32 +372,12 @@ impl Discovery {
     /// it, and the Nearby area shows the firewall hint.
     pub(crate) async fn start(&self, sh: &Arc<Shared>) {
         let (tx, rx) = mpsc::unbounded_channel();
-        let own = sh.id;
-        let loopback_ok = self.network == Network::LocalhostLan;
-        let interfaces = self.interfaces().await;
-        let spawned = Discoverer::new_interactive(
-            SERVICE_NAME.to_owned(),
-            own.to_string().to_lowercase(),
-        )
-        .with_multicast_interfaces_v4(interfaces.iter().copied().collect())
-        .with_callback(move |label, peer| {
-            let name = peer.txt_attribute(NAME_KEY).flatten();
-            if let Some(heard) = hear(own, loopback_ok, label, peer.addrs(), name) {
-                // The receiver is gone once the Device shuts down.
-                let _ = tx.send(heard);
-            }
-        })
-        .spawn(&tokio::runtime::Handle::current());
-        match spawned {
-            Ok(guard) => *self.discoverer.lock().await = Some(guard),
-            Err(e) => {
-                tracing::warn!("LAN discovery could not start: {e}");
-                return;
-            }
-        }
+        let interfaces = self.interfaces().await.into_iter().collect();
+        *self.running.lock().await = Some(Running { guard: None, label: String::new(), tx, interfaces });
         self.refresh(sh).await;
         sh.tasks.spawn(ingest(sh.clone(), rx));
         sh.tasks.spawn(follow_addresses(sh.clone()));
+        sh.tasks.spawn(rotate_beacon(sh.clone()));
     }
 
     /// The Devices heard so far.
@@ -266,33 +385,78 @@ impl Discovery {
         self.table.lock().unwrap_or_else(|e| e.into_inner()).snapshot()
     }
 
-    /// Announces what the Visibility, Device Name and addresses call for now.
+    /// Notes that a Contact was added or removed.
+    pub(crate) fn contacts_changed(&self) {
+        self.contacts_changed.store(true, Ordering::Release);
+    }
+
+    /// Announces what the Visibility, Device Name, addresses and time call for now.
     pub(crate) async fn refresh(&self, sh: &Shared) {
-        let discoverer = self.discoverer.lock().await;
-        let Some(discoverer) = discoverer.as_ref() else { return };
+        let mut running = self.running.lock().await;
+        let Some(running) = running.as_mut() else { return };
         let visibility = Visibility::load(&sh.db).await;
         let name = sh.device_name().await;
+        let addrs = self.announced_addrs(&sh.endpoint);
+        let announce = announcement(visibility, sh.id, &name, beacon::epoch_of(sh.now()), &addrs);
+
+        // A different label (a new epoch, or beacon for plain) needs a new Discoverer. A silent
+        // Device keeps its own: its queries carry no label.
+        let wanted = announce.as_ref().map(|a| a.label.as_str());
+        if running.guard.is_none() || wanted.is_some_and(|label| label != running.label) {
+            let label = wanted.map_or_else(|| plain_label(sh.id), str::to_owned);
+            running.guard = None;
+            running.guard = self.spawn(sh.id, &label, &running.tx, &running.interfaces);
+            running.label = label;
+        }
+        let Some(guard) = &running.guard else { return };
 
         // Removing everything also drops the TXT attributes, so they are set again below.
-        discoverer.remove_all();
-        let Some(txt) = announcement(visibility, &name) else { return };
-        let mut by_port: HashMap<u16, Vec<IpAddr>> = HashMap::new();
-        for addr in self.announced_addrs(&sh.endpoint) {
-            by_port.entry(addr.port()).or_default().push(addr.ip());
+        guard.remove_all();
+        let Some(announce) = announce else { return };
+        for (port, ips) in announce.ports {
+            guard.add(port, ips);
         }
-        for (port, ips) in by_port {
-            discoverer.add(port, ips);
+        for (key, value) in announce.txt {
+            if let Err(e) = guard.set_txt_attribute(key, Some(value)) {
+                tracing::warn!("could not announce this Device: {e}");
+            }
         }
-        for (key, value) in txt {
-            if let Err(e) = discoverer.set_txt_attribute(key, Some(value)) {
-                tracing::warn!("could not announce the Device Name: {e}");
+    }
+
+    /// Starts a `Discoverer` that announces under `label` and reports what it hears to `tx`.
+    fn spawn(
+        &self,
+        own: DeviceId,
+        label: &str,
+        tx: &mpsc::UnboundedSender<Instance>,
+        interfaces: &[Ipv4Addr],
+    ) -> Option<DropGuard> {
+        let tx = tx.clone();
+        let spawned = Discoverer::new_interactive(SERVICE_NAME.to_owned(), label.to_owned())
+            .with_multicast_interfaces_v4(interfaces.to_vec())
+            .with_callback(move |label, peer| {
+                let instance = Instance {
+                    label: label.to_owned(),
+                    addrs: peer.addrs().to_vec(),
+                    name: peer.txt_attribute(NAME_KEY).flatten().map(str::to_owned),
+                    beacon: peer.txt_attribute(beacon::TXT_KEY).flatten().map(str::to_owned),
+                };
+                // The receiver is gone once the Device shuts down.
+                let _ = tx.send(instance);
+            })
+            .spawn(&tokio::runtime::Handle::current());
+        match spawned {
+            Ok(guard) => Some(guard),
+            Err(e) => {
+                tracing::warn!("LAN discovery could not start for {}: {e}", own.fingerprint());
+                None
             }
         }
     }
 
     /// Stops announcing and listening.
     pub(crate) async fn shutdown(&self) {
-        self.discoverer.lock().await.take();
+        self.running.lock().await.take();
     }
 
     /// The addresses an announcement lists, IPv4 first.
@@ -327,10 +491,14 @@ impl Discovery {
 
     /// Applies one heard instance: hands its addresses to iroh and, if the list of Nearby
     /// Devices changed, reports the new list.
-    fn take_in(&self, sh: &Shared, heard: Heard) {
+    fn take_in(&self, sh: &Shared, heard: &Heard) {
         let mut table = self.table.lock().unwrap_or_else(|e| e.into_inner());
-        let changed = table.apply(&heard);
-        match &heard {
+        let gone = match heard {
+            Heard::Gone { label } => table.id_with_label(label),
+            Heard::Seen { .. } => None,
+        };
+        let changed = table.apply(heard);
+        match heard {
             // Only what the table kept is handed to iroh, so the bound holds for both.
             Heard::Seen { id, addrs, .. } if table.0.contains_key(id) => {
                 let addr = EndpointAddr::from_parts(
@@ -340,8 +508,10 @@ impl Discovery {
                 self.lookup.set_endpoint_info(addr);
             }
             Heard::Seen { .. } => {}
-            Heard::Gone(id) => {
-                self.lookup.remove_endpoint_info(id.endpoint_id());
+            Heard::Gone { .. } => {
+                if let Some(id) = gone {
+                    self.lookup.remove_endpoint_info(id.endpoint_id());
+                }
             }
         }
         if changed {
@@ -350,19 +520,71 @@ impl Discovery {
             sh.events.emit(sh.now(), EventKind::Nearby(NearbyEvent { devices }));
         }
     }
+
+    /// Drops the Devices that are Nearby only because their beacon was recognised, but whose ID
+    /// is no longer held: their beacons are not recognised any more, so they would never expire.
+    fn forget_unheld(&self, sh: &Shared, held: &HashSet<DeviceId>) {
+        let mut table = self.table.lock().unwrap_or_else(|e| e.into_inner());
+        let unheld: Vec<DeviceId> =
+            table.0.iter().filter(|(id, e)| e.sealed && !held.contains(id)).map(|(id, _)| *id).collect();
+        for id in &unheld {
+            table.0.remove(id);
+            self.lookup.remove_endpoint_info(id.endpoint_id());
+        }
+        if !unheld.is_empty() {
+            let devices = table.snapshot();
+            drop(table);
+            sh.events.emit(sh.now(), EventKind::Nearby(NearbyEvent { devices }));
+        }
+    }
 }
 
 /// Applies what the `Discoverer` hears, in the order heard.
-async fn ingest(sh: Arc<Shared>, mut rx: mpsc::UnboundedReceiver<Heard>) {
+async fn ingest(sh: Arc<Shared>, mut rx: mpsc::UnboundedReceiver<Instance>) {
+    let own = sh.id;
+    let loopback_ok = sh.discovery.network == Network::LocalhostLan;
+    // The beacons to recognise: those of the Contacts, around now. Made again when either moves.
+    let mut index = Index::default();
+    let mut indexed_at = None;
+    // The names already written to Contacts, so a beacon heard every second writes once.
+    let mut learned: HashMap<DeviceId, String> = HashMap::new();
     loop {
-        let heard = tokio::select! {
+        let instance = tokio::select! {
             () = sh.cancel.cancelled() => return,
             heard = rx.recv() => match heard {
                 Some(heard) => heard,
                 None => return,
             },
         };
-        sh.discovery.take_in(&sh, heard);
+        let epoch = beacon::epoch_of(sh.now());
+        let contacts_changed = sh.discovery.contacts_changed.swap(false, Ordering::AcqRel);
+        if contacts_changed || indexed_at != Some(epoch) {
+            match sh.db.contacts().await {
+                Ok(contacts) => {
+                    let held: HashSet<DeviceId> =
+                        contacts.iter().map(|c| c.id).filter(|id| *id != own).collect();
+                    index = Index::new(held.iter().copied(), epoch);
+                    sh.discovery.forget_unheld(&sh, &held);
+                    learned.clear();
+                }
+                Err(e) => tracing::warn!("could not read the Contacts to recognise beacons: {e}"),
+            }
+            indexed_at = Some(epoch);
+        }
+        let Some(heard) = hear(own, loopback_ok, &index, &instance) else { continue };
+        sh.discovery.take_in(&sh, &heard);
+        // A beacon is made by a Device holding the ID, so its name refreshes the Contact's.
+        if let Heard::Seen { id, name: Some(name), sealed: true, .. } = &heard {
+            if learned.get(id) != Some(name) {
+                let result = sh.db.update_contact_connection(*id, KnownAddress::default(), Some(name.clone()));
+                match result.await {
+                    Ok(()) => {
+                        learned.insert(*id, name.clone());
+                    }
+                    Err(e) => tracing::warn!("could not record a Contact's name: {e}"),
+                }
+            }
+        }
     }
 }
 
@@ -382,6 +604,18 @@ async fn follow_addresses(sh: Arc<Shared>) {
     }
 }
 
+/// Announces again, under a new label, each time a new beacon epoch begins.
+async fn rotate_beacon(sh: Arc<Shared>) {
+    loop {
+        let next = beacon::next_epoch_starts(sh.now());
+        tokio::select! {
+            () = sh.cancel.cancelled() => return,
+            () = clock::sleep_until(&*sh.clock, next) => {}
+        }
+        sh.discovery.refresh(&sh).await;
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -391,34 +625,88 @@ mod tests {
     }
 
     fn label(n: u8) -> String {
-        id(n).to_string().to_lowercase()
+        plain_label(id(n))
     }
 
     const ADDR: (IpAddr, u16) = (IpAddr::V4(Ipv4Addr::new(192, 168, 1, 7)), 4000);
 
+    fn instance(label: &str, addrs: &[(IpAddr, u16)], name: Option<&str>) -> Instance {
+        Instance {
+            label: label.to_owned(),
+            addrs: addrs.to_vec(),
+            name: name.map(str::to_owned),
+            beacon: None,
+        }
+    }
+
     fn hear_on_lan(label: &str, addrs: &[(IpAddr, u16)], name: Option<&str>) -> Option<Heard> {
-        hear(id(1), false, label, addrs, name)
+        hear(id(1), false, &Index::default(), &instance(label, addrs, name))
+    }
+
+    fn lan_addrs() -> Vec<SocketAddr> {
+        vec!["192.168.1.7:4000".parse().unwrap(), "[2001:db8::7]:4001".parse().unwrap()]
+    }
+
+    /// What Device `from` announces as a beacon in `epoch`, as another Device hears it.
+    fn instance_of_beacon(from: u8, name: &str, epoch: beacon::Epoch) -> Instance {
+        let a = announcement(Visibility::IdHolders, id(from), name, epoch, &lan_addrs()).unwrap();
+        Instance {
+            label: a.label,
+            addrs: a.ports.iter().flat_map(|(p, ips)| ips.iter().map(|ip| (*ip, *p))).collect(),
+            name: None,
+            beacon: Some(a.txt[0].1.clone()),
+        }
     }
 
     #[test]
     fn everyone_announces_the_device_name_and_nothing_else() {
-        let txt = announcement(Visibility::Everyone, "Mum's laptop").unwrap();
+        let a = announcement(Visibility::Everyone, id(2), "Mum's laptop", 7, &lan_addrs()).unwrap();
         // In particular no `user-data`, which iroh's own lookup uses for UserData.
-        assert_eq!(txt, [("name".to_owned(), "Mum's laptop".to_owned())]);
+        assert_eq!(a.txt, [("name".to_owned(), "Mum's laptop".to_owned())]);
+        assert_eq!(a.label, label(2));
+        assert_eq!(
+            a.ports,
+            [
+                (4000, vec!["192.168.1.7".parse::<IpAddr>().unwrap()]),
+                (4001, vec!["2001:db8::7".parse::<IpAddr>().unwrap()]),
+            ]
+        );
     }
 
     #[test]
-    fn the_other_settings_announce_nothing() {
-        assert_eq!(announcement(Visibility::IdHolders, "x"), None);
-        assert_eq!(announcement(Visibility::Hidden, "x"), None);
+    fn hidden_announces_nothing() {
+        assert_eq!(announcement(Visibility::Hidden, id(2), "x", 7, &lan_addrs()), None);
+    }
+
+    #[test]
+    fn people_who_have_my_id_announce_a_beacon_that_shows_nothing_of_the_device() {
+        let a = announcement(Visibility::IdHolders, id(2), "Mum's laptop", 7, &lan_addrs()).unwrap();
+        assert_eq!(a.label, beacon::label(&id(2), 7));
+        assert_ne!(a.label, label(2), "not the Device ID");
+        assert_eq!(a.txt.len(), 1);
+        assert_eq!(a.txt[0].0, beacon::TXT_KEY);
+        // The real ports are sealed: only the constant one is on the wire.
+        assert_eq!(a.ports.len(), 1);
+        assert_eq!(a.ports[0].0, beacon::DECOY_PORT);
+        // Nothing of the name, the ID or the ports, in the clear.
+        let wire = format!("{a:?}");
+        for secret in ["Mum", "4000", "4001", &label(2), &id(2).to_string()] {
+            assert!(!wire.contains(secret), "{secret} in {wire}");
+        }
+    }
+
+    #[test]
+    fn a_beacon_without_addresses_announces_no_addresses() {
+        let a = announcement(Visibility::IdHolders, id(2), "x", 7, &[]).unwrap();
+        assert!(a.ports.is_empty());
     }
 
     #[test]
     fn a_long_name_is_cut_to_fit_one_attribute_on_a_character_boundary() {
         // 64 four-byte characters are 256 bytes: too long for a TXT attribute.
         let name = "🦀".repeat(64);
-        let txt = announcement(Visibility::Everyone, &name).unwrap();
-        let value = &txt[0].1;
+        let a = announcement(Visibility::Everyone, id(2), &name, 7, &lan_addrs()).unwrap();
+        let value = &a.txt[0].1;
         assert!(name.starts_with(value.as_str()) && !value.is_empty());
         assert!(NAME_KEY.len() + value.len() <= 254);
     }
@@ -435,8 +723,10 @@ mod tests {
             hear_on_lan(&label(2), &[ADDR], Some("  Dad\u{7}'s PC ")),
             Some(Heard::Seen {
                 id: id(2),
+                label: label(2),
                 name: Some("Dad's PC".to_owned()),
                 addrs: vec!["192.168.1.7:4000".parse().unwrap()],
+                sealed: false,
             })
         );
         // No name announced, or one that is empty once cleaned.
@@ -450,7 +740,7 @@ mod tests {
 
     #[test]
     fn an_instance_with_no_addresses_has_gone() {
-        assert_eq!(hear_on_lan(&label(2), &[], None), Some(Heard::Gone(id(2))));
+        assert_eq!(hear_on_lan(&label(2), &[], None), Some(Heard::Gone { label: label(2) }));
     }
 
     #[test]
@@ -458,7 +748,7 @@ mod tests {
         assert_eq!(hear_on_lan(&label(1), &[ADDR], Some("me")), None);
         assert_eq!(hear_on_lan(&label(1), &[], None), None);
         assert_eq!(hear_on_lan("not-a-device-id", &[ADDR], None), None);
-        // 32 hex characters, the shape a blinded beacon label may take later.
+        // 32 hex characters, the shape of a beacon of a Device whose ID is not held.
         assert_eq!(hear_on_lan(&"ab".repeat(16), &[ADDR], None), None);
     }
 
@@ -478,16 +768,62 @@ mod tests {
         };
         assert_eq!(addrs, ["192.168.1.7:4000".parse::<SocketAddr>().unwrap()]);
         // The test network is on the loopback interface.
-        assert!(hear(id(1), true, &label(2), &[loopback], None).is_some());
+        let heard = instance(&label(2), &[loopback], None);
+        assert!(hear(id(1), true, &Index::default(), &heard).is_some());
+    }
+
+    #[test]
+    fn a_holder_of_the_id_reads_the_beacon_and_gets_the_name_and_the_real_addresses() {
+        let heard = instance_of_beacon(2, "  Mum's\u{7} laptop ", 7);
+        let index = Index::new([id(2)], 7);
+        assert_eq!(
+            hear(id(1), false, &index, &heard),
+            Some(Heard::Seen {
+                id: id(2),
+                label: beacon::label(&id(2), 7),
+                name: Some("Mum's laptop".to_owned()),
+                // The IPs are announced, the ports come from the seal.
+                addrs: lan_addrs(),
+                sealed: true,
+            })
+        );
+        // Also from the epoch before and after: the clocks of two Devices differ a little.
+        for listener_epoch in [6, 8] {
+            let index = Index::new([id(2)], listener_epoch);
+            assert!(hear(id(1), false, &index, &heard).is_some(), "epoch {listener_epoch}");
+        }
+    }
+
+    #[test]
+    fn a_device_without_the_id_sees_nothing_of_the_beacon() {
+        let heard = instance_of_beacon(2, "Mum's laptop", 7);
+        // Holding other IDs, or none, recognises nothing...
+        assert_eq!(hear(id(1), false, &Index::default(), &heard), None);
+        assert_eq!(hear(id(1), false, &Index::new([id(3), id(4)], 7), &heard), None);
+        // ...and nor does a listener whose clock is far from the announcer's.
+        assert_eq!(hear(id(1), false, &Index::new([id(2)], 9), &heard), None);
+        // A forged beacon under the right label, without the key, does not open.
+        let forged = Instance { beacon: Some("x".repeat(251)), ..instance_of_beacon(2, "x", 7) };
+        assert_eq!(hear(id(1), false, &Index::new([id(2)], 7), &forged), None);
+        let stripped = Instance { beacon: None, ..instance_of_beacon(2, "x", 7) };
+        assert_eq!(hear(id(1), false, &Index::new([id(2)], 7), &stripped), None);
+    }
+
+    #[test]
+    fn a_beacon_that_expires_has_gone_under_its_label() {
+        let label = beacon::label(&id(2), 7);
+        let expired = instance(&label, &[], None);
+        assert_eq!(hear(id(1), false, &Index::default(), &expired), Some(Heard::Gone { label }));
     }
 
     fn seen(n: u8, name: Option<&str>) -> Heard {
-        hear(id(0), false, &label(n), &[ADDR], name).unwrap()
+        hear(id(0), false, &Index::default(), &instance(&label(n), &[ADDR], name)).unwrap()
     }
 
     fn seen_by_key(key: [u8; 32]) -> Heard {
         let device = DeviceId::from_endpoint_id(iroh::SecretKey::from_bytes(&key).public());
-        hear(id(0), false, &device.to_string(), &[ADDR], None).unwrap()
+        let heard = instance(&plain_label(device), &[ADDR], None);
+        hear(id(0), false, &Index::default(), &heard).unwrap()
     }
 
     #[test]
@@ -497,10 +833,28 @@ mod tests {
         assert!(!table.apply(&seen(2, Some("Dad"))), "heard again, unchanged");
         assert!(table.apply(&seen(2, Some("Dad's PC"))), "renamed");
         assert!(table.apply(&seen(3, None)), "another Device");
-        assert!(table.apply(&Heard::Gone(id(2))), "one left");
-        assert!(!table.apply(&Heard::Gone(id(2))), "already gone");
-        assert!(!table.apply(&Heard::Gone(id(9))), "never seen");
+        assert!(table.apply(&Heard::Gone { label: label(2) }), "one left");
+        assert!(!table.apply(&Heard::Gone { label: label(2) }), "already gone");
+        assert!(!table.apply(&Heard::Gone { label: label(9) }), "never seen");
         assert_eq!(table.snapshot(), [NearbyDevice { id: id(3), name: None }]);
+    }
+
+    #[test]
+    fn a_device_that_moved_to_a_new_label_has_not_gone_when_the_old_one_expires() {
+        let index = Index::new([id(2)], 7);
+        let (old, new) = (beacon::label(&id(2), 6), beacon::label(&id(2), 7));
+        let hear_beacon = |epoch| hear(id(1), false, &index, &instance_of_beacon(2, "Mum", epoch));
+        let mut table = Table::default();
+        assert!(table.apply(&hear_beacon(6).unwrap()));
+        // The next epoch's beacon is the same Device: not a change to the list.
+        assert!(!table.apply(&hear_beacon(7).unwrap()));
+        assert_eq!(table.id_with_label(&new), Some(id(2)));
+        assert_eq!(table.id_with_label(&old), None);
+        // The old label expiring does not remove it; the current one expiring does.
+        assert!(!table.apply(&Heard::Gone { label: old }));
+        assert_eq!(table.snapshot().len(), 1);
+        assert!(table.apply(&Heard::Gone { label: new }));
+        assert!(table.snapshot().is_empty());
     }
 
     #[test]
@@ -520,8 +874,8 @@ mod tests {
         assert!(!table.apply(&device(0)));
         assert_eq!(table.snapshot().len(), MAX_NEARBY);
         // Once one leaves there is room again.
-        let Heard::Seen { id: first, .. } = device(0) else { unreachable!() };
-        assert!(table.apply(&Heard::Gone(first)));
+        let Heard::Seen { label: first, .. } = device(0) else { unreachable!() };
+        assert!(table.apply(&Heard::Gone { label: first }));
         assert!(table.apply(&device(MAX_NEARBY as u16)));
     }
 

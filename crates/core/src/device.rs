@@ -635,6 +635,7 @@ impl Device {
         if !sh.db.insert_contact(contact.clone()).await? {
             return Err(Error::AlreadyContact(id));
         }
+        sh.discovery.contacts_changed();
         Ok(contact)
     }
 
@@ -666,6 +667,7 @@ impl Device {
         if !self.inner.shared.db.delete_contact(id).await? {
             return Err(Error::UnknownContact(id));
         }
+        self.inner.shared.discovery.contacts_changed();
         Ok(())
     }
 
