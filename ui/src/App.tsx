@@ -16,6 +16,7 @@ import { VersionNotices } from "./VersionNotices";
 import { peerName, sortedContacts } from "./contacts";
 import { t, type MessageKey } from "./i18n";
 import { FIREWALL_DOCS_URL, NEARBY_WAIT_MS, applyNearby, nearbyStrangers } from "./nearby";
+import { parseShareLink, type Shared } from "./shareLink";
 import { applyEvent, baseName, fingerprint, listItems, noTransfers, pendingOffer } from "./transfers";
 import { applyVersionNotices } from "./versions";
 
@@ -43,6 +44,8 @@ export function App({ api = tauriApi }: AppProps) {
   const [adding, setAdding] = useState(false);
   // A Nearby Device being saved as a Contact: its ID is already known.
   const [saving, setSaving] = useState<{ id: string; name: string | null } | null>(null);
+  // A link the user opened: the Add Contact dialog with its Device ID and suggested name in.
+  const [linked, setLinked] = useState<Shared | null>(null);
   const [removing, setRemoving] = useState<Contact | null>(null);
   // History is narrowed to this Device (from a Contact's History link, or the filter).
   const [historyDevice, setHistoryDevice] = useState<string | null>(null);
@@ -69,6 +72,7 @@ export function App({ api = tauriApi }: AppProps) {
     sending !== null ||
     adding ||
     saving !== null ||
+    linked !== null ||
     removing !== null ||
     clearing ||
     offer !== undefined ||
@@ -120,6 +124,23 @@ export function App({ api = tauriApi }: AppProps) {
             setQuit((q) => ({ active: q?.active ?? 0, saving: true }));
             break;
         }
+      })
+      .then((stop) => (live ? (unlisten = stop) : stop()));
+    return () => {
+      live = false;
+      unlisten?.();
+    };
+  }, [api]);
+
+  useEffect(() => {
+    let live = true;
+    let unlisten: (() => void) | undefined;
+    api
+      .onOpenLink((url) => {
+        // A link that is not a share link still opens the dialog, to say what is wrong with it.
+        setAdding(false);
+        setSaving(null);
+        setLinked(parseShareLink(url) ?? { id: url, name: null });
       })
       .then((stop) => (live ? (unlisten = stop) : stop()));
     return () => {
@@ -321,6 +342,15 @@ export function App({ api = tauriApi }: AppProps) {
           prefilled={saving}
           onAdded={loadContacts}
           onClose={() => setSaving(null)}
+        />
+      )}
+      {linked && (
+        <AddContactDialog
+          key={`${linked.id} ${linked.name}`}
+          api={api}
+          suggested={linked}
+          onAdded={loadContacts}
+          onClose={() => setLinked(null)}
         />
       )}
       {removing && (

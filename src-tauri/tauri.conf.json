@@ -23,6 +23,9 @@
       "csp": "default-src 'self'; connect-src ipc: http://ipc.localhost; style-src 'self' 'unsafe-inline'"
     }
   },
+  "plugins": {
+    "deep-link": { "desktop": { "schemes": ["bhayanakshare"] } }
+  },
   "bundle": {
     "active": true,
     "targets": "all",

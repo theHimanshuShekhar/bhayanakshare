@@ -5,6 +5,17 @@ import type { Api, Contact, DeviceEvent, Role, ShellEvent, Visibility } from "./
 import type { HistoryEntry, NearbyDevice, TransferRecord, TransferState } from "./bindings";
 import { NEARBY_WAIT_MS } from "./nearby";
 
+// The camera cannot be tested here (QrScanner.test.tsx covers how it is read): this stand-in
+// "reads" whichever text a test chooses.
+const camera = vi.hoisted(() => ({ sees: "" }));
+vi.mock("./QrScanner", () => ({
+  QrScanner: ({ onDecoded }: { onDecoded: (text: string) => void }) => (
+    <button type="button" onClick={() => onDecoded(camera.sees)}>
+      camera sees a code
+    </button>
+  ),
+}));
+
 afterEach(cleanup);
 
 const MY_ID = "A".repeat(52);
@@ -37,6 +48,7 @@ function contact(over: Partial<Contact> = {}): Contact {
 function fakeApi(overrides: Partial<Api> = {}, initialContacts: Contact[] = []) {
   let handler: (event: DeviceEvent) => void = () => {};
   let shellHandler: (event: ShellEvent) => void = () => {};
+  let linkHandler: (url: string) => void = () => {};
   let autostart = true;
   let seq = 0;
   let contacts = initialContacts;
@@ -65,6 +77,7 @@ function fakeApi(overrides: Partial<Api> = {}, initialContacts: Contact[] = []) 
     declineOffer: vi.fn(() => Promise.resolve(null)),
     cancelTransfer: vi.fn(() => Promise.resolve(null)),
     resendTransfer: vi.fn(() => Promise.resolve("cd".repeat(16))),
+    deviceName: vi.fn(() => Promise.resolve("Alice's desktop")),
     visibility: vi.fn(() => Promise.resolve(visibility)),
     setVisibility: vi.fn((v: Visibility) => {
       visibility = v;
@@ -110,10 +123,16 @@ function fakeApi(overrides: Partial<Api> = {}, initialContacts: Contact[] = []) 
       shellHandler = h;
       return Promise.resolve(() => {});
     },
+    onOpenLink: (h: (url: string) => void) => {
+      linkHandler = h;
+      return Promise.resolve(() => {});
+    },
     ...overrides,
   } satisfies Api;
   /** The shell says something: a second launch, a clicked notification, Quit. */
   const shell = (event: ShellEvent) => act(() => shellHandler(event));
+  /** The user opens a link that the system hands to this app. */
+  const openLink = (url: string) => act(() => linkHandler(url));
   const push = (event: Unstamped) =>
     act(() => handler({ seq: seq++, at: 1_000 * seq, ...event } as DeviceEvent));
   /** What an Offer holds when it is not just `photo.jpg`: a folder, several files, links skipped,
@@ -158,7 +177,7 @@ function fakeApi(overrides: Partial<Api> = {}, initialContacts: Contact[] = []) 
   const setHistory = (entries: HistoryEntry[]) => {
     historyEntries = entries;
   };
-  return { api, push, transfer, nearby, shell, setHistory, historyReads };
+  return { api, push, transfer, nearby, shell, openLink, setHistory, historyReads };
 }
 
 /** Renders the app and waits until it is listening for events. */
@@ -187,6 +206,25 @@ describe("My ID", () => {
     fireEvent.click(screen.getByRole("button", { name: "Copy" }));
     expect(await screen.findByText("Copied")).toBeTruthy();
     expect(device.api.copyText).toHaveBeenCalledWith(MY_ID);
+  });
+
+  it("shows the share link with this Device's name, and its QR code", async () => {
+    await start();
+    const link = `bhayanakshare://add/${MY_ID}?name=Alice's%20desktop`;
+    expect(screen.getByText(link)).toBeTruthy();
+    expect(screen.getByRole("img", { name: "QR code of the share link" })).toBeTruthy();
+  });
+
+  it("copies the share link and says so", async () => {
+    const device = await start();
+    fireEvent.click(screen.getByRole("button", { name: "Copy link" }));
+    expect(await screen.findByText("Copied")).toBeTruthy();
+    expect(device.api.copyText).toHaveBeenCalledWith(`bhayanakshare://add/${MY_ID}?name=Alice's%20desktop`);
+  });
+
+  it("shares a link without a name when the name cannot be read", async () => {
+    await start(fakeApi({ deviceName: () => Promise.reject(new Error("no name")) }));
+    expect(screen.getByText(`bhayanakshare://add/${MY_ID}`)).toBeTruthy();
   });
 
   it("says when the ID could not be copied", async () => {
@@ -1106,6 +1144,133 @@ describe("Nearby Devices", () => {
     fireEvent.keyDown(screen.getByRole("dialog"), { key: "Escape" });
     expect(screen.queryByRole("dialog")).toBeNull();
     expect(device.api.addContact).not.toHaveBeenCalled();
+  });
+});
+
+describe("share links, QR codes and deep links", () => {
+  const link = (id = PEER_ID, name = "Dad's PC") => `bhayanakshare://add/${id}?name=${encodeURIComponent(name)}`;
+  const nameField = () => screen.getByLabelText("Name (optional)") as HTMLInputElement;
+  const idField = () => screen.getByLabelText("Device ID") as HTMLInputElement;
+
+  it("fills in the Device ID and the name from a pasted link, to be checked as usual", async () => {
+    const device = await start();
+    fireEvent.click(screen.getByRole("button", { name: "Contacts" }));
+    fireEvent.click(screen.getByRole("button", { name: "Add Contact…" }));
+    fireEvent.change(idField(), { target: { value: ` ${link()}\n` } });
+    expect(idField().value).toBe(PEER_ID);
+    expect(nameField().value).toBe("Dad's PC");
+
+    fireEvent.click(screen.getByRole("button", { name: "Next" }));
+    expect(within(screen.getByRole("dialog")).getByText("K3QF-7XNA")).toBeTruthy();
+    expect(device.api.addContact).not.toHaveBeenCalled();
+  });
+
+  it("keeps a name the user typed when a link is pasted after it", async () => {
+    const device = await start();
+    fireEvent.click(screen.getByRole("button", { name: "Contacts" }));
+    fireEvent.click(screen.getByRole("button", { name: "Add Contact…" }));
+    fireEvent.change(nameField(), { target: { value: "Dad" } });
+    fireEvent.change(idField(), { target: { value: link() } });
+    fireEvent.click(screen.getByRole("button", { name: "Next" }));
+    fireEvent.click(screen.getByRole("button", { name: "It matches, add Contact" }));
+    await waitFor(() => expect(device.api.addContact).toHaveBeenCalledWith(PEER_ID, "Dad"));
+  });
+
+  it("opens Add Contact with the fields filled in when a link is opened, and the name can be changed", async () => {
+    const device = await start();
+    await device.openLink(link());
+
+    const dialog = screen.getByRole("dialog", { name: "Add Contact" });
+    expect(idField().value).toBe(PEER_ID);
+    expect(nameField().value).toBe("Dad's PC");
+
+    // The suggested name is only a suggestion: change it, and the Fingerprint still has to be checked.
+    fireEvent.change(nameField(), { target: { value: "Dad" } });
+    fireEvent.click(within(dialog).getByRole("button", { name: "Next" }));
+    expect(device.api.addContact).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole("button", { name: "It matches, add Contact" }));
+    await waitFor(() => expect(device.api.addContact).toHaveBeenCalledWith(PEER_ID, "Dad"));
+  });
+
+  it("opens the dialog in place of an Add Contact dialog that is already open", async () => {
+    const device = await start();
+    fireEvent.click(screen.getByRole("button", { name: "Contacts" }));
+    fireEvent.click(screen.getByRole("button", { name: "Add Contact…" }));
+    fireEvent.change(idField(), { target: { value: "K3QF" } });
+    await device.openLink(link());
+    expect(screen.getAllByRole("dialog")).toHaveLength(1);
+    expect(idField().value).toBe(PEER_ID);
+  });
+
+  it("says what is wrong when the link that was opened is not a share link", async () => {
+    const device = await start();
+    await device.openLink(`bhayanakshare://add/${PEER_ID.slice(1)}?name=Eve`);
+    expect(screen.getByRole("alert").textContent).toContain("not a Device ID or a share link");
+    expect((screen.getByRole("button", { name: "Next" }) as HTMLButtonElement).disabled).toBe(true);
+  });
+
+  it("does not add anyone just because a link was opened", async () => {
+    const device = await start();
+    await device.openLink(link());
+    fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+    expect(screen.queryByRole("dialog")).toBeNull();
+    expect(device.api.addContact).not.toHaveBeenCalled();
+  });
+
+  it("takes a pasted link anywhere a Device ID is accepted", async () => {
+    const device = await start();
+    fireEvent.click(screen.getByRole("button", { name: "Send to ID…" }));
+    fireEvent.change(idField(), { target: { value: link() } });
+    expect(idField().value).toBe(PEER_ID);
+    fireEvent.click(screen.getByRole("button", { name: "Choose files…" }));
+    await waitFor(() => expect(device.api.sendFiles).toHaveBeenCalledWith(PEER_ID, ["/tmp/photo.jpg"]));
+  });
+
+  describe("scanning a QR code", () => {
+    const scan = async (sees: string) => {
+      camera.sees = sees;
+      fireEvent.click(screen.getByRole("button", { name: "Contacts" }));
+      fireEvent.click(screen.getByRole("button", { name: "Add Contact…" }));
+      fireEvent.click(screen.getByRole("button", { name: "Scan QR code…" }));
+      fireEvent.click(screen.getByRole("button", { name: "camera sees a code" }));
+    };
+
+    it("fills in the fields from a share link, and stops looking", async () => {
+      await start();
+      await scan(link());
+      expect(idField().value).toBe(PEER_ID);
+      expect(nameField().value).toBe("Dad's PC");
+      expect(screen.queryByRole("button", { name: "camera sees a code" })).toBeNull();
+    });
+
+    it("takes a bare Device ID too", async () => {
+      await start();
+      await scan(PEER_ID);
+      expect(idField().value).toBe(PEER_ID);
+      expect(nameField().value).toBe("");
+    });
+
+    it("says so, and keeps looking, when the code is something else", async () => {
+      await start();
+      await scan("https://example.com/");
+      expect(screen.getByRole("alert").textContent).toContain("not a BhayanakShare share link");
+      expect(idField().value).toBe("");
+      expect(screen.getByRole("button", { name: "camera sees a code" })).toBeTruthy();
+    });
+
+    it("can be stopped, and goes off when the user moves on", async () => {
+      await start();
+      await scan("nonsense");
+      fireEvent.click(screen.getByRole("button", { name: "Stop scanning" }));
+      expect(screen.queryByRole("button", { name: "camera sees a code" })).toBeNull();
+
+      fireEvent.click(screen.getByRole("button", { name: "Scan QR code…" }));
+      fireEvent.change(idField(), { target: { value: PEER_ID } });
+      fireEvent.click(screen.getByRole("button", { name: "Next" }));
+      expect(screen.queryByRole("button", { name: "camera sees a code" })).toBeNull();
+      fireEvent.click(screen.getByRole("button", { name: "Back" }));
+      expect(screen.queryByRole("button", { name: "camera sees a code" })).toBeNull();
+    });
   });
 });
 

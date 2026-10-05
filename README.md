@@ -46,9 +46,17 @@ BHAYANAKSHARE_DATA_DIR=/tmp/bhs-a/data BHAYANAKSHARE_SAVE_DIR=/tmp/bhs-a/save pn
 BHAYANAKSHARE_DATA_DIR=/tmp/bhs-b/data BHAYANAKSHARE_SAVE_DIR=/tmp/bhs-b/save target/debug/bhayanakshare
 ```
 
-An instance given `BHAYANAKSHARE_DATA_DIR` is treated as a separate install made to run beside another: it skips the single-instance check and does not register itself to start at login. (Without the variable, a second launch focuses the running window instead and hands it any files named on the command line.)
+An instance given `BHAYANAKSHARE_DATA_DIR` is treated as a separate install made to run beside another: it skips the single-instance check and does not register itself to start at login or as the handler of `bhayanakshare://` links. (Without the variable, a second launch focuses the running window instead and hands it any files named on the command line.)
 
 Copy the Device ID from one instance's "My ID", choose "Send to ID…" in the other, and paste it. Without the variables the data lives in the platform's app data folder and files are saved to `~/Downloads/BhayanakShare`.
+
+### Share links
+
+"My ID" shows `bhayanakshare://add/<Device ID>?name=<Device Name>` and its QR code. The link is made and read in the UI (`ui/src/shareLink.ts`), the one place that decides what text counts as a Device ID: a link is accepted wherever a Device ID is pasted, and the Rust commands still take the bare ID. Only the Device ID decides whether a link is valid; the name is a suggestion, cleaned like a Device Name and dropped if it cannot be read. It fills the name field of Add Contact, never the identity: the Fingerprint check is unchanged.
+
+The shell registers the scheme with the `deep-link` plugin (`tauri.conf.json`), and on Linux calls `register_all()` at every start so a moved AppImage registers itself again. The UI gets opened links, and the one that started the app, from the plugin's JavaScript API. To try one without a second machine, start the app without `BHAYANAKSHARE_DATA_DIR` and run `xdg-open 'bhayanakshare://add/<Device ID>?name=Test'`.
+
+"Scan QR code…" in Add Contact uses the webcam (`getUserMedia`, decoded by `jsqr`); the QR code is drawn by `uqr`. On Linux, WebKitGTK keeps the camera off, so the shell turns it on for the main window and allows video-only requests.
 
 ## Tests
 
