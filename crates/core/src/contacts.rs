@@ -51,6 +51,18 @@ impl KnownAddress {
         }
     }
 
+    /// Where to dial `id` from this, or `None` while nothing is known (or what is known cannot be
+    /// read back).
+    pub(crate) fn to_endpoint_addr(&self, id: DeviceId) -> Option<iroh::EndpointAddr> {
+        let relay = self.relay_url.as_deref().and_then(|url| url.parse::<iroh::RelayUrl>().ok());
+        let addrs = relay
+            .map(iroh::TransportAddr::Relay)
+            .into_iter()
+            .chain(self.direct.iter().copied().map(iroh::TransportAddr::Ip))
+            .collect::<Vec<_>>();
+        (!addrs.is_empty()).then(|| iroh::EndpointAddr::from_parts(id.endpoint_id(), addrs))
+    }
+
     /// The paths an established connection is using.
     pub(crate) fn of_connection(conn: &iroh::endpoint::Connection) -> KnownAddress {
         let mut seen = KnownAddress::default();
@@ -117,6 +129,23 @@ mod tests {
         assert_eq!(contact.display_name(), Some("DESKTOP-1"));
         contact.nickname = Some("Mum".into());
         assert_eq!(contact.display_name(), Some("Mum"));
+    }
+
+    #[test]
+    fn a_known_address_is_dialled_by_its_relay_and_direct_addresses() {
+        let id = DeviceId::from_endpoint_id(iroh::SecretKey::from_bytes(&[6; 32]).public());
+        assert_eq!(KnownAddress::default().to_endpoint_addr(id), None);
+
+        let wan: SocketAddr = "203.0.113.9:5000".parse().unwrap();
+        let known = KnownAddress { relay_url: Some("https://relay.example./".into()), direct: vec![wan] };
+        let addr = known.to_endpoint_addr(id).unwrap();
+        assert_eq!(addr.id, id.endpoint_id());
+        assert_eq!(addr.relay_urls().map(|url| url.to_string()).collect::<Vec<_>>(), ["https://relay.example./"]);
+        assert_eq!(addr.ip_addrs().copied().collect::<Vec<_>>(), [wan]);
+
+        // A relay URL that no longer parses is dropped, not fatal.
+        let broken = KnownAddress { relay_url: Some("not a url".into()), direct: vec![] };
+        assert_eq!(broken.to_endpoint_addr(id), None);
     }
 
     #[test]

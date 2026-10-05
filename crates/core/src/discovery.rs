@@ -578,7 +578,7 @@ async fn ingest(sh: Arc<Shared>, mut rx: mpsc::UnboundedReceiver<Instance>) {
             if learned.get(id) != Some(name) {
                 let result = sh.db.update_contact_connection(*id, KnownAddress::default(), Some(name.clone()));
                 match result.await {
-                    Ok(()) => {
+                    Ok(_) => {
                         learned.insert(*id, name.clone());
                     }
                     Err(e) => tracing::warn!("could not record a Contact's name: {e}"),

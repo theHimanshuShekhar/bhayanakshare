@@ -24,6 +24,7 @@ use crate::{
     contacts::{Contact, KnownAddress, clean_name},
     db::{Db, Scope, TransferRecord, Unfinished},
     device_name,
+    dht::{self, PublicDht},
     discovery::{Discovery, NearbyDevice, Visibility},
     error::Error,
     event::{EventKind, EventSink, EventStream, PreparingEvent, ProgressEvent, TransferEvent},
@@ -49,6 +50,10 @@ pub enum Network {
     /// LAN discovery tests: like `Localhost`, but Devices also find each other over multicast
     /// on the loopback interface, as Devices on a real LAN do.
     LocalhostLan,
+    /// Tests of what a relay does to a Transfer: no IP transports at all, so every packet goes
+    /// through the relay at this URL, which is also the only lookup there is: a Device is
+    /// dialled by the ID and relay URL in its [`DeviceAddr`].
+    Relay(&'static str),
 }
 
 pub struct DeviceConfig {
@@ -63,25 +68,27 @@ pub struct DeviceConfig {
     pub free_space: Arc<dyn FreeSpace>,
 }
 
-/// How to reach a Device: its ID, plus direct socket addresses if they are known. The ID alone
-/// is enough when discovery can resolve it.
+/// How to reach a Device: its ID, plus its relay and direct socket addresses if they are known.
+/// The ID alone is enough when discovery can resolve it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DeviceAddr {
     pub id: DeviceId,
     pub direct: Vec<SocketAddr>,
+    pub relay_url: Option<String>,
 }
 
 impl From<DeviceId> for DeviceAddr {
     fn from(id: DeviceId) -> Self {
-        Self { id, direct: Vec::new() }
+        Self { id, direct: Vec::new(), relay_url: None }
     }
 }
 
 impl DeviceAddr {
     pub(crate) fn to_endpoint_addr(&self) -> EndpointAddr {
+        let relay = self.relay_url.as_deref().and_then(|url| url.parse::<iroh::RelayUrl>().ok());
         EndpointAddr::from_parts(
             self.id.endpoint_id(),
-            self.direct.iter().copied().map(TransportAddr::Ip),
+            relay.map(TransportAddr::Relay).into_iter().chain(self.direct.iter().copied().map(TransportAddr::Ip)),
         )
     }
 }
@@ -218,6 +225,11 @@ pub(crate) struct Shared {
     pub batch_slots: Mutex<HashMap<BatchId, Weak<Semaphore>>>,
     /// Addresses of other Devices this Device was told about, for dialling them.
     pub lookup: MemoryLookup,
+    /// Where each Contact was last reached, as the database has it, for dialling a Contact when
+    /// no other lookup finds it. iroh asks this alongside n0 DNS and the DHT.
+    pub contact_addrs: MemoryLookup,
+    /// Whether this Device publishes to and looks things up on the Mainline DHT.
+    pub public_dht: PublicDht,
     pub tasks: TaskTracker,
     /// Cancelled on shutdown; Transfer tasks stop, cleanup tasks run to the end.
     pub cancel: CancellationToken,
@@ -304,8 +316,22 @@ impl Shared {
         peer_name: Option<String>,
     ) {
         let seen = KnownAddress::of_connection(conn);
-        if let Err(e) = self.db.update_contact_connection(peer, seen, peer_name).await {
-            tracing::warn!("could not record a Contact's address and name: {e}");
+        match self.db.update_contact_connection(peer, seen, peer_name).await {
+            Ok(Some(known)) => self.note_contact_address(peer, &known),
+            Ok(None) => {}
+            Err(e) => tracing::warn!("could not record a Contact's address and name: {e}"),
+        }
+    }
+
+    /// Has dialling find `peer` at `known`, its last known address, when nothing else says.
+    fn note_contact_address(&self, peer: DeviceId, known: &KnownAddress) {
+        match known.to_endpoint_addr(peer) {
+            Some(addr) => {
+                self.contact_addrs.set_endpoint_info(addr);
+            }
+            None => {
+                self.contact_addrs.remove_endpoint_info(peer.endpoint_id());
+            }
         }
     }
 
@@ -497,18 +523,37 @@ impl Device {
         let blobs: iroh_blobs::api::Store = (**store).clone();
 
         let lookup = MemoryLookup::new();
-        let endpoint = match network {
+        let contact_addrs = MemoryLookup::with_provenance("contact");
+        for contact in db.contacts().await? {
+            if let Some(addr) = contact.last_known_address.to_endpoint_addr(contact.id) {
+                contact_addrs.set_endpoint_info(addr);
+            }
+        }
+        let public_dht = PublicDht::new(secret.clone(), dht::load(&db).await);
+        let mut builder = match network {
+            // The preset brings n0 DNS; the DHT is added below.
             Network::Internet => Endpoint::builder(presets::N0),
             Network::Localhost | Network::LocalhostLan => Endpoint::builder(presets::Minimal)
                 .relay_mode(RelayMode::Disabled)
                 .clear_ip_transports()
                 .bind_addr("127.0.0.1:0")
                 .map_err(|e| Error::network("binding", e))?,
+            Network::Relay(url) => {
+                let url: iroh::RelayUrl = url.parse().map_err(|e| Error::network("the relay URL", e))?;
+                Endpoint::builder(presets::Minimal)
+                    .relay_mode(RelayMode::Custom(url.into()))
+                    .clear_ip_transports()
+            }
         }
         .address_lookup(lookup.clone())
-        .secret_key(secret)
-        .bind()
-        .await
+        .address_lookup(contact_addrs.clone());
+        if network == Network::Internet {
+            builder = builder.address_lookup(public_dht.lookup());
+        }
+        let endpoint = builder
+            .secret_key(secret)
+            .bind()
+            .await
         .map_err(|e| Error::network("binding the network endpoint", e))?;
 
         let (events, stream) = EventSink::new();
@@ -531,6 +576,8 @@ impl Device {
             resumers: Mutex::default(),
             batch_slots: Mutex::default(),
             lookup,
+            contact_addrs,
+            public_dht,
             tasks: TaskTracker::new(),
             cancel: CancellationToken::new(),
         });
@@ -541,7 +588,7 @@ impl Device {
             .accept(protocol::ALPN, receiver::Handler::new(shared.clone()))
             .accept(iroh_blobs::ALPN, BlobsProtocol::new(&blobs, Some(gate.events())))
             .spawn();
-        if network != Network::Localhost {
+        if matches!(network, Network::Internet | Network::LocalhostLan) {
             shared.discovery.start(&shared).await;
         }
 
@@ -554,7 +601,12 @@ impl Device {
     }
     /// This Device's ID plus the direct addresses it is listening on.
     pub fn addr(&self) -> DeviceAddr {
-        DeviceAddr { id: self.device_id(), direct: direct_addrs(&self.inner.shared.endpoint) }
+        let endpoint = &self.inner.shared.endpoint;
+        DeviceAddr {
+            id: self.device_id(),
+            direct: direct_addrs(endpoint),
+            relay_url: endpoint.addr().relay_urls().next().map(|url| url.to_string()),
+        }
     }
 
     /// Offers the file or folder at `path` to the Device at `to`. Returns once the Transfer
@@ -929,12 +981,34 @@ impl Device {
         if !self.inner.shared.db.delete_contact(id).await? {
             return Err(Error::UnknownContact(id));
         }
+        self.inner.shared.contact_addrs.remove_endpoint_info(id.endpoint_id());
         self.inner.shared.discovery.contacts_changed();
         Ok(())
     }
 
     async fn contact(&self, id: DeviceId) -> Result<Contact, Error> {
         self.inner.shared.db.contact(id).await?.ok_or(Error::UnknownContact(id))
+    }
+
+    /// Whether this Device uses the public Mainline DHT, besides n0 DNS, to publish its address
+    /// and to find its Contacts'. On until changed.
+    pub fn public_dht(&self) -> bool {
+        self.inner.shared.public_dht.enabled()
+    }
+
+    /// Turns the public DHT on or off, and applies it straight away: off, nothing more is
+    /// published to it or looked up on it (what it holds lapses by itself within hours); on, the
+    /// address is published again at once. Contacts are still reached through n0 DNS and the
+    /// addresses last seen for them. The setting is kept either way, but only a Device on the
+    /// internet has a DHT to use.
+    pub async fn set_public_dht(&self, on: bool) -> Result<(), Error> {
+        let sh = &self.inner.shared;
+        if sh.cancel.is_cancelled() {
+            return Err(Error::ShuttingDown);
+        }
+        sh.db.set_setting(dht::SETTING, if on { "1" } else { "0" }).await?;
+        sh.public_dht.set_enabled(on);
+        Ok(())
     }
 
     /// A persisted setting, if it has been set.

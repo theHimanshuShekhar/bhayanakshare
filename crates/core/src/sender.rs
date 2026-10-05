@@ -35,7 +35,7 @@
 //! A Receiver gives its slot up when it loses its connection (it may be gone for hours) and
 //! takes one again before it is answered `ResumeOk`.
 
-use std::{collections::HashMap, io::Write, path::PathBuf, sync::Arc};
+use std::{collections::HashMap, io::Write, path::PathBuf, sync::Arc, time::Duration};
 
 use iroh::EndpointId;
 use iroh_blobs::{
@@ -294,13 +294,23 @@ pub(crate) fn recover(
     });
 }
 
-/// Dials the Receiver and exchanges `Hello`.
+/// Why a Transfer fails when no address of the Receiver works: every lookup came back empty or
+/// the addresses found got no answer.
+const UNREACHABLE: &str = "Could not reach the receiving Device. It may be offline, or one of you may have no internet connection.";
+
+/// How long to try the addresses found for the Receiver before giving up on it: a Device none of
+/// the lookups can place fails at once, but a stale address (a Contact that has since gone
+/// offline) gets no answer at all.
+const DIAL_TIMEOUT: Duration = Duration::from_secs(20);
+
+/// Dials the Receiver and exchanges `Hello`. The Receiver is found by the addresses in `to`,
+/// the last known address of a Contact, n0 DNS and the DHT, all at once.
 async fn connect(sh: &Shared, to: &DeviceAddr) -> Result<(Session, Option<String>), Failure> {
-    let conn = sh
-        .endpoint
-        .connect(to.to_endpoint_addr(), protocol::ALPN)
+    let dial = sh.endpoint.connect(to.to_endpoint_addr(), protocol::ALPN);
+    let conn = tokio::time::timeout(DIAL_TIMEOUT, dial)
         .await
-        .map_err(fail("Could not reach the receiving Device."))?;
+        .map_err(|_| Failure::with(UNREACHABLE, "no answer from any address"))?
+        .map_err(fail(UNREACHABLE))?;
     let (mut send, recv) = conn
         .open_bi()
         .await
@@ -943,8 +953,6 @@ async fn replace_stale(
 
 #[cfg(test)]
 mod tests {
-    use std::time::Duration;
-
     use iroh_blobs::store::mem::MemStore;
 
     use super::*;

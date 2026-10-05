@@ -351,6 +351,7 @@ async fn offer_seen_by_a_raw_receiver(alice: &TestDevice, paths: &[PathBuf]) -> 
     let to = bhayanakshare_core::DeviceAddr {
         id: device_id.parse().unwrap(),
         direct: endpoint.bound_sockets(),
+        relay_url: None,
     };
     let id = alice.device.send(to, paths).await.unwrap();
     let conn = endpoint.accept().await.expect("Alice dials").await.unwrap();

@@ -6,6 +6,7 @@ pub mod clock;
 mod contacts;
 mod db;
 mod device;
+mod dht;
 mod device_name;
 mod discovery;
 mod error;

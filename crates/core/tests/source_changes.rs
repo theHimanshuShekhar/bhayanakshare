@@ -386,7 +386,7 @@ impl RawReceiver {
 
     fn addr(&self) -> DeviceAddr {
         let id = data_encoding::BASE32_NOPAD.encode(self.endpoint.id().as_bytes());
-        DeviceAddr { id: id.parse::<DeviceId>().unwrap(), direct: self.endpoint.bound_sockets() }
+        DeviceAddr { id: id.parse::<DeviceId>().unwrap(), direct: self.endpoint.bound_sockets(), relay_url: None }
     }
 
     /// Takes the Sender's call and reads the Offer it makes.

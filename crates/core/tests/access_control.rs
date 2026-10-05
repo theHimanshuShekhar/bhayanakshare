@@ -87,6 +87,7 @@ impl RawReceiver {
         let to = DeviceAddr {
             id: device_id.parse::<DeviceId>().unwrap(),
             direct: endpoint.bound_sockets(),
+            relay_url: None,
         };
         let id = alice.device.send_file(to, &path).await.unwrap();
 
