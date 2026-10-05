@@ -9,3 +9,13 @@ default-members = ["crates/core"]
 version = "0.1.0"
 edition = "2024"
 license = "MIT"
+
+# Dev/test binaries are large because every integration test statically links the
+# whole Tauri shell. Full DWARF debuginfo pushed individual test binaries past
+# 400 MB and the shared target dir past 70 GB. `line-tables-only` keeps usable
+# backtraces at a fraction of the size; disabling incremental stops the stale
+# incremental trees from accumulating under the shared target dir.
+[profile.dev]
+debug = "line-tables-only"
+incremental = false
+split-debuginfo = "unpacked"
