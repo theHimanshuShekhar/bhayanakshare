@@ -203,7 +203,7 @@ describe("My ID", () => {
 
   it("copies the Device ID and says so", async () => {
     const device = await start();
-    fireEvent.click(screen.getByRole("button", { name: "Copy" }));
+    fireEvent.click(screen.getByRole("button", { name: "Copy ID" }));
     expect(await screen.findByText("Copied")).toBeTruthy();
     expect(device.api.copyText).toHaveBeenCalledWith(MY_ID);
   });
@@ -229,7 +229,7 @@ describe("My ID", () => {
 
   it("says when the ID could not be copied", async () => {
     await start(fakeApi({ copyText: () => Promise.reject(new Error("no clipboard")) }));
-    fireEvent.click(screen.getByRole("button", { name: "Copy" }));
+    fireEvent.click(screen.getByRole("button", { name: "Copy ID" }));
     expect((await screen.findByText(/Could not copy/)).textContent).toContain("by hand");
   });
 
@@ -1202,11 +1202,90 @@ describe("share links, QR codes and deep links", () => {
     expect(idField().value).toBe(PEER_ID);
   });
 
-  it("says what is wrong when the link that was opened is not a share link", async () => {
+  it("says so, with an empty ID field, when the link that was opened is not a share link", async () => {
     const device = await start();
     await device.openLink(`bhayanakshare://add/${PEER_ID.slice(1)}?name=Eve`);
-    expect(screen.getByRole("alert").textContent).toContain("not a Device ID or a share link");
+    expect(screen.getByRole("alert").textContent).toContain("not a BhayanakShare share link");
+    expect(idField().value).toBe("");
+    expect(nameField().value).toBe("");
     expect((screen.getByRole("button", { name: "Next" }) as HTMLButtonElement).disabled).toBe(true);
+
+    // The message goes once the user starts on the ID themselves.
+    fireEvent.change(idField(), { target: { value: "K3QF" } });
+    expect(screen.getByRole("alert").textContent).not.toContain("not a BhayanakShare share link");
+    fireEvent.change(idField(), { target: { value: PEER_ID } });
+    expect(screen.queryByRole("alert")).toBeNull();
+  });
+
+  it("keeps a link that arrives over an Offer until the Offer is answered", async () => {
+    const device = await start();
+    await device.transfer("receiver", { kind: "offered" });
+    await screen.findByRole("dialog", { name: "Incoming files" });
+    await device.openLink(link());
+    expect(screen.getAllByRole("dialog")).toHaveLength(1);
+    expect(screen.queryByRole("dialog", { name: "Add Contact" })).toBeNull();
+
+    fireEvent.click(screen.getByRole("button", { name: "Decline" }));
+    await device.transfer("receiver", { kind: "declined" });
+    expect(screen.getAllByRole("dialog")).toHaveLength(1);
+    expect(screen.getByRole("dialog", { name: "Add Contact" })).toBeTruthy();
+    expect(idField().value).toBe(PEER_ID);
+    expect(nameField().value).toBe("Dad's PC");
+  });
+
+  it("keeps a link that arrives over Send to ID until that is closed, and does not stack on it", async () => {
+    const device = await start();
+    fireEvent.click(screen.getByRole("button", { name: "Send to ID…" }));
+    await device.openLink(link());
+    expect(screen.getAllByRole("dialog")).toHaveLength(1);
+    expect(screen.getByRole("dialog", { name: "Send to ID" })).toBeTruthy();
+
+    fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+    expect(screen.getAllByRole("dialog")).toHaveLength(1);
+    expect(idField().value).toBe(PEER_ID);
+  });
+
+  it("shows only the newest of several links that arrive while another dialog is open", async () => {
+    const device = await start();
+    fireEvent.click(screen.getByRole("button", { name: "Send to ID…" }));
+    await device.openLink(link(PEER_ID, "Old"));
+    await device.openLink(link("C".repeat(52), "New"));
+    fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+    expect(idField().value).toBe("C".repeat(52));
+    expect(nameField().value).toBe("New");
+  });
+
+  it("replaces the suggested name when a link for another Device comes after it", async () => {
+    await start();
+    fireEvent.click(screen.getByRole("button", { name: "Contacts" }));
+    fireEvent.click(screen.getByRole("button", { name: "Add Contact…" }));
+    fireEvent.change(idField(), { target: { value: link(PEER_ID, "Dad's PC") } });
+    expect(nameField().value).toBe("Dad's PC");
+
+    fireEvent.change(idField(), { target: { value: link("C".repeat(52), "Mum's laptop") } });
+    expect(idField().value).toBe("C".repeat(52));
+    expect(nameField().value).toBe("Mum's laptop");
+
+    // A link with no name must not leave the other Device's name on this one.
+    fireEvent.change(idField(), { target: { value: `bhayanakshare://add/${PEER_ID}` } });
+    expect(idField().value).toBe(PEER_ID);
+    expect(nameField().value).toBe("");
+  });
+
+  it("replaces the suggested name from an opened link when a scan or paste names another Device", async () => {
+    const device = await start();
+    await device.openLink(link(PEER_ID, "Dad's PC"));
+    fireEvent.change(idField(), { target: { value: link("C".repeat(52), "Mum's laptop") } });
+    expect(nameField().value).toBe("Mum's laptop");
+  });
+
+  it("never replaces a name the user changed, whichever link comes next", async () => {
+    const device = await start();
+    await device.openLink(link(PEER_ID, "Dad's PC"));
+    fireEvent.change(nameField(), { target: { value: "Dad" } });
+    fireEvent.change(idField(), { target: { value: link("C".repeat(52), "Mum's laptop") } });
+    expect(idField().value).toBe("C".repeat(52));
+    expect(nameField().value).toBe("Dad");
   });
 
   it("does not add anyone just because a link was opened", async () => {

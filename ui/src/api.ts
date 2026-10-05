@@ -128,6 +128,10 @@ async function copyText(text: string): Promise<void> {
   if (!copied) throw new Error("copy failed");
 }
 
+/** Set once the link that started the app has been handed over: the plugin keeps reporting it,
+ * and a UI that mounts again (or a reloaded page) must not open a dismissed link again. */
+let startupLinkTaken = false;
+
 export const tauriApi: Api = {
   myId: commands.myId,
   saveFolder: commands.saveFolder,
@@ -176,9 +180,25 @@ export const tauriApi: Api = {
   },
   onShellEvent: async (handler) => events.shellEvent.listen((e) => handler(e.payload)),
   onOpenLink: async (handler) => {
-    const unlisten = await onOpenUrl((urls) => urls.forEach(handler));
-    // A link that started the app arrived before anyone was listening.
-    getCurrent().then((urls) => urls?.forEach(handler), () => {});
-    return unlisten;
+    let live = true;
+    const deliver = (urls: string[] | null) => urls?.forEach((url) => handler(url));
+    const unlisten = await onOpenUrl((urls) => {
+      if (live) deliver(urls);
+    });
+    if (!startupLinkTaken) {
+      // A link that started the app arrived before anyone was listening.
+      getCurrent().then(
+        (urls) => {
+          if (!live || startupLinkTaken) return;
+          startupLinkTaken = true;
+          deliver(urls);
+        },
+        () => {},
+      );
+    }
+    return () => {
+      live = false;
+      unlisten();
+    };
   },
 };

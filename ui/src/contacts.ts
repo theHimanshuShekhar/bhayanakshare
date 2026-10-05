@@ -3,8 +3,10 @@
 import type { Contact } from "./bindings";
 import { fingerprint } from "./transfers";
 
-/** A Device ID is 52 characters of base32, in either case. */
-const DEVICE_ID = /^[A-Za-z2-7]{52}$/;
+/** What a Device ID looks like as a regular expression: 52 characters of base32, in either
+ * case. Share links are matched with the same pattern. */
+export const DEVICE_ID_PATTERN = "[A-Za-z2-7]{52}";
+const DEVICE_ID = new RegExp(`^${DEVICE_ID_PATTERN}$`);
 
 export function isDeviceId(text: string): boolean {
   return DEVICE_ID.test(text);

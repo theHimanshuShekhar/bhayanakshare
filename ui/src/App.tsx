@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useReducer, useState } from "react";
+import { useCallback, useEffect, useReducer, useRef, useState } from "react";
 import { AddContactDialog } from "./AddContactDialog";
 import { tauriApi, type Api, type Contact, type TransferId } from "./api";
 import { ClearHistoryDialog } from "./ClearHistoryDialog";
@@ -29,6 +29,13 @@ const TABS = [
 
 type TabId = (typeof TABS)[number]["id"];
 
+/** A link the user opened, as the Add Contact dialog it leads to: `suggested` is null for a link
+ * that is not a share link. `stamp` tells one opening from another. */
+interface Opened {
+  suggested: Shared | null;
+  stamp: number;
+}
+
 interface AppProps {
   /** Where commands go and events come from; the Rust shell by default, a stub in tests. */
   api?: Api;
@@ -44,8 +51,11 @@ export function App({ api = tauriApi }: AppProps) {
   const [adding, setAdding] = useState(false);
   // A Nearby Device being saved as a Contact: its ID is already known.
   const [saving, setSaving] = useState<{ id: string; name: string | null } | null>(null);
-  // A link the user opened: the Add Contact dialog with its Device ID and suggested name in.
-  const [linked, setLinked] = useState<Shared | null>(null);
+  // An opened link waits in `pendingLink` while another dialog or sheet is open (the newest
+  // replaces an older one), and moves to `linked` once there is none.
+  const [pendingLink, setPendingLink] = useState<Opened | null>(null);
+  const [linked, setLinked] = useState<Opened | null>(null);
+  const linkCount = useRef(0);
   const [removing, setRemoving] = useState<Contact | null>(null);
   // History is narrowed to this Device (from a Contact's History link, or the filter).
   const [historyDevice, setHistoryDevice] = useState<string | null>(null);
@@ -67,16 +77,10 @@ export function App({ api = tauriApi }: AppProps) {
   const [quit, setQuit] = useState<{ active: number; saving: boolean } | null>(null);
   const current = TABS.find((x) => x.id === tab) ?? TABS[0];
   const offer = pendingOffer(transfers, preferred);
+  // Add Contact (and Save as Contact) give way to a link; these do not.
+  const busy = sending !== null || removing !== null || clearing || offer !== undefined || quit !== null;
   // While a sheet is open the page behind it can be neither clicked nor tabbed to.
-  const inert =
-    sending !== null ||
-    adding ||
-    saving !== null ||
-    linked !== null ||
-    removing !== null ||
-    clearing ||
-    offer !== undefined ||
-    quit !== null;
+  const inert = busy || adding || saving !== null || linked !== null;
 
   const loadContacts = useCallback(() => api.contacts().then(setContacts, () => {}), [api]);
 
@@ -138,9 +142,7 @@ export function App({ api = tauriApi }: AppProps) {
     api
       .onOpenLink((url) => {
         // A link that is not a share link still opens the dialog, to say what is wrong with it.
-        setAdding(false);
-        setSaving(null);
-        setLinked(parseShareLink(url) ?? { id: url, name: null });
+        setPendingLink({ suggested: parseShareLink(url), stamp: ++linkCount.current });
       })
       .then((stop) => (live ? (unlisten = stop) : stop()));
     return () => {
@@ -148,6 +150,14 @@ export function App({ api = tauriApi }: AppProps) {
       unlisten?.();
     };
   }, [api]);
+
+  useEffect(() => {
+    if (pendingLink === null || busy) return;
+    setAdding(false);
+    setSaving(null);
+    setLinked(pendingLink);
+    setPendingLink(null);
+  }, [pendingLink, busy]);
 
   useEffect(() => {
     const timer = setTimeout(() => setWaited(true), NEARBY_WAIT_MS);
@@ -346,9 +356,10 @@ export function App({ api = tauriApi }: AppProps) {
       )}
       {linked && (
         <AddContactDialog
-          key={`${linked.id} ${linked.name}`}
+          key={linked.stamp}
           api={api}
-          suggested={linked}
+          suggested={linked.suggested ?? undefined}
+          badLink={linked.suggested === null}
           onAdded={loadContacts}
           onClose={() => setLinked(null)}
         />

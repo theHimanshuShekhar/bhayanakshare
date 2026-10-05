@@ -11,14 +11,14 @@ type Copy = "idle" | "copied" | "failed";
  * buttons to copy the ID and the link.
  */
 export function MyDeviceId({ api }: { api: Api }) {
-  const [state, setState] = useState<"loading" | "error" | { id: MyId; link: string }>("loading");
+  const [state, setState] = useState<"loading" | "error" | { myId: MyId; link: string }>("loading");
   const [copy, setCopy] = useState<Copy>("idle");
 
   useEffect(() => {
     let live = true;
     // The link carries the Device Name; without it (it could not be read) the link still works.
     Promise.all([api.myId(), api.deviceName().catch(() => null)]).then(
-      ([id, name]) => live && setState({ id, link: shareLink(id.id, name) }),
+      ([myId, name]) => live && setState({ myId, link: shareLink(myId.id, name) }),
       () => live && setState("error"),
     );
     return () => {
@@ -29,7 +29,7 @@ export function MyDeviceId({ api }: { api: Api }) {
   if (state === "loading") return <p role="status">{t("home.loading")}</p>;
   if (state === "error") return <p role="alert">{t("home.error")}</p>;
 
-  const { id, link } = state;
+  const { myId, link } = state;
   const copyText = (text: string) =>
     api.copyText(text).then(
       () => setCopy("copied"),
@@ -40,11 +40,11 @@ export function MyDeviceId({ api }: { api: Api }) {
     <section aria-labelledby="my-id-heading">
       <h2 id="my-id-heading">{t("myId.heading")}</h2>
       <p>
-        {t("myId.fingerprint")}: <strong>{id.fingerprint}</strong>
+        {t("myId.fingerprint")}: <strong>{myId.fingerprint}</strong>
       </p>
       <p>
         <span id="device-id-label">{t("myId.deviceId")}: </span>
-        <code aria-labelledby="device-id-label">{id.id}</code>
+        <code aria-labelledby="device-id-label">{myId.id}</code>
       </p>
       <p>
         <span id="share-link-label">{t("myId.link")}: </span>
@@ -52,7 +52,7 @@ export function MyDeviceId({ api }: { api: Api }) {
       </p>
       <QrCode text={link} label={t("myId.qr")} />
       <p>
-        <button type="button" onClick={() => copyText(id.id)}>
+        <button type="button" onClick={() => copyText(myId.id)}>
           {t("myId.copy")}
         </button>{" "}
         <button type="button" onClick={() => copyText(link)}>

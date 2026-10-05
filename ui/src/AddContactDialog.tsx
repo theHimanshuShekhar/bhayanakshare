@@ -16,25 +16,32 @@ export function AddContactDialog({
   api,
   prefilled,
   suggested,
+  badLink = false,
   onAdded,
   onClose,
 }: {
   api: Api;
   /** A Device already in front of the user (a Nearby tile): its ID is not typed, so the dialog
    * starts at the Fingerprint check. */
-  prefilled?: { id: string; name: string | null };
+  prefilled?: Shared;
   /** What a link or QR code opened the dialog with: the fields start filled in, and the user
    * can still change both before going on. */
   suggested?: Shared;
+  /** The dialog was opened by a link that is not a share link: it says so, with nothing filled in. */
+  badLink?: boolean;
   onAdded: (contact: Contact) => void;
   onClose: () => void;
 }) {
   const [id, setId] = useState(prefilled?.id ?? suggested?.id ?? "");
   const [name, setName] = useState(prefilled?.name ?? suggested?.name ?? "");
   const [checking, setChecking] = useState(prefilled !== undefined);
+  // The name that came from a link or QR code, while the field still holds it: a link for another
+  // Device replaces it, but a name the user typed or changed is theirs.
+  const [suggestedName, setSuggestedName] = useState(prefilled?.name ?? suggested?.name ?? null);
   // The webcam is on, looking for a QR code; `notLink` is set when it read something else.
   const [scanning, setScanning] = useState(false);
   const [notLink, setNotLink] = useState(false);
+  const [wasBadLink, setWasBadLink] = useState(badLink);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const idInput = useRef<HTMLInputElement>(null);
@@ -56,12 +63,17 @@ export function AddContactDialog({
   }, [checking]);
 
   /** Takes a Device ID or share link, from the ID field or a QR code, into the fields. A name
-   * the user has already typed is kept. Returns false for anything else. */
+   * the user typed is kept; one from an earlier link goes when the Device is another. Returns
+   * false for anything else. */
   const fill = (text: string) => {
     const found = parseIdOrLink(text);
     if (found === null) return false;
+    const theirs = name.trim() !== "" && name !== suggestedName;
+    if (!theirs && (found.name !== null || found.id !== id)) {
+      setName(found.name ?? "");
+      setSuggestedName(found.name);
+    }
     setId(found.id);
-    if (found.name !== null && name.trim() === "") setName(found.name);
     return true;
   };
 
@@ -73,6 +85,7 @@ export function AddContactDialog({
 
   // A pasted link becomes its Device ID (and name); anything else is kept as typed.
   const typed = (text: string) => {
+    setWasBadLink(false);
     if (parseShareLink(text) === null) setId(text);
     else fill(text);
   };
@@ -136,6 +149,7 @@ export function AddContactDialog({
               {t("addContact.idHint")}
             </p>
             {trimmed !== "" && !valid && <p role="alert">{t("addContact.idInvalid")}</p>}
+            {wasBadLink && <p role="alert">{t("addContact.badLink")}</p>}
             {scanning ? (
               <>
                 <QrScanner onDecoded={scanned} />
