@@ -1,7 +1,7 @@
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { App } from "./App";
-import type { Api, Contact, DeviceEvent, Visibility } from "./api";
+import type { Api, Contact, DeviceEvent, ShellEvent, Visibility } from "./api";
 import type { NearbyDevice, TransferState } from "./bindings";
 import { NEARBY_WAIT_MS } from "./nearby";
 
@@ -35,6 +35,8 @@ function contact(over: Partial<Contact> = {}): Contact {
 /** A stand-in for the Rust shell: records commands, and lets a test push Device events. */
 function fakeApi(overrides: Partial<Api> = {}, initialContacts: Contact[] = []) {
   let handler: (event: DeviceEvent) => void = () => {};
+  let shellHandler: (event: ShellEvent) => void = () => {};
+  let autostart = true;
   let seq = 0;
   let contacts = initialContacts;
   let visibility: Visibility = "id_holders";
@@ -59,6 +61,12 @@ function fakeApi(overrides: Partial<Api> = {}, initialContacts: Contact[] = []) 
       visibility = v;
       return Promise.resolve(null);
     }),
+    autostartEnabled: vi.fn(() => Promise.resolve(autostart)),
+    setAutostart: vi.fn((on: boolean) => {
+      autostart = on;
+      return Promise.resolve(null);
+    }),
+    quitApp: vi.fn(() => Promise.resolve(null)),
     contacts: vi.fn(() => Promise.resolve(contacts)),
     addContact: vi.fn((id: string, deviceName: string | null) => {
       const added = contact({ id, device_name: deviceName, added_at: contacts.length + 1 });
@@ -82,8 +90,14 @@ function fakeApi(overrides: Partial<Api> = {}, initialContacts: Contact[] = []) 
       handler = h;
       return Promise.resolve(() => {});
     },
+    onShellEvent: (h: (event: ShellEvent) => void) => {
+      shellHandler = h;
+      return Promise.resolve(() => {});
+    },
     ...overrides,
   } satisfies Api;
+  /** The shell says something: a second launch, a clicked notification, Quit. */
+  const shell = (event: ShellEvent) => act(() => shellHandler(event));
   const push = (event: Unstamped) =>
     act(() => handler({ seq: seq++, at: 1_000 * seq, ...event } as DeviceEvent));
   const transfer = (
@@ -104,7 +118,7 @@ function fakeApi(overrides: Partial<Api> = {}, initialContacts: Contact[] = []) 
     });
   /** The Device reports the Nearby Devices as they are now. */
   const nearby = (...devices: NearbyDevice[]) => push({ type: "nearby", devices });
-  return { api, push, transfer, nearby };
+  return { api, push, transfer, nearby, shell };
 }
 
 /** Renders the app and waits until it is listening for events. */
@@ -989,5 +1003,148 @@ describe("Visibility", () => {
     for (const radio of screen.getAllByRole("radio")) {
       expect((radio as HTMLInputElement).disabled).toBe(true);
     }
+  });
+});
+
+describe("Start at login", () => {
+  const open = async (device = fakeApi()) => {
+    await start(device);
+    fireEvent.click(screen.getByRole("button", { name: "Settings" }));
+    return device;
+  };
+
+  it("shows it on by default and switches it off", async () => {
+    const device = await open();
+    const box = (await screen.findByRole("checkbox", { name: "Start at login" })) as HTMLInputElement;
+    await waitFor(() => expect(box.checked).toBe(true));
+    fireEvent.click(box);
+    await waitFor(() => expect(device.api.setAutostart).toHaveBeenCalledWith(false));
+    await waitFor(() => expect(box.checked).toBe(false));
+  });
+
+  it("keeps the old setting and says why when the change is refused", async () => {
+    await open(fakeApi({ setAutostart: () => Promise.reject(new Error("read-only folder")) }));
+    const box = (await screen.findByRole("checkbox", { name: "Start at login" })) as HTMLInputElement;
+    await waitFor(() => expect(box.checked).toBe(true));
+    fireEvent.click(box);
+    expect((await screen.findByRole("alert")).textContent).toContain("read-only folder");
+    expect(box.checked).toBe(true);
+  });
+});
+
+describe("files from a second launch or the tray", () => {
+  it("waits for the user to choose a Device, then sends each file without asking for one", async () => {
+    const device = await start(fakeApi({}, [contact({ device_name: "Mum's phone" })]));
+    await device.shell({ type: "send_files", paths: ["/home/me/a.txt", "/home/me/b.txt"] });
+    expect((await screen.findByText(/Choose a Device to send/)).textContent).toContain("a.txt, b.txt");
+
+    fireEvent.click(screen.getByRole("button", { name: "Send to Mum's phone" }));
+    const dialog = screen.getByRole("dialog");
+    expect(within(dialog).getByText(/a\.txt, b\.txt/)).toBeTruthy();
+    fireEvent.click(within(dialog).getByRole("button", { name: "Send" }));
+
+    await waitFor(() => expect(device.api.sendFile).toHaveBeenCalledTimes(2));
+    expect(device.api.sendFile).toHaveBeenNthCalledWith(1, PEER_ID, "/home/me/a.txt");
+    expect(device.api.sendFile).toHaveBeenNthCalledWith(2, PEER_ID, "/home/me/b.txt");
+    expect(device.api.pickFile).not.toHaveBeenCalled();
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    expect(screen.queryByText(/Choose a Device to send/)).toBeNull();
+  });
+
+  it("keeps the files that were not sent when one fails", async () => {
+    const sendFile = vi
+      .fn<Api["sendFile"]>()
+      .mockResolvedValueOnce(TRANSFER)
+      .mockRejectedValueOnce(new Error("unreachable"))
+      .mockResolvedValue(TRANSFER);
+    const device = await start(fakeApi({ sendFile }, [contact()]));
+    await device.shell({ type: "send_files", paths: ["/x/a.txt", "/x/b.txt"] });
+    fireEvent.click(screen.getByRole("button", { name: "Send to K3QF-7XNA" }));
+    fireEvent.click(screen.getByRole("button", { name: "Send" }));
+    expect((await screen.findByRole("alert")).textContent).toContain("unreachable");
+    const dialog = screen.getByRole("dialog");
+    expect(within(dialog).getByText(/b\.txt/).textContent).not.toContain("a.txt");
+
+    fireEvent.click(within(dialog).getByRole("button", { name: "Send" }));
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    expect(sendFile).toHaveBeenLastCalledWith(PEER_ID, "/x/b.txt");
+  });
+
+  it("forgets the files when asked", async () => {
+    const device = await start();
+    await device.shell({ type: "send_files", paths: ["/x/a.txt"] });
+    fireEvent.click(await screen.findByRole("button", { name: "Forget these files" }));
+    expect(screen.queryByText(/Choose a Device to send/)).toBeNull();
+  });
+});
+
+describe("a clicked notification", () => {
+  it("shows that Offer ahead of an older one", async () => {
+    const device = await start();
+    const other = "cd".repeat(16);
+    await device.push({
+      type: "transfer",
+      transfer_id: other,
+      role: "receiver",
+      peer: PEER_ID,
+      peer_name: null,
+      name: "older.txt",
+      size: 1,
+      expires_at: EXPIRES_AT,
+      state: { kind: "offered" },
+    });
+    await device.transfer("receiver", { kind: "offered" });
+    expect(screen.getByRole("dialog").textContent).toContain("older.txt");
+
+    await device.shell({ type: "open_offer", transfer_id: TRANSFER });
+    expect(screen.getByRole("dialog").textContent).toContain("photo.jpg");
+  });
+});
+
+describe("quitting", () => {
+  it("asks first, saying the Transfers resume, and keeps running when told to", async () => {
+    const device = await start();
+    await device.shell({ type: "confirm_quit", active: 2 });
+    const dialog = screen.getByRole("dialog", { name: "Quit BhayanakShare?" });
+    expect(dialog.textContent).toContain("2 Transfers are in progress.");
+    expect(dialog.textContent).toContain("They'll resume when BhayanakShare next runs.");
+
+    fireEvent.click(within(dialog).getByRole("button", { name: "Keep running" }));
+    expect(screen.queryByRole("dialog")).toBeNull();
+    expect(device.api.quitApp).not.toHaveBeenCalled();
+  });
+
+  it("says one Transfer in the singular", async () => {
+    const device = await start();
+    await device.shell({ type: "confirm_quit", active: 1 });
+    expect(screen.getByRole("dialog").textContent).toContain("A Transfer is in progress.");
+    expect(screen.getByRole("dialog").textContent).toContain("It'll resume");
+  });
+
+  it("quits on confirmation and shows Saving progress with nothing left to press", async () => {
+    const device = await start();
+    await device.shell({ type: "confirm_quit", active: 1 });
+    fireEvent.click(screen.getByRole("button", { name: "Quit" }));
+    expect(device.api.quitApp).toHaveBeenCalledTimes(1);
+    expect(screen.getByRole("dialog", { name: "Saving progress…" })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Keep running" })).toBeNull();
+
+    // The shell's own word that shutdown began changes nothing.
+    await device.shell({ type: "quitting" });
+    expect(screen.getByRole("dialog", { name: "Saving progress…" })).toBeTruthy();
+  });
+
+  it("shows Saving progress when the shell began the shutdown", async () => {
+    const device = await start();
+    await device.shell({ type: "quitting" });
+    expect(screen.getByRole("dialog", { name: "Saving progress…" })).toBeTruthy();
+  });
+
+  it("goes back to the question and says why when quitting fails", async () => {
+    const device = await start(fakeApi({ quitApp: () => Promise.reject(new Error("busy")) }));
+    await device.shell({ type: "confirm_quit", active: 1 });
+    fireEvent.click(screen.getByRole("button", { name: "Quit" }));
+    expect((await screen.findByRole("alert")).textContent).toContain("busy");
+    expect(screen.getByRole("button", { name: "Keep running" })).toBeTruthy();
   });
 });

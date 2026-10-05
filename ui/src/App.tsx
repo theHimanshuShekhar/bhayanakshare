@@ -1,9 +1,10 @@
 import { useCallback, useEffect, useReducer, useState } from "react";
 import { AddContactDialog } from "./AddContactDialog";
-import { tauriApi, type Api, type Contact } from "./api";
+import { tauriApi, type Api, type Contact, type TransferId } from "./api";
 import { ContactsScreen } from "./ContactsScreen";
 import { MyDeviceId } from "./MyDeviceId";
 import { OfferSheet } from "./OfferSheet";
+import { QuitDialog } from "./QuitDialog";
 import { RemoveContactDialog } from "./RemoveContactDialog";
 import { SendDialog } from "./SendDialog";
 import { SettingsScreen } from "./SettingsScreen";
@@ -11,7 +12,7 @@ import { TransferList } from "./TransferList";
 import { peerName, sortedContacts } from "./contacts";
 import { t, type MessageKey } from "./i18n";
 import { FIREWALL_DOCS_URL, NEARBY_WAIT_MS, applyNearby, nearbyStrangers } from "./nearby";
-import { applyEvent, fingerprint, newestFirst, noTransfers, pendingOffer } from "./transfers";
+import { applyEvent, baseName, fingerprint, newestFirst, noTransfers, pendingOffer } from "./transfers";
 
 const TABS = [
   { id: "home", label: "tab.home", placeholder: "home.placeholder" },
@@ -41,11 +42,22 @@ export function App({ api = tauriApi }: AppProps) {
   // Set once Home has waited long enough for a Nearby Device to show up.
   const [waited, setWaited] = useState(false);
   const [saveFolder, setSaveFolder] = useState<string | null>(null);
+  // Files waiting for the user to say whom to send them to (from a second launch or the tray).
+  const [queued, setQueued] = useState<string[]>([]);
+  // The Offer a notification was clicked for; it is shown ahead of older ones.
+  const [preferred, setPreferred] = useState<TransferId | undefined>();
+  // Quit was chosen while Transfers are in progress.
+  const [quit, setQuit] = useState<{ active: number; saving: boolean } | null>(null);
   const current = TABS.find((x) => x.id === tab) ?? TABS[0];
-  const offer = pendingOffer(transfers);
+  const offer = pendingOffer(transfers, preferred);
   // While a sheet is open the page behind it can be neither clicked nor tabbed to.
   const inert =
-    sending !== null || adding || saving !== null || removing !== null || offer !== undefined;
+    sending !== null ||
+    adding ||
+    saving !== null ||
+    removing !== null ||
+    offer !== undefined ||
+    quit !== null;
 
   const loadContacts = useCallback(() => api.contacts().then(setContacts, () => {}), [api]);
 
@@ -59,6 +71,34 @@ export function App({ api = tauriApi }: AppProps) {
       })
       .then((stop) => (live ? (unlisten = stop) : stop()));
     api.saveFolder().then((folder) => live && setSaveFolder(folder), () => {});
+    return () => {
+      live = false;
+      unlisten?.();
+    };
+  }, [api]);
+
+  useEffect(() => {
+    let live = true;
+    let unlisten: (() => void) | undefined;
+    api
+      .onShellEvent((event) => {
+        switch (event.type) {
+          case "send_files":
+            setQueued(event.paths);
+            setTab("home");
+            break;
+          case "open_offer":
+            setPreferred(event.transfer_id);
+            break;
+          case "confirm_quit":
+            setQuit({ active: event.active, saving: false });
+            break;
+          case "quitting":
+            setQuit((q) => ({ active: q?.active ?? 0, saving: true }));
+            break;
+        }
+      })
+      .then((stop) => (live ? (unlisten = stop) : stop()));
     return () => {
       live = false;
       unlisten?.();
@@ -100,6 +140,14 @@ export function App({ api = tauriApi }: AppProps) {
         {tab === "home" && (
           <>
             <MyDeviceId api={api} />
+            {queued.length > 0 && (
+              <p role="status">
+                {t("queued.banner", { names: queued.map(baseName).join(", ") })}{" "}
+                <button type="button" onClick={() => setQueued([])}>
+                  {t("queued.clear")}
+                </button>
+              </p>
+            )}
             <section aria-labelledby="devices-heading">
               <h2 id="devices-heading">{t("home.devices")}</h2>
               <div className="tiles">
@@ -193,9 +241,12 @@ export function App({ api = tauriApi }: AppProps) {
       </main>
       {sending && (
         <SendDialog
+          key={queued.join("\n")}
           api={api}
           to={sending.to}
           contactName={sending.name}
+          files={queued}
+          onSent={() => setQueued([])}
           onClose={() => setSending(null)}
         />
       )}
@@ -216,6 +267,15 @@ export function App({ api = tauriApi }: AppProps) {
           contact={removing}
           onRemoved={loadContacts}
           onClose={() => setRemoving(null)}
+        />
+      )}
+      {quit && (
+        <QuitDialog
+          api={api}
+          active={quit.active}
+          saving={quit.saving}
+          onSaving={(saving) => setQuit({ active: quit.active, saving })}
+          onCancel={() => setQuit(null)}
         />
       )}
       {offer && (

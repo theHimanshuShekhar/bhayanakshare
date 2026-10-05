@@ -10,12 +10,13 @@ import {
   type Contact,
   type DeviceEvent,
   type MyId,
+  type ShellEvent,
   type SpaceCheck,
   type TransferId,
   type Visibility,
 } from "./bindings";
 
-export type { Contact, DeviceEvent, MyId, SpaceCheck, TransferId, Visibility };
+export type { Contact, DeviceEvent, MyId, ShellEvent, SpaceCheck, TransferId, Visibility };
 
 export interface Api {
   myId(): Promise<MyId>;
@@ -36,6 +37,11 @@ export interface Api {
   visibility(): Promise<Visibility>;
   /** Changes who can see this Device as a Nearby Device; it takes effect at once. */
   setVisibility(visibility: Visibility): Promise<unknown>;
+  /** Whether this Device starts when the user logs in. */
+  autostartEnabled(): Promise<boolean>;
+  setAutostart(on: boolean): Promise<unknown>;
+  /** The user confirmed quitting: the Device saves its progress, then the app exits. */
+  quitApp(): Promise<unknown>;
   /** Every Contact, in the order they were added. */
   contacts(): Promise<Contact[]>;
   /** Saves a Device as a Contact; `deviceName` is the name it goes by, if known. */
@@ -55,6 +61,8 @@ export interface Api {
   copyText(text: string): Promise<void>;
   /** Calls `handler` for every Device event, in order. Resolves to the unsubscribe function. */
   onDeviceEvent(handler: (event: DeviceEvent) => void): Promise<() => void>;
+  /** Calls `handler` for what the shell has to say (files to send, quitting). */
+  onShellEvent(handler: (event: ShellEvent) => void): Promise<() => void>;
 }
 
 /** The async clipboard API where the webview has it, else the older copy command. */
@@ -88,6 +96,9 @@ export const tauriApi: Api = {
   resendTransfer: commands.resendTransfer,
   visibility: commands.visibility,
   setVisibility: commands.setVisibility,
+  autostartEnabled: commands.autostartEnabled,
+  setAutostart: commands.setAutostart,
+  quitApp: commands.quitApp,
   contacts: commands.contacts,
   addContact: commands.addContact,
   setNickname: commands.setNickname,
@@ -110,4 +121,5 @@ export const tauriApi: Api = {
     await commands.eventsReady();
     return unlisten;
   },
+  onShellEvent: async (handler) => events.shellEvent.listen((e) => handler(e.payload)),
 };

@@ -8,11 +8,14 @@ const OPTIONS = [
   { value: "hidden", label: "visibility.hidden", hint: "visibility.hiddenHint" },
 ] as const satisfies readonly { value: Visibility; label: MessageKey; hint: MessageKey }[];
 
-/** The Settings tab: for now, who can see this Device as a Nearby Device. */
+/** The Settings tab: who can see this Device as a Nearby Device, and start at login. */
 export function SettingsScreen({ api }: { api: Api }) {
   // null until the setting has been read; nothing is shown selected before then.
   const [visibility, setVisibility] = useState<Visibility | null>(null);
   const [error, setError] = useState<string | null>(null);
+  // null until read.
+  const [autostart, setAutostart] = useState<boolean | null>(null);
+  const [autostartError, setAutostartError] = useState<string | null>(null);
 
   useEffect(() => {
     let live = true;
@@ -20,10 +23,25 @@ export function SettingsScreen({ api }: { api: Api }) {
       (v) => live && setVisibility(v),
       () => live && setError(t("visibility.loadFailed")),
     );
+    api.autostartEnabled().then(
+      (on) => live && setAutostart(on),
+      () => live && setAutostartError(t("autostart.loadFailed")),
+    );
     return () => {
       live = false;
     };
   }, [api]);
+
+  const chooseAutostart = (on: boolean) => {
+    setAutostartError(null);
+    api.setAutostart(on).then(
+      () => setAutostart(on),
+      (e) =>
+        setAutostartError(
+          t("autostart.failed", { reason: e instanceof Error ? e.message : String(e) }),
+        ),
+    );
+  };
 
   const choose = (value: Visibility) => {
     setError(null);
@@ -60,6 +78,23 @@ export function SettingsScreen({ api }: { api: Api }) {
         ))}
       </fieldset>
       {error !== null && <p role="alert">{error}</p>}
+      <p>
+        <input
+          id="autostart"
+          type="checkbox"
+          checked={autostart === true}
+          disabled={autostart === null}
+          aria-describedby="autostart-hint"
+          onChange={(e) => chooseAutostart(e.target.checked)}
+        />{" "}
+        <label htmlFor="autostart" className="inline">
+          {t("autostart.label")}
+        </label>
+        <span id="autostart-hint" className="note">
+          {t("autostart.hint")}
+        </span>
+      </p>
+      {autostartError !== null && <p role="alert">{autostartError}</p>}
     </section>
   );
 }

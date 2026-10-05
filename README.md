@@ -46,6 +46,8 @@ BHAYANAKSHARE_DATA_DIR=/tmp/bhs-a/data BHAYANAKSHARE_SAVE_DIR=/tmp/bhs-a/save pn
 BHAYANAKSHARE_DATA_DIR=/tmp/bhs-b/data BHAYANAKSHARE_SAVE_DIR=/tmp/bhs-b/save target/debug/bhayanakshare
 ```
 
+An instance given `BHAYANAKSHARE_DATA_DIR` is treated as a separate install made to run beside another: it skips the single-instance check and does not register itself to start at login. (Without the variable, a second launch focuses the running window instead and hands it any files named on the command line.)
+
 Copy the Device ID from one instance's "My ID", choose "Send to ID…" in the other, and paste it. Without the variables the data lives in the platform's app data folder and files are saved to `~/Downloads/BhayanakShare`.
 
 ## Tests

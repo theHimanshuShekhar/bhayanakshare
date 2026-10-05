@@ -165,6 +165,12 @@ impl TransferState {
         })
     }
 
+    /// Whether content is moving, or about to: the Transfers a clean shutdown leaves to
+    /// resume on the next start. An unanswered Offer is not one (it lapses instead).
+    pub fn is_in_progress(&self) -> bool {
+        matches!(self, Self::Accepted | Self::Transferring | Self::Reconnecting | Self::Saving)
+    }
+
     pub fn is_terminal(&self) -> bool {
         matches!(
             self,
@@ -195,6 +201,26 @@ mod tests {
     fn transfer_id_rejects_bad_text() {
         assert!("zz".parse::<TransferId>().is_err());
         assert!("ab".parse::<TransferId>().is_err());
+    }
+
+    #[test]
+    fn only_accepted_work_is_in_progress() {
+        let progressing = [
+            TransferState::Accepted,
+            TransferState::Transferring,
+            TransferState::Reconnecting,
+            TransferState::Saving,
+        ];
+        let not = [
+            TransferState::Offered,
+            TransferState::Declined,
+            TransferState::Completed { saved_to: None },
+            TransferState::Failed { reason: "x".into() },
+            TransferState::Expired,
+            TransferState::Cancelled { by: Role::Sender },
+        ];
+        assert!(progressing.iter().all(TransferState::is_in_progress));
+        assert!(not.iter().all(|s| !s.is_in_progress()));
     }
 
     #[test]
