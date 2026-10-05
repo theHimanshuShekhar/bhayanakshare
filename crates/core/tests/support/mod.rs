@@ -16,7 +16,7 @@ use bhayanakshare_core::{
     ManualClock, NearbyDevice, Network, ProgressEvent, SystemFreeSpace, TransferEvent, TransferId,
     TransferState,
     manifest::{Entry, Manifest},
-    protocol::Offer,
+    protocol::{Offer, OfferKind},
 };
 use iroh::{Endpoint, EndpointAddr, RelayMode, TransportAddr, endpoint::presets};
 use tempfile::TempDir;
@@ -296,6 +296,14 @@ pub fn list_dir(dir: &std::path::Path) -> Vec<String> {
 /// An Offer of one file, as a hand-written Sender makes it.
 pub fn one_file_offer(transfer_id: [u8; 16], name: &str, size: u64) -> Offer {
     Offer::new(transfer_id, Manifest { entries: vec![Entry::file(name, size)] }, 0)
+}
+
+/// The manifest of an Offer of files.
+pub fn manifest_of(offer: &Offer) -> &Manifest {
+    match &offer.kind {
+        OfferKind::Files(manifest) => manifest,
+        OfferKind::Text(_) => panic!("expected an Offer of files, got text"),
+    }
 }
 
 /// A bare QUIC peer that speaks (or breaks) the control protocol by hand.

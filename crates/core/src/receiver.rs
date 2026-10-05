@@ -11,6 +11,12 @@
 //! under a numbered one instead. The save folder is the one the Offer was accepted into, which the
 //! Receiver may choose per Offer.
 //!
+//! Text that came in the Offer is the exception: there is nothing to fetch and no incoming
+//! store, and nothing goes to the save folder. Accepting it keeps the text in the database
+//! (which is what Transfer History shows) and completes the Transfer, and only then is the
+//! Sender told, `Accept` and `Completed` together. A text Offer is never resumed: there is no
+//! content hash to resume from, so a restart before it is answered lets it expire.
+//!
 //! Until the move into the save folder starts, either side can cancel (the incoming store is
 //! deleted), and an Offer nobody answers expires. A Sender that already has 5 Offers waiting
 //! gets `Busy` instead of a new one.
@@ -55,13 +61,13 @@ use crate::{
     identity::DeviceId,
     manifest::{self, Manifest},
     names::{adjust_names, numbered},
-    protocol::{self, FrameError, Message, spawn_reader, write_frame},
+    protocol::{self, FrameError, Message, OfferKind, spawn_reader, write_frame},
     session::{
         CLOSE_GRACE, FORGOTTEN, Failure, LOST, STALLED, Session, Stall, Stop, UNEXPECTED,
         expect_hello, fail, made_progress, retry_delay, save_progress, stop,
     },
     store,
-    transfer::{OFFER_TTL_MS, Role, TransferId, TransferState},
+    transfer::{OFFER_TTL_MS, Role, TransferId, TransferKind, TransferState},
 };
 
 /// Directory inside the save folder that holds in-progress downloads.
@@ -106,6 +112,7 @@ const CANT_FETCH: &str = "Could not download the files from the sending Device."
 const WRONG_FILE: &str = "The sending Device sent different files than it offered.";
 const TOO_MUCH: &str = "The sending Device sent more than it offered.";
 const CANT_SAVE: &str = "Could not save the files to the save folder.";
+const CANT_KEEP_TEXT: &str = "Could not keep the text.";
 
 pub(crate) struct Handler {
     sh: Arc<Shared>,
@@ -236,21 +243,29 @@ async fn flow(
         refuse(&mut session, conn).await;
         return Ok(());
     }
-    let items = offer.manifest.top_level_items();
-    let adjusted = adjust_names(&offer.manifest, INCOMING_DIR);
-    let longest_path = adjusted.manifest.entries.iter().map(|entry| entry.path().len()).max().unwrap_or(0);
-    let manifest = Arc::new(offer.manifest);
+    // Files are fetched and saved; text is all here already.
+    let (kind, items, adjusted_names, longest_path, manifest, text) = match offer.kind {
+        OfferKind::Files(manifest) => {
+            let adjusted = adjust_names(&manifest, INCOMING_DIR);
+            let longest = adjusted.manifest.entries.iter().map(|entry| entry.path().len()).max().unwrap_or(0);
+            let items = manifest.top_level_items();
+            (TransferKind::Files, items, adjusted.count, longest, Some(Arc::new(manifest)), None)
+        }
+        OfferKind::Text(text) => (TransferKind::Text, Vec::new(), 0, 0, None, Some(text)),
+    };
     let info = TransferInfo {
         id: TransferId::from_bytes(offer.transfer_id),
         role: Role::Receiver,
         peer: DeviceId::from_endpoint_id(peer_endpoint),
         peer_name,
-        name: items[0].clone(),
+        kind,
+        name: items.first().cloned().unwrap_or_default(),
         size: offer.size,
+        text,
         items,
         file_count: offer.file_count,
         skipped_links: offer.skipped_links,
-        adjusted_names: adjusted.count,
+        adjusted_names,
         // The Sender's Batch is its own business; the Offer does not mention it.
         batch: None,
         expires_at: sh.now() + OFFER_TTL_MS,
@@ -276,7 +291,13 @@ async fn flow(
             } else {
                 match pending.entry(info.id) {
                     Entry::Vacant(slot) => {
-                        slot.insert(PendingOffer { peer: info.peer, size: info.size, longest_path, decide })
+                        slot.insert(PendingOffer {
+                            peer: info.peer,
+                            size: info.size,
+                            longest_path,
+                            text: info.text.is_some(),
+                            decide,
+                        })
                     }
                     Entry::Occupied(_) => return Err(Failure::with(BAD_OFFER, "duplicate Transfer ID")),
                 };
@@ -310,7 +331,8 @@ async fn flow(
             biased;
             decided = &mut decision => break decided.map_err(|_| Failure::with(LOST, "Offer withdrawn"))?,
             msg = session.incoming.recv() => match msg {
-                Some(Ok(Message::HashReady { collection_hash })) if root.is_none() => {
+                // A text Offer has no content to be ready.
+                Some(Ok(Message::HashReady { collection_hash })) if root.is_none() && manifest.is_some() => {
                     root = Some(collection_hash.into());
                 }
                 Some(Ok(Message::Cancel)) => {
@@ -344,6 +366,9 @@ async fn flow(
         return Ok(());
     };
 
+    let Some(manifest) = manifest else {
+        return keep_text(sh, &info, session, auto.is_none()).await;
+    };
     // Saved before the Sender can learn of the yes, so a restart finds where to resume.
     let now = sh.now();
     let known = root.map(|hash| *hash.as_bytes());
@@ -361,6 +386,37 @@ async fn flow(
     let shown = Some(TransferState::Accepted);
     settle(sh, &info, &save_dir, &manifest, Some(session), root, shown, &cancel, opened, Stall::new(now))
         .await
+}
+
+/// Takes a text Offer the Receiver accepted: keeps the text and completes the Transfer, then
+/// tells the Sender. Nothing is fetched, and the text goes in the database, not the save folder.
+/// From the yes there is nothing left to cancel, as from Saving. `announce` is whether the
+/// Transfer has still to be shown Accepted (an auto-accepted one began that way).
+async fn keep_text(
+    sh: &Arc<Shared>,
+    info: &TransferInfo,
+    mut session: Session,
+    announce: bool,
+) -> Result<(), Failure> {
+    sh.untrack(info.id);
+    if announce {
+        sh.transition(info, TransferState::Accepted).await;
+    }
+    // Before the Sender hears of it: a Sender that is told `Completed` has been told the truth.
+    sh.complete_text(info).await.map_err(fail(CANT_KEEP_TEXT))?;
+    let told = async {
+        write_frame(&mut session.send, &Message::Accept).await?;
+        write_frame(&mut session.send, &Message::Completed).await
+    }
+    .await;
+    let _ = session.send.finish();
+    match told {
+        Ok(()) => {
+            let _ = tokio::time::timeout(CLOSE_GRACE, session.conn.closed()).await;
+        }
+        Err(e) => tracing::warn!("the Sender was out of reach, so it was not told the text arrived: {e}"),
+    }
+    Ok(())
 }
 
 /// Turns a malformed Offer away: the Sender is told, and nothing is recorded or shown, as if
@@ -384,6 +440,10 @@ async fn auto_accept_folder(sh: &Shared, info: &TransferInfo, longest_path: usiz
             tracing::warn!("could not look up the Sender as a Contact: {e}");
             return None;
         }
+    }
+    if info.text.is_some() {
+        // Kept in the database, not the save folder: there is nothing to check.
+        return Some(sh.save_dir.clone());
     }
     match sh.space_check(info.id, info.size, longest_path, &sh.save_dir).await {
         Ok(check) if check.passes() => Some(sh.save_dir.clone()),

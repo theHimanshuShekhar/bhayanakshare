@@ -18,6 +18,12 @@
 //! What is offered is a manifest (see `manifest`) and an iroh-blobs Collection of the same
 //! files, in the same order, named by their manifest paths.
 //!
+//! Text of up to 64 KiB is the exception: it is the Offer itself, so there is nothing to hash,
+//! no Collection and no grant, and no `HashReady`. The Receiver answers `Accept` and, once it
+//! has kept the text, `Completed`; a connection lost before that fails the Transfer, since
+//! there is no content hash to resume from. Longer text is written to a file called
+//! `text.txt` and sent as one file.
+//!
 //! A Batch is one send to several Receivers: one Transfer, and one task here, per Receiver, all
 //! sharing one [`Outgoing`]. The files are hashed once for all of them, and at most
 //! [`MAX_DOWNLOADS`] of the Receivers that have accepted download at a time. A Receiver that
@@ -27,7 +33,7 @@
 //! A Receiver gives its slot up when it loses its connection (it may be gone for hours) and
 //! takes one again before it is answered `ResumeOk`.
 
-use std::{path::PathBuf, sync::Arc};
+use std::{io::Write, path::PathBuf, sync::Arc};
 
 use iroh::EndpointId;
 use iroh_blobs::{
@@ -46,11 +52,12 @@ use crate::{
     clock::{UnixMillis, sleep_until},
     db::Source,
     device::{DeviceAddr, Shared, TransferInfo},
+    error::Error,
     gate::Grant,
     identity::DeviceId,
     manifest::Manifest,
-    protocol::{self, Message, Offer, write_frame},
-    scan::Scan,
+    protocol::{self, LONG_TEXT_NAME, MAX_INLINE_TEXT, Message, Offer, write_frame},
+    scan::{self, Scan},
     session::{
         BUSY, CLOSE_GRACE, Failure, INVALID_NAMES, LOST, STALLED, Session, Stall, Stop, UNEXPECTED,
         expect_hello, fail, made_progress, save_progress, stop,
@@ -61,16 +68,28 @@ use crate::{
 /// How many of a Batch's Receivers may download at once (spec section 4).
 pub(crate) const MAX_DOWNLOADS: usize = 3;
 
+/// What one send is made of.
+#[derive(Debug, Clone)]
+pub(crate) enum Payload {
+    /// Files and folders, by absolute path.
+    Paths(Vec<PathBuf>),
+    Text(String),
+}
+
 /// What the Transfers made by one send have in common: what was scanned, the content hash
 /// (worked out once, whichever Transfer needs it first), and the Batch's download slots.
 pub(crate) struct Outgoing {
     manifest: Manifest,
     sources: Vec<Source>,
     skipped_links: u32,
-    /// The files and folders the user picked, kept for `Device::resend`.
-    roots: Vec<PathBuf>,
+    /// What the user picked, kept for `Device::resend`.
+    payload: Payload,
     slots: Arc<Semaphore>,
     hashed: OnceCell<Hashed>,
+    /// The file a text too long to go inline is sent from; deleted with the send.
+    _file: Option<TextFile>,
+    /// Files under this folder are copied into the store, not referenced (see [`TextFile`]).
+    copy_under: Option<PathBuf>,
 }
 
 struct Hashed {
@@ -80,9 +99,63 @@ struct Hashed {
 }
 
 impl Outgoing {
-    pub fn new(scan: Scan, roots: Vec<PathBuf>, slots: Arc<Semaphore>) -> Self {
+    pub fn new(scan: Scan, payload: Payload, slots: Arc<Semaphore>) -> Self {
         let Scan { manifest, sources, skipped_links } = scan;
-        Self { manifest, sources, skipped_links, roots, slots, hashed: OnceCell::new() }
+        Self { manifest, sources, skipped_links, payload, slots, hashed: OnceCell::new(), _file: None, copy_under: None }
+    }
+
+    /// Reads what `payload` names off the disk, or, for text too long to go inline, writes it
+    /// to a file first. Text that fits in an Offer needs neither. Fails if the selection
+    /// cannot be sent (a limit, a name, empty text).
+    pub async fn prepare(sh: &Shared, payload: Payload, slots: Arc<Semaphore>) -> Result<Self, Error> {
+        let (payload, roots, file) = match payload {
+            Payload::Paths(paths) => {
+                let roots = paths
+                    .iter()
+                    .map(|path| std::path::absolute(path).map_err(|e| Error::io("resolving the path", e)))
+                    .collect::<Result<Vec<_>, _>>()?;
+                (Payload::Paths(roots.clone()), roots, None)
+            }
+            Payload::Text(text) if text.is_empty() => return Err(Error::EmptyText),
+            Payload::Text(text) if text.len() <= MAX_INLINE_TEXT => {
+                let nothing = Scan { manifest: Manifest::default(), sources: Vec::new(), skipped_links: 0 };
+                return Ok(Self::new(nothing, Payload::Text(text), slots));
+            }
+            Payload::Text(text) => {
+                let file = TextFile::write(sh, &text).await?;
+                let roots = vec![file.path()];
+                (Payload::Text(text), roots, Some(file))
+            }
+        };
+        let scan = tokio::task::spawn_blocking(move || scan::scan(&roots))
+            .await
+            .map_err(|e| Error::io("reading the files", std::io::Error::other(e)))??;
+        let copy_under = file.is_some().then(|| texts_dir(&sh.data_dir));
+        Ok(Self { _file: file, copy_under, ..Self::new(scan, payload, slots) })
+    }
+
+    /// The text, if it goes in the Offer itself.
+    pub fn inline_text(&self) -> Option<&str> {
+        match &self.payload {
+            Payload::Text(text) if text.len() <= MAX_INLINE_TEXT => Some(text),
+            _ => None,
+        }
+    }
+
+    pub fn payload(&self) -> &Payload {
+        &self.payload
+    }
+
+    pub fn manifest(&self) -> &Manifest {
+        &self.manifest
+    }
+
+    pub fn sources(&self) -> &[Source] {
+        &self.sources
+    }
+
+    pub fn skipped_links(&self) -> u32 {
+        self.skipped_links
     }
 
     /// The Collection's hash, importing the files the first time it is asked for. Transfers
@@ -92,12 +165,90 @@ impl Outgoing {
         let hashed = self
             .hashed
             .get_or_try_init(|| async {
-                let (root, tags) = import(store, &self.sources).await?;
+                let (root, tags) = import(store, &self.sources, self.copy_under.as_deref()).await?;
                 Ok(Hashed { root, _tags: tags })
             })
             .await?;
         Ok(hashed.root)
     }
+}
+
+/// Where, in the data folder, the files of texts too long to go inline are written.
+fn texts_dir(data_dir: &std::path::Path) -> PathBuf {
+    data_dir.join("outgoing-text")
+}
+
+/// The file a long text is sent from, `<data folder>/outgoing-text/<random>/text.txt`. It lives
+/// in the data folder, not a temp folder, because a Transfer resumed after a restart is served
+/// from its files again. It is deleted when the send is over (its Transfers have all ended),
+/// not when the Device is shutting down with some of them unfinished: [`sweep_texts`] takes
+/// care of the ones a crash or a restart leaves.
+///
+/// Unlike a file the user picked, it is imported into the store by copy, not by reference. The
+/// store names content by hash and keeps what it has imported, so sending the same text again
+/// (a retry, or the same words twice) finds the blob already there; were that a reference to a
+/// file deleted since, serving it would fail. The cost is that the store keeps the text, which
+/// it can only be rid of by garbage collection, which this Device does not run.
+struct TextFile {
+    dir: PathBuf,
+    shutdown: CancellationToken,
+}
+
+impl TextFile {
+    async fn write(sh: &Shared, text: &str) -> Result<Self, Error> {
+        let dir = texts_dir(&sh.data_dir).join(TransferId::random().to_string());
+        // Owned first, so that a write that fails part-way is cleaned up.
+        let file = Self { dir: dir.clone(), shutdown: sh.cancel.clone() };
+        let (path, text) = (file.path(), text.to_owned());
+        tokio::task::spawn_blocking(move || {
+            std::fs::create_dir_all(&dir)?;
+            let mut out = std::fs::File::create(path)?;
+            out.write_all(text.as_bytes())?;
+            out.sync_all()
+        })
+        .await
+        .map_err(|e| Error::io("writing the text", std::io::Error::other(e)))?
+        .map_err(|e| Error::io("writing the text", e))?;
+        Ok(file)
+    }
+
+    fn path(&self) -> PathBuf {
+        self.dir.join(LONG_TEXT_NAME)
+    }
+}
+
+impl Drop for TextFile {
+    fn drop(&mut self) {
+        if !self.shutdown.is_cancelled() {
+            let _ = std::fs::remove_dir_all(&self.dir);
+        }
+    }
+}
+
+/// Deletes what earlier runs left in `outgoing-text` that no Transfer this Device is yet to
+/// carry on is served from. Run once at start, after the Transfers that cannot be carried on
+/// have been ended.
+pub(crate) async fn sweep_texts(sh: &Shared) -> Result<(), Error> {
+    let mut wanted = Vec::new();
+    for unfinished in sh.db.unfinished().await? {
+        if unfinished.record.role == Role::Sender {
+            wanted.extend(sh.db.sources(unfinished.record.id).await?.into_iter().map(|s| s.path));
+        }
+    }
+    let root = texts_dir(&sh.data_dir);
+    tokio::task::spawn_blocking(move || {
+        let Ok(dirs) = std::fs::read_dir(&root) else { return };
+        for dir in dirs.flatten().map(|dir| dir.path()) {
+            if wanted.iter().any(|path| path.starts_with(&dir)) {
+                continue;
+            }
+            if let Err(e) = std::fs::remove_dir_all(&dir) {
+                tracing::warn!("removing {}: {e}", dir.display());
+            }
+        }
+    })
+    .await
+    .map_err(|e| Error::io("clearing old texts", std::io::Error::other(e)))
 }
 
 pub(crate) async fn run(
@@ -188,14 +339,19 @@ async fn flow(
     // From here on the Transfer's events carry what the Receiver calls itself.
     let info = &TransferInfo { peer_name, ..info.clone() };
     // Nothing in it says who else gets the files: every Receiver's Offer is its own.
-    let offer = Message::Offer(Offer::new(*info.id.as_bytes(), out.manifest.clone(), out.skipped_links));
+    let inline = out.inline_text().is_some();
+    let offer = Message::Offer(match out.inline_text() {
+        Some(text) => Offer::text(*info.id.as_bytes(), text.to_owned()),
+        None => Offer::new(*info.id.as_bytes(), out.manifest.clone(), out.skipped_links),
+    });
     write_frame(&mut session.send, &offer).await.map_err(fail(LOST))?;
     drop(offer);
 
     // Hash while the Receiver decides, for the whole Batch at once (see `Outgoing::hash`). Not
     // spawned: leaving this function drops it, which abandons the hashing if no other
     // Transfer is waiting on it.
-    let mut hashing = Some(Box::pin(out.hash(sh.blobs.clone())));
+    // Text that went in the Offer has nothing to hash.
+    let mut hashing = (!inline).then(|| Box::pin(out.hash(sh.blobs.clone())));
     let mut accepted = false;
     let mut root = None;
     let peer = to.id.endpoint_id();
@@ -216,7 +372,18 @@ async fn flow(
             msg = session.incoming.recv() => match msg {
                 Some(Ok(Message::Accept)) if !accepted => {
                     accepted = true;
+                    if inline {
+                        // The Receiver keeps the text and says so straight after its yes: from
+                        // here there is nothing left to cancel.
+                        sh.untrack(info.id);
+                    }
                     sh.transition(info, TransferState::Accepted).await;
+                }
+                Some(Ok(Message::Completed)) if accepted && inline => {
+                    sh.transition(info, TransferState::Completed { saved_to: None }).await;
+                    let _ = session.send.finish();
+                    session.conn.close(0u32.into(), b"done");
+                    return Ok(());
                 }
                 Some(Ok(Message::Decline)) if !accepted => {
                     sh.transition(info, TransferState::Declined).await;
@@ -231,7 +398,7 @@ async fn flow(
                     return Ok(());
                 }
                 Some(Ok(Message::Expired)) if !accepted => {
-                    lapse(sh, info, to, &out.roots);
+                    lapse(sh, info, to, out.payload());
                     stop(sh, info, Some(&mut session), Stop::PeerExpired).await;
                     return Ok(());
                 }
@@ -245,12 +412,12 @@ async fn flow(
                 Some(Err(e)) => return Err(Failure::with(LOST, e)),
                 None => return Err(Failure::with(LOST, "stream ended")),
             },
-            () = cancel.cancelled() => {
+            () = cancel.cancelled(), if !(inline && accepted) => {
                 stop(sh, info, Some(&mut session), Stop::Cancelled).await;
                 return Ok(());
             }
             () = &mut expiry, if !accepted => {
-                lapse(sh, info, to, &out.roots);
+                lapse(sh, info, to, out.payload());
                 stop(sh, info, Some(&mut session), Stop::Expired).await;
                 return Ok(());
             }
@@ -538,7 +705,7 @@ async fn check_files(
     }
     let content = HashAndFormat::hash_seq(root);
     if !sh.blobs.remote().local(content).await.is_ok_and(|local| local.is_complete()) {
-        let (hash, tags) = import(sh.blobs.clone(), &sources).await?;
+        let (hash, tags) = import(sh.blobs.clone(), &sources, Some(&texts_dir(&sh.data_dir))).await?;
         if hash != root {
             return Err(changed(&info.name));
         }
@@ -632,11 +799,11 @@ pub(crate) async fn resume(sh: &Shared, session: Session, id: TransferId) {
 }
 
 /// Keeps what an expired Offer held, so `Device::resend` can make it again.
-fn lapse(sh: &Shared, info: &TransferInfo, to: &DeviceAddr, roots: &[PathBuf]) {
+fn lapse(sh: &Shared, info: &TransferInfo, to: &DeviceAddr, payload: &Payload) {
     sh.expired
         .lock()
         .unwrap_or_else(|e| e.into_inner())
-        .insert(info.id, (to.clone(), roots.to_owned()));
+        .insert(info.id, (to.clone(), payload.clone()));
 }
 
 /// How many files are hashed at once; a folder of small files is mostly waiting on the disk.
@@ -648,18 +815,25 @@ const IMPORT_PARALLELISM: usize = 32;
 async fn import(
     store: iroh_blobs::api::Store,
     sources: &[Source],
+    copy_under: Option<&std::path::Path>,
 ) -> Result<(Hash, Vec<TempTag>), Failure> {
     // Each import owns what it uses: futures that borrow make the whole task fail to prove
     // that it can be sent between threads.
-    let jobs: Vec<_> = sources.iter().map(|source| (store.clone(), source.path.clone())).collect();
+    let jobs: Vec<_> = sources
+        .iter()
+        .map(|source| {
+            let copy = copy_under.is_some_and(|dir| source.path.starts_with(dir));
+            (store.clone(), source.path.clone(), if copy { ImportMode::Copy } else { ImportMode::TryReference })
+        })
+        .collect();
     let mut tags: Vec<TempTag> = stream::iter(jobs)
-        .map(|(store, path)| async move {
+        .map(|(store, path, mode)| async move {
             store
                 .blobs()
                 .add_path_with_opts(AddPathOptions {
                     path,
                     format: BlobFormat::Raw,
-                    mode: ImportMode::TryReference,
+                    mode,
                 })
                 .temp_tag()
                 .await
@@ -692,7 +866,7 @@ mod tests {
         let path = dir.join("a.txt");
         std::fs::write(&path, b"hello").unwrap();
         let scan = crate::scan::scan(std::slice::from_ref(&path)).unwrap();
-        Outgoing::new(scan, vec![path], Arc::new(Semaphore::new(MAX_DOWNLOADS)))
+        Outgoing::new(scan, Payload::Paths(vec![path]), Arc::new(Semaphore::new(MAX_DOWNLOADS)))
     }
 
     #[tokio::test]

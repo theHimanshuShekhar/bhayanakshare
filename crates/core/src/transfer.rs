@@ -123,6 +123,38 @@ impl FromStr for Role {
     }
 }
 
+/// What a Transfer carries.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, specta::Type)]
+#[serde(rename_all = "snake_case")]
+pub enum TransferKind {
+    /// Files and folders, saved into the save folder.
+    Files,
+    /// A piece of text that travelled inline in the Offer. Text too long for that is sent as a
+    /// file, so it is a `Files` Transfer.
+    Text,
+}
+
+impl TransferKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Files => "files",
+            Self::Text => "text",
+        }
+    }
+}
+
+impl FromStr for TransferKind {
+    type Err = ();
+
+    fn from_str(s: &str) -> Result<Self, ()> {
+        match s {
+            "files" => Ok(Self::Files),
+            "text" => Ok(Self::Text),
+            _ => Err(()),
+        }
+    }
+}
+
 /// How long an Offer waits for an answer before it expires (spec section 4).
 pub const OFFER_TTL_MS: i64 = 10 * 60 * 1000;
 

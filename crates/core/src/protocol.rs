@@ -17,10 +17,17 @@ use crate::manifest::{Manifest, ManifestError};
 pub const ALPN: &[u8] = b"bhayanakshare/ctrl/1";
 
 /// Bumped whenever this protocol or the pinned iroh-blobs version changes incompatibly.
-pub const PROTOCOL_VERSION: u32 = 2;
+pub const PROTOCOL_VERSION: u32 = 3;
 
 /// Largest frame body accepted from a peer (the spec's 64 MiB Offer limit).
 pub const MAX_FRAME_LEN: u32 = 64 * 1024 * 1024;
+
+/// The most text, in bytes of UTF-8, an Offer carries inline (spec section 5). Longer text is
+/// sent as a file named [`LONG_TEXT_NAME`].
+pub const MAX_INLINE_TEXT: usize = 64 * 1024;
+
+/// What a text too long to go inline is called as a file.
+pub const LONG_TEXT_NAME: &str = "text.txt";
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Message {
@@ -93,18 +100,30 @@ impl Hello {
     }
 }
 
-/// The Sender's proposal of a Transfer: the files and folders it would send, which is all
-/// the Receiver needs to decide.
+/// What an Offer proposes to send: the kind of Transfer, with its content when that is small
+/// enough to travel in the Offer itself.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum OfferKind {
+    /// Files and folders. Their content is fetched after the Receiver accepts.
+    Files(Manifest),
+    /// A piece of text of at most [`MAX_INLINE_TEXT`] bytes, which is the whole content: there
+    /// is nothing to hash or fetch. Untrusted: show it as plain text only.
+    Text(String),
+}
+
+/// The Sender's proposal of a Transfer: what it would send, which is all the Receiver needs
+/// to decide.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Offer {
     /// Random 128-bit Transfer ID chosen by the Sender.
     pub transfer_id: [u8; 16],
-    /// The total size of the files, in bytes.
+    /// The total size of the files, or the length of the text, in bytes.
     pub size: u64,
+    /// How many files there are; none for text.
     pub file_count: u64,
     /// Symlinks found in the chosen folders and left out.
     pub skipped_links: u32,
-    pub manifest: Manifest,
+    pub kind: OfferKind,
 }
 
 impl Offer {
@@ -115,16 +134,37 @@ impl Offer {
             size: manifest.total_size().unwrap_or(u64::MAX),
             file_count: manifest.file_count(),
             skipped_links,
-            manifest,
+            kind: OfferKind::Files(manifest),
         }
     }
 
+    /// An Offer of `text`, sent inline.
+    pub fn text(transfer_id: [u8; 16], text: String) -> Self {
+        Self { transfer_id, size: text.len() as u64, file_count: 0, skipped_links: 0, kind: OfferKind::Text(text) }
+    }
+
     /// Checks the Offer as the Receiver must, before anyone sees it: the manifest is valid
-    /// and the totals the Offer states are what it adds up to.
+    /// (or the text is within its limit) and the totals the Offer states are what it adds up
+    /// to.
     pub fn validate(&self) -> Result<(), ManifestError> {
-        self.manifest.validate()?;
-        if self.manifest.total_size() != Some(self.size) || self.manifest.file_count() != self.file_count {
-            return Err(ManifestError::Inconsistent);
+        match &self.kind {
+            OfferKind::Files(manifest) => {
+                manifest.validate()?;
+                if manifest.total_size() != Some(self.size) || manifest.file_count() != self.file_count {
+                    return Err(ManifestError::Inconsistent);
+                }
+            }
+            OfferKind::Text(text) => {
+                if text.is_empty() {
+                    return Err(ManifestError::Empty);
+                }
+                if text.len() > MAX_INLINE_TEXT {
+                    return Err(ManifestError::TextTooLong);
+                }
+                if self.size != text.len() as u64 || self.file_count != 0 || self.skipped_links != 0 {
+                    return Err(ManifestError::Inconsistent);
+                }
+            }
         }
         Ok(())
     }
@@ -280,6 +320,44 @@ mod tests {
         // Sizes that overflow cannot match any total.
         let huge = Offer::new([1; 16], Manifest { entries: vec![Entry::file("a", u64::MAX), Entry::file("b", 1)] }, 0);
         assert_eq!(huge.validate(), Err(ManifestError::Inconsistent));
+    }
+
+    #[test]
+    fn a_text_offer_carries_its_text_and_adds_up() {
+        let offer = Offer::text([4; 16], "héllo\nworld".into());
+        assert_eq!((offer.size, offer.file_count, offer.skipped_links), (12, 0, 0));
+        assert_eq!(offer.validate(), Ok(()));
+        // It survives the wire, with the kind and the text intact.
+        let bytes = postcard::to_stdvec(&Message::Offer(offer.clone())).unwrap();
+        assert_eq!(postcard::from_bytes::<Message>(&bytes).unwrap(), Message::Offer(offer.clone()));
+
+        for wrong in [
+            Offer { size: 11, ..offer.clone() },
+            Offer { file_count: 1, ..offer.clone() },
+            Offer { skipped_links: 1, ..offer.clone() },
+        ] {
+            assert_eq!(wrong.validate(), Err(ManifestError::Inconsistent));
+        }
+        assert_eq!(Offer::text([4; 16], String::new()).validate(), Err(ManifestError::Empty));
+    }
+
+    #[test]
+    fn inline_text_may_be_exactly_64_kib_of_bytes_and_no_more() {
+        assert_eq!(Offer::text([1; 16], "a".repeat(MAX_INLINE_TEXT)).validate(), Ok(()));
+        let over = Offer::text([1; 16], "a".repeat(MAX_INLINE_TEXT + 1));
+        assert_eq!(over.validate(), Err(ManifestError::TextTooLong));
+        // The limit counts bytes: 32,768 two-byte characters fit, one more does not.
+        assert_eq!(Offer::text([1; 16], "é".repeat(MAX_INLINE_TEXT / 2)).validate(), Ok(()));
+        let over = Offer::text([1; 16], "é".repeat(MAX_INLINE_TEXT / 2 + 1));
+        assert_eq!(over.validate(), Err(ManifestError::TextTooLong));
+    }
+
+    #[test]
+    fn text_that_is_not_utf8_does_not_decode() {
+        // `Message::Offer`, the ids and totals, then a `Text` kind whose one byte is not UTF-8.
+        let mut bytes = postcard::to_stdvec(&Message::Offer(Offer::text([0; 16], "a".into()))).unwrap();
+        *bytes.last_mut().unwrap() = 0xff;
+        assert!(postcard::from_bytes::<Message>(&bytes).is_err());
     }
 
     #[tokio::test]

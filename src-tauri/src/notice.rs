@@ -7,7 +7,8 @@
 use std::{collections::HashMap, sync::Mutex};
 
 use bhayanakshare_core::{
-    Contact, Device, DeviceId, Event, EventKind, Role, TransferEvent, TransferId, TransferState,
+    Contact, Device, DeviceId, Event, EventKind, Role, TransferEvent, TransferId, TransferKind,
+    TransferState,
 };
 use tauri::{AppHandle, Manager, Runtime};
 
@@ -83,8 +84,13 @@ pub async fn notify<R: Runtime>(app: &AppHandle<R>, event: &Event) {
             .and_then(|all| all.into_iter().find(|c| c.id == t.peer)),
         None => None,
     };
-    let (title, body) =
-        text(&notice, t.role, &called(t), &who(t.peer, t.peer_name.as_deref(), contact.as_ref()));
+    let (title, body) = text(
+        &notice,
+        t.role,
+        t.kind,
+        &called(t),
+        &who(t.peer, t.peer_name.as_deref(), contact.as_ref()),
+    );
     let on_click = (notice == Notice::Offer).then(|| {
         let app = app.clone();
         let id = t.transfer_id;
@@ -124,8 +130,13 @@ pub fn who(peer: DeviceId, announced: Option<&str>, contact: Option<&Contact>) -
     }
 }
 
-/// What a Transfer's contents are called in a sentence: the first item, and how many more.
+/// What a Transfer's contents are called in a sentence: the first item, and how many more. Text
+/// is only ever called "Text": what it says stays out of a notification, which can show on a
+/// locked screen.
 pub fn called(t: &TransferEvent) -> String {
+    if t.kind == TransferKind::Text {
+        return "Text".into();
+    }
     match t.items.len() {
         0 | 1 => t.name.clone(),
         more => format!("{} and {} more", t.name, more - 1),
@@ -133,10 +144,15 @@ pub fn called(t: &TransferEvent) -> String {
 }
 
 /// The title and body of a notification.
-pub fn text(notice: &Notice, role: Role, name: &str, who: &str) -> (String, String) {
+pub fn text(notice: &Notice, role: Role, kind: TransferKind, name: &str, who: &str) -> (String, String) {
+    let text = kind == TransferKind::Text;
     match (notice, role) {
-        (Notice::Offer, _) => ("Incoming file".into(), format!("{name} from {who}")),
-        (Notice::AutoAccepted, _) => ("File received".into(), format!("{name} from {who}")),
+        (Notice::Offer, _) => {
+            (if text { "Incoming text" } else { "Incoming file" }.into(), format!("{name} from {who}"))
+        }
+        (Notice::AutoAccepted, _) => {
+            (if text { "Text received" } else { "File received" }.into(), format!("{name} from {who}"))
+        }
         (Notice::Failed { reason }, Role::Sender) => {
             ("Could not send".into(), format!("{name} to {who}. {reason}"))
         }
@@ -206,8 +222,10 @@ mod tests {
             role,
             peer: peer(),
             peer_name: None,
+            kind: TransferKind::Files,
             name: "photo.jpg".into(),
             size: 10,
+            text: None,
             items: vec!["photo.jpg".into()],
             file_count: 1,
             skipped_links: 0,
@@ -229,6 +247,20 @@ mod tests {
         assert_eq!(called(&t), "photo.jpg");
         t.items = vec!["photo.jpg".into(), "docs".into(), "notes.txt".into()];
         assert_eq!(called(&t), "photo.jpg and 2 more");
+    }
+
+    #[test]
+    fn text_is_called_text_and_never_quoted() {
+        let mut t = event(1, Role::Receiver, TransferState::Offered);
+        t.kind = TransferKind::Text;
+        t.name = String::new();
+        t.items = Vec::new();
+        t.text = Some("my password is hunter2".into());
+        assert_eq!(called(&t), "Text");
+        let (title, body) = text(&Notice::Offer, Role::Receiver, t.kind, &called(&t), "Mum");
+        assert_eq!((title.as_str(), body.as_str()), ("Incoming text", "Text from Mum"));
+        let (title, _) = text(&Notice::AutoAccepted, Role::Receiver, t.kind, "Text", "Mum");
+        assert_eq!(title, "Text received");
     }
 
     #[test]
@@ -307,12 +339,12 @@ mod tests {
 
     #[test]
     fn the_text_says_what_and_who() {
-        let (title, body) = text(&Notice::Offer, Role::Receiver, "a.txt", "Mum");
+        let (title, body) = text(&Notice::Offer, Role::Receiver, TransferKind::Files, "a.txt", "Mum");
         assert_eq!((title.as_str(), body.as_str()), ("Incoming file", "a.txt from Mum"));
         let failed = Notice::Failed { reason: "The other Device went away.".into() };
-        assert_eq!(text(&failed, Role::Sender, "a.txt", "Mum").0, "Could not send");
+        assert_eq!(text(&failed, Role::Sender, TransferKind::Files, "a.txt", "Mum").0, "Could not send");
         assert_eq!(
-            text(&failed, Role::Receiver, "a.txt", "Mum").1,
+            text(&failed, Role::Receiver, TransferKind::Files, "a.txt", "Mum").1,
             "a.txt from Mum. The other Device went away."
         );
     }

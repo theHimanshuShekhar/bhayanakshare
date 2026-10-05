@@ -388,7 +388,7 @@ async fn the_offer_carries_a_manifest_of_paths_sizes_times_exec_bits_and_empty_f
     let big = 300 * 1024;
     // Sorted by path: the same every time, whatever order the disk lists in.
     assert_eq!(
-        offer.manifest.entries,
+        support::manifest_of(&offer).entries.as_slice(),
         [
             file("album/a.txt", 5, 0, false),
             file("album/big.bin", big, 1_000, false),

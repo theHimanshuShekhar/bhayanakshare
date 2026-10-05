@@ -9,7 +9,7 @@ use crate::{
     clock::UnixMillis,
     discovery::NearbyDevice,
     identity::DeviceId,
-    transfer::{BatchId, Role, TransferId, TransferState},
+    transfer::{BatchId, Role, TransferId, TransferKind, TransferState},
 };
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, specta::Type)]
@@ -63,9 +63,15 @@ pub struct TransferEvent {
     /// known (a Sender learns it only once it has reached the Receiver). Untrusted text: show
     /// it next to the Fingerprint.
     pub peer_name: Option<String>,
-    /// The first of `items`, for places with room for one name.
+    /// What the Transfer carries.
+    pub kind: TransferKind,
+    /// The first of `items`, for places with room for one name; empty for text.
     pub name: String,
+    /// Bytes of files, or of text.
     pub size: u64,
+    /// The text of a `Text` Transfer, whole, on every event of it. Untrusted when received:
+    /// show it as plain text, never as markup.
+    pub text: Option<String>,
     /// The names at the top of what was offered: the files and folders the Sender picked, each
     /// once. All of them are listed, however many; a screen shows as many as fit.
     pub items: Vec<String>,
@@ -132,8 +138,10 @@ mod tests {
             role: Role::Sender,
             peer: DeviceId::from_endpoint_id(iroh::SecretKey::generate().public()),
             peer_name: None,
+            kind: TransferKind::Files,
             name: format!("f{i}"),
             size: i,
+            text: None,
             items: vec![format!("f{i}")],
             file_count: 1,
             skipped_links: 0,
