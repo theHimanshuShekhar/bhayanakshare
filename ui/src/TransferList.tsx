@@ -4,11 +4,15 @@ import { peerName } from "./contacts";
 import { t, type MessageKey } from "./i18n";
 import {
   adjustedNamesText,
+  batchStatus,
   canCancel,
   canResend,
+  canRetry,
   formatSize,
   percent,
   transferName,
+  type BatchView,
+  type ListItem,
   type TransferView,
 } from "./transfers";
 
@@ -25,22 +29,78 @@ function statusText(x: TransferView, peer: string): string {
   return t(`transfer.${side}.${x.state.kind}` as MessageKey, params);
 }
 
-/** The Transfers of this session, newest first: what is happening and how it ended. */
+function errorText(e: unknown): string {
+  return e instanceof Error ? e.message : String(e);
+}
+
+/**
+ * The Transfers of this session, newest first: what is happening and how it ended. A Batch is
+ * one row that opens to show a row for each Receiver.
+ */
 export function TransferList({
   api,
   contacts,
-  transfers,
+  items,
 }: {
   api: Api;
   contacts: Contact[];
-  transfers: TransferView[];
+  items: ListItem[];
 }) {
   return (
     <ul className="transfers">
-      {transfers.map((x) => (
-        <TransferRow key={x.id} api={api} contacts={contacts} transfer={x} />
-      ))}
+      {items.map((item) =>
+        item.kind === "batch" ? (
+          <BatchRow key={item.batch.id} api={api} contacts={contacts} batch={item.batch} />
+        ) : (
+          <TransferRow key={item.transfer.id} api={api} contacts={contacts} transfer={item.transfer} />
+        ),
+      )}
     </ul>
+  );
+}
+
+/** What one send to several Devices looks like: how many arrived, and each Device on request. */
+function BatchRow({ api, contacts, batch }: { api: Api; contacts: Contact[]; batch: BatchView }) {
+  const [open, setOpen] = useState(false);
+  const [problem, setProblem] = useState<string | null>(null);
+  const name = transferName(batch.members[0]);
+  const list = `batch-${batch.id}`;
+
+  return (
+    <li>
+      <strong>{t("batch.title", { name, count: batch.members.length })}</strong>
+      {/* Announced as Devices finish, decline or fail. */}
+      <p aria-live="polite">{batchStatus(batch)}</p>
+      <button
+        type="button"
+        aria-expanded={open}
+        aria-controls={list}
+        aria-label={`${t(open ? "batch.hide" : "batch.show")}: ${t("batch.toggleLabel", { name })}`}
+        onClick={() => setOpen(!open)}
+      >
+        {t(open ? "batch.hide" : "batch.show")}
+      </button>
+      {batch.members.some(canCancel) && (
+        <button
+          type="button"
+          aria-label={t("batch.cancelAllLabel", { name })}
+          onClick={() => {
+            setProblem(null);
+            api.cancelBatch(batch.id).catch(() => setProblem(t("batch.cancelFailed")));
+          }}
+        >
+          {t("batch.cancelAll")}
+        </button>
+      )}
+      {problem !== null && <p role="alert">{problem}</p>}
+      {open && (
+        <ul id={list} className="members">
+          {batch.members.map((x) => (
+            <TransferRow key={x.id} api={api} contacts={contacts} transfer={x} />
+          ))}
+        </ul>
+      )}
+    </li>
   );
 }
 
@@ -126,14 +186,25 @@ function TransferRow({
             setProblem(null);
             api.resendTransfer(x.id).then(
               () => setResent(true),
-              (e) =>
-                setProblem(
-                  t("transfer.resendFailed", { reason: e instanceof Error ? e.message : String(e) }),
-                ),
+              (e) => setProblem(t("transfer.resendFailed", { reason: errorText(e) })),
             );
           }}
         >
           {t("transfer.resend")}
+        </button>
+      )}
+      {canRetry(x) && (
+        <button
+          type="button"
+          aria-label={t("transfer.retryLabel", { name, peer })}
+          onClick={() => {
+            setProblem(null);
+            // The new Offer is a Transfer of its own, which takes this Failed one's place
+            // in the Batch.
+            api.retryTransfer(x.id).catch((e) => setProblem(t("transfer.retryFailed", { reason: errorText(e) })));
+          }}
+        >
+          {t("transfer.retry")}
         </button>
       )}
       {problem !== null && <p role="alert">{problem}</p>}

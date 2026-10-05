@@ -9,7 +9,7 @@ use crate::{
     clock::UnixMillis,
     discovery::NearbyDevice,
     identity::DeviceId,
-    transfer::{Role, TransferId, TransferState},
+    transfer::{BatchId, Role, TransferId, TransferState},
 };
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, specta::Type)]
@@ -75,6 +75,9 @@ pub struct TransferEvent {
     /// Names the Receiver changed to make them safe to write on every system (a Sender has
     /// none to report).
     pub adjusted_names: u32,
+    /// The Batch this Transfer is part of, on the Sender that made it (a Receiver has none).
+    /// Transfers with the same ID belong to one Batch row; each has its own state.
+    pub batch_id: Option<BatchId>,
     /// When the Offer lapses if nobody answers it, by this Device's clock. The same on every
     /// event of the Transfer, so a late subscriber can show the countdown.
     pub expires_at: UnixMillis,
@@ -135,6 +138,7 @@ mod tests {
             file_count: 1,
             skipped_links: 0,
             adjusted_names: 0,
+            batch_id: None,
             expires_at: 0,
             state: TransferState::Offered,
         })

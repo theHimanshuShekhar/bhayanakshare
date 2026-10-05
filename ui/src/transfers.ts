@@ -1,12 +1,14 @@
 // What the UI knows about Transfers, built up from the Device's event stream. Pure functions
 // only: the React side just feeds events in and renders the result.
 
-import type { DeviceEvent, Role, TransferId, TransferState } from "./bindings";
+import type { BatchId, DeviceEvent, Role, TransferId, TransferState } from "./bindings";
 import { t } from "./i18n";
 
 export interface TransferView {
   id: TransferId;
   role: Role;
+  /** The Batch a Sender made this Transfer in; null for a Receiver's and for a lone send. */
+  batch: BatchId | null;
   /** The other Device's ID. */
   peer: string;
   /** What the other Device calls itself, as it announced; null until known. Untrusted text. */
@@ -58,6 +60,7 @@ export function applyEvent(transfers: Transfers, event: DeviceEvent): Transfers 
       : {
           id: event.transfer_id,
           role: event.role,
+          batch: event.batch_id,
           peer: event.peer,
           peerName: event.peer_name,
           name: event.name,
@@ -124,6 +127,7 @@ export function canCancel(view: TransferView): boolean {
     case "offered":
       return view.role === "sender";
     case "accepted":
+    case "waiting":
     case "transferring":
     case "reconnecting":
       return true;
@@ -135,6 +139,78 @@ export function canCancel(view: TransferView): boolean {
 /** A Sender can send an Offer nobody answered again in one step. */
 export function canResend(view: TransferView): boolean {
   return view.role === "sender" && view.state.kind === "expired";
+}
+
+/**
+ * A Transfer in a Batch that failed can be sent again to its Receiver with a new Offer. One
+ * the Receiver declined cannot: that is their answer.
+ */
+export function canRetry(view: TransferView): boolean {
+  return view.role === "sender" && view.batch !== null && view.state.kind === "failed";
+}
+
+/** A Batch as the Sender sees it: its Transfers, grouped. */
+export interface BatchView {
+  id: BatchId;
+  /**
+   * One Transfer per Receiver, in the order the Receivers were first sent to: the latest sent
+   * to each, so a retry stands in for the Failed Transfer it retries.
+   */
+  members: TransferView[];
+}
+
+/** A row of the Transfer list: a Transfer on its own, or a whole Batch. */
+export type ListItem =
+  | { kind: "transfer"; transfer: TransferView }
+  | { kind: "batch"; batch: BatchView };
+
+/**
+ * The rows of the Transfer list, newest first. A Batch is one row, where its first Transfer
+ * began; every other Transfer, and every Receiver's, is a row of its own.
+ */
+export function listItems(transfers: Transfers): ListItem[] {
+  const items: ListItem[] = [];
+  const batches = new Map<BatchId, Map<string, TransferView>>();
+  for (const id of transfers.order) {
+    const view = transfers.byId[id];
+    if (view.batch === null) {
+      items.push({ kind: "transfer", transfer: view });
+      continue;
+    }
+    let members = batches.get(view.batch);
+    if (members === undefined) {
+      members = new Map();
+      batches.set(view.batch, members);
+      items.push({ kind: "batch", batch: { id: view.batch, members: [] } });
+    }
+    // Replacing a value keeps the Receiver's place in the Map.
+    members.set(view.peer, view);
+  }
+  for (const item of items) {
+    if (item.kind === "batch") item.batch.members = [...batches.get(item.batch.id)!.values()];
+  }
+  return items.reverse();
+}
+
+/** "2 of 3 delivered, 1 declined": how a Batch stands, counting its Receivers by outcome. */
+export function batchStatus(batch: BatchView): string {
+  const count = (matches: (state: TransferState) => boolean) =>
+    batch.members.filter((m) => matches(m.state)).length;
+  const kinds = (...wanted: TransferState["kind"][]) => count((s) => wanted.includes(s.kind));
+  const parts = [t("batch.delivered", { done: kinds("completed"), total: batch.members.length })];
+  const others = [
+    ["batch.declined", kinds("declined")],
+    ["batch.failed", kinds("failed")],
+    ["batch.cancelled", kinds("cancelled")],
+    ["batch.expired", kinds("expired")],
+    ["batch.inProgress", count((s) => !isOver(s))],
+  ] as const;
+  for (const [key, n] of others) if (n > 0) parts.push(t(key, { count: n }));
+  return parts.join(", ");
+}
+
+function isOver(state: TransferState): boolean {
+  return ["declined", "completed", "failed", "expired", "cancelled"].includes(state.kind);
 }
 
 /** 581_000 ms becomes "9:41": the time left, rounded up to whole seconds, never below 0:00. */

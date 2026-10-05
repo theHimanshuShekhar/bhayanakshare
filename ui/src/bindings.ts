@@ -12,6 +12,15 @@ export const commands = {
 	 *  one Transfer; resolves to the Transfer ID.
 	 */
 	sendFiles: (to: string, paths: string[]) => __TAURI_INVOKE<string>("send_files", { to, paths }),
+	/**
+	 *  Offers the files and folders at `paths` to every Device in `to` (pasted or chosen Device
+	 *  IDs) at once, as a Batch of one Transfer each; resolves to the Batch ID.
+	 */
+	sendBatch: (to: string[], paths: string[]) => __TAURI_INVOKE<string>("send_batch", { to, paths }),
+	/**  Stops every Transfer of a Batch that is still running. */
+	cancelBatch: (batchId: BatchId) => __TAURI_INVOKE<null>("cancel_batch", { batchId }),
+	/**  Sends a Failed Transfer of a Batch again, with a new Offer; resolves to the new Transfer ID. */
+	retryTransfer: (transferId: TransferId) => __TAURI_INVOKE<string>("retry_transfer", { transferId }),
 	/**  Whether a pending Offer fits in `folder` (the save folder when absent). */
 	checkOffer: (transferId: TransferId, folder: string | null) => __TAURI_INVOKE<SpaceCheck>("check_offer", { transferId, folder }),
 	/**  Accepts a pending Offer into `folder` for this Offer only (the save folder when absent). */
@@ -60,6 +69,12 @@ export const events = {
 };
 
 /* Types */
+/**
+ *  A random 128-bit Batch ID, chosen by the Sender: what ties together the Transfers made by
+ *  one send to several Receivers. It stays on the Sender; no Receiver is told it.
+ */
+export type BatchId = string;
+
 /**  A saved Device. */
 export type Contact = {
 	id: DeviceId,
@@ -212,6 +227,11 @@ export type TransferEvent = {
 	 */
 	adjusted_names: number,
 	/**
+	 *  The Batch this Transfer is part of, on the Sender that made it (a Receiver has none).
+	 *  Transfers with the same ID belong to one Batch row; each has its own state.
+	 */
+	batch_id: BatchId | null,
+	/**
 	 *  When the Offer lapses if nobody answers it, by this Device's clock. The same on every
 	 *  event of the Transfer, so a late subscriber can show the countdown.
 	 */
@@ -227,6 +247,12 @@ export type TransferId = string;
 
 /**  Where a Transfer is in its lifecycle (spec section 4, the part the skeleton covers). */
 export type TransferState = { kind: "offered" } | { kind: "accepted" } | { kind: "declined" } | 
+/**
+ *  Sender only: the Receiver has accepted, but the Batch already has its limit of Receivers
+ *  downloading, so this one waits for a slot. The Receiver shows Accepted meanwhile: it is
+ *  not told, and fetches once the Sender sends `HashReady`.
+ */
+{ kind: "waiting" } | 
 /**  The Receiver is fetching the content. */
 { kind: "transferring" } | 
 /**

@@ -3,7 +3,12 @@
 
 use std::path::PathBuf;
 
-use crate::{db::DbError, identity::DeviceId, store::StoreError, transfer::TransferId};
+use crate::{
+    db::DbError,
+    identity::DeviceId,
+    store::StoreError,
+    transfer::{BatchId, TransferId},
+};
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
@@ -24,6 +29,14 @@ pub enum Error {
     NotRunning(TransferId),
     #[error("Transfer {0} did not expire on this Device, so there is nothing to send again")]
     NothingToResend(TransferId),
+    #[error("A Batch needs at least one Receiver.")]
+    NoReceivers,
+    #[error("{} is chosen twice as a Receiver.", .0.fingerprint())]
+    DuplicateReceiver(DeviceId),
+    #[error("this Device has no Batch {0}")]
+    UnknownBatch(BatchId),
+    #[error("Transfer {0} cannot be retried: {1}")]
+    NotRetryable(TransferId, &'static str),
     #[error("{} is not a Contact", .0.fingerprint())]
     UnknownContact(DeviceId),
     #[error("{} is already a Contact", .0.fingerprint())]

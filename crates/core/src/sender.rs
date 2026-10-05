@@ -17,6 +17,15 @@
 //!
 //! What is offered is a manifest (see `manifest`) and an iroh-blobs Collection of the same
 //! files, in the same order, named by their manifest paths.
+//!
+//! A Batch is one send to several Receivers: one Transfer, and one task here, per Receiver, all
+//! sharing one [`Outgoing`]. The files are hashed once for all of them, and at most
+//! [`MAX_DOWNLOADS`] of the Receivers that have accepted download at a time. A Receiver that
+//! has accepted and has to wait for a slot is simply not sent `HashReady` yet, and is not
+//! granted anything: it already waits for `HashReady`, so it needs no message of its own, and
+//! the Sender still reads its `Cancel` meanwhile. The Sender shows such a Transfer as Waiting.
+//! A Receiver gives its slot up when it loses its connection (it may be gone for hours) and
+//! takes one again before it is answered `ResumeOk`.
 
 use std::{path::PathBuf, sync::Arc};
 
@@ -30,7 +39,7 @@ use iroh_blobs::{
     format::collection::Collection,
 };
 use n0_future::{BufferedStreamExt, StreamExt, stream};
-use tokio::sync::mpsc;
+use tokio::sync::{OnceCell, OwnedSemaphorePermit, Semaphore, mpsc};
 use tokio_util::sync::CancellationToken;
 
 use crate::{
@@ -39,26 +48,68 @@ use crate::{
     device::{DeviceAddr, Shared, TransferInfo},
     gate::Grant,
     identity::DeviceId,
+    manifest::Manifest,
     protocol::{self, Message, Offer, write_frame},
     scan::Scan,
     session::{
         BUSY, CLOSE_GRACE, Failure, INVALID_NAMES, LOST, STALLED, Session, Stall, Stop, UNEXPECTED,
         expect_hello, fail, made_progress, save_progress, stop,
     },
-    transfer::{Role, TransferId, TransferState},
+    transfer::{Role, STALL_TTL_MS, TransferId, TransferState},
 };
+
+/// How many of a Batch's Receivers may download at once (spec section 4).
+pub(crate) const MAX_DOWNLOADS: usize = 3;
+
+/// What the Transfers made by one send have in common: what was scanned, the content hash
+/// (worked out once, whichever Transfer needs it first), and the Batch's download slots.
+pub(crate) struct Outgoing {
+    manifest: Manifest,
+    sources: Vec<Source>,
+    skipped_links: u32,
+    /// The files and folders the user picked, kept for `Device::resend`.
+    roots: Vec<PathBuf>,
+    slots: Arc<Semaphore>,
+    hashed: OnceCell<Hashed>,
+}
+
+struct Hashed {
+    root: Hash,
+    /// Keep the imported blobs alive for as long as any Transfer of the send runs.
+    _tags: Vec<TempTag>,
+}
+
+impl Outgoing {
+    pub fn new(scan: Scan, roots: Vec<PathBuf>, slots: Arc<Semaphore>) -> Self {
+        let Scan { manifest, sources, skipped_links } = scan;
+        Self { manifest, sources, skipped_links, roots, slots, hashed: OnceCell::new() }
+    }
+
+    /// The Collection's hash, importing the files the first time it is asked for. Transfers
+    /// that ask meanwhile wait for that one import; if the one doing it is dropped (its
+    /// Receiver declined), another takes over.
+    async fn hash(&self, store: iroh_blobs::api::Store) -> Result<Hash, Failure> {
+        let hashed = self
+            .hashed
+            .get_or_try_init(|| async {
+                let (root, tags) = import(store, &self.sources).await?;
+                Ok(Hashed { root, _tags: tags })
+            })
+            .await?;
+        Ok(hashed.root)
+    }
+}
 
 pub(crate) async fn run(
     sh: Arc<Shared>,
     info: TransferInfo,
     to: DeviceAddr,
-    roots: Vec<PathBuf>,
-    scan: Scan,
+    out: Arc<Outgoing>,
     cancel: CancellationToken,
 ) {
     let outcome = tokio::select! {
         () = sh.cancel.cancelled() => None,
-        outcome = flow(&sh, &info, &to, roots, scan, &cancel) => Some(outcome),
+        outcome = flow(&sh, &info, &to, &out, &cancel) => Some(outcome),
     };
     sh.untrack(info.id);
     if let Some(Err(Failure(reason))) = outcome {
@@ -77,6 +128,7 @@ pub(crate) fn recover(
 ) {
     let cancel = sh.track(info.id);
     let resumes = Resumes::register(sh, info.id, info.peer.endpoint_id());
+    let slots = sh.slots(info.batch);
     let task_sh = sh.clone();
     sh.tasks.spawn(async move {
         let sh = task_sh;
@@ -84,7 +136,9 @@ pub(crate) fn recover(
         let stall = Stall::new(progress_at);
         let outcome = tokio::select! {
             () = sh.cancel.cancelled() => None,
-            outcome = transferring(&sh, &info, root, None, resumes, &cancel, stall) => Some(outcome),
+            outcome = transferring(
+                &sh, &info, root, None, resumes, &cancel, stall, &slots, None,
+            ) => Some(outcome),
         };
         sh.untrack(info.id);
         if let Some(Err(Failure(reason))) = outcome {
@@ -117,8 +171,7 @@ async fn flow(
     sh: &Arc<Shared>,
     info: &TransferInfo,
     to: &DeviceAddr,
-    roots: Vec<PathBuf>,
-    scan: Scan,
+    out: &Outgoing,
     cancel: &CancellationToken,
 ) -> Result<(), Failure> {
     // Until the Offer is out nobody else knows of the Transfer, so there is no one to tell.
@@ -134,16 +187,15 @@ async fn flow(
     sh.remember_peer(to.id, &session.conn, peer_name.clone()).await;
     // From here on the Transfer's events carry what the Receiver calls itself.
     let info = &TransferInfo { peer_name, ..info.clone() };
-    let Scan { manifest, sources, skipped_links } = scan;
-    let offer = Message::Offer(Offer::new(*info.id.as_bytes(), manifest, skipped_links));
+    // Nothing in it says who else gets the files: every Receiver's Offer is its own.
+    let offer = Message::Offer(Offer::new(*info.id.as_bytes(), out.manifest.clone(), out.skipped_links));
     write_frame(&mut session.send, &offer).await.map_err(fail(LOST))?;
     drop(offer);
 
-    // Hash while the Receiver decides. Not spawned: leaving this function drops it, which
-    // abandons the hashing of a declined or failed Transfer.
-    let mut import = Some(Box::pin(import(sh.blobs.clone(), sources)));
-    // The temp tags keep the imported blobs alive for as long as the Transfer runs.
-    let mut _keep_alive = Vec::new();
+    // Hash while the Receiver decides, for the whole Batch at once (see `Outgoing::hash`). Not
+    // spawned: leaving this function drops it, which abandons the hashing if no other
+    // Transfer is waiting on it.
+    let mut hashing = Some(Box::pin(out.hash(sh.blobs.clone())));
     let mut accepted = false;
     let mut root = None;
     let peer = to.id.endpoint_id();
@@ -179,7 +231,7 @@ async fn flow(
                     return Ok(());
                 }
                 Some(Ok(Message::Expired)) if !accepted => {
-                    lapse(sh, info, to, &roots);
+                    lapse(sh, info, to, &out.roots);
                     stop(sh, info, Some(&mut session), Stop::PeerExpired).await;
                     return Ok(());
                 }
@@ -198,19 +250,30 @@ async fn flow(
                 return Ok(());
             }
             () = &mut expiry, if !accepted => {
-                lapse(sh, info, to, &roots);
+                lapse(sh, info, to, &out.roots);
                 stop(sh, info, Some(&mut session), Stop::Expired).await;
                 return Ok(());
             }
-            done = async { import.as_mut().expect("guarded by the if below").await },
-                if import.is_some() =>
+            done = async { hashing.as_mut().expect("guarded by the if below").await },
+                if hashing.is_some() =>
             {
-                import = None;
-                let (hash, tags) = done?;
-                _keep_alive = tags;
-                root = Some(hash);
+                hashing = None;
+                root = Some(done?);
             }
         }
+    };
+
+    // Only so many of the Batch's Receivers download at once; this one has to wait its turn
+    // for a slot, and until then is told nothing and may fetch nothing.
+    let give_up = sh.now() + STALL_TTL_MS;
+    let slot = match take_slot(sh, info, &out.slots, &mut session, cancel, give_up).await? {
+        // `Transferring` is announced below either way.
+        Slotted::Got { slot, .. } => slot,
+        Slotted::Stopped(how) => {
+            stop(sh, info, Some(&mut session), how).await;
+            return Ok(());
+        }
+        Slotted::Gone => return Err(Failure::with(LOST, "the Receiver left while waiting for a slot")),
     };
 
     // `HashReady` is sent only once the Receiver has accepted, and only after the grant is
@@ -227,13 +290,54 @@ async fn flow(
         .await
         .map_err(fail(LOST))?;
     sh.transition(info, TransferState::Transferring).await;
-    transferring(sh, info, root, Some((session, grant)), resumes, cancel, Stall::new(now)).await
+    let live = Some((session, grant));
+    transferring(sh, info, root, live, resumes, cancel, Stall::new(now), &out.slots, Some(slot)).await
+}
+
+enum Slotted {
+    /// `waited`: the Transfer was shown as Waiting, so it is due to be shown again.
+    Got { slot: OwnedSemaphorePermit, waited: bool },
+    Stopped(Stop),
+    /// The Receiver's connection ended while it waited.
+    Gone,
+}
+
+/// Takes one of the Batch's download slots, showing the Transfer as Waiting if none is free.
+/// While waiting, the Receiver's `Cancel` and this Device's own cancel still count; with no
+/// progress by `give_up` the Transfer fails as stalled, like any other.
+async fn take_slot(
+    sh: &Shared,
+    info: &TransferInfo,
+    slots: &Arc<Semaphore>,
+    session: &mut Session,
+    cancel: &CancellationToken,
+    give_up: UnixMillis,
+) -> Result<Slotted, Failure> {
+    if let Ok(slot) = slots.clone().try_acquire_owned() {
+        return Ok(Slotted::Got { slot, waited: false });
+    }
+    sh.transition(info, TransferState::Waiting).await;
+    tokio::select! {
+        biased;
+        msg = session.incoming.recv() => match msg {
+            Some(Ok(Message::Cancel)) => Ok(Slotted::Stopped(Stop::PeerCancelled)),
+            Some(Ok(_)) => Err(Failure::with(UNEXPECTED, "message while waiting for a slot")),
+            Some(Err(_)) | None => Ok(Slotted::Gone),
+        },
+        () = cancel.cancelled() => Ok(Slotted::Stopped(Stop::Cancelled)),
+        () = sleep_until(&*sh.clock, give_up) => Err(Failure(STALLED.into())),
+        // Fair: slots go to the Transfers that have waited longest.
+        slot = slots.clone().acquire_owned() => {
+            slot.map(|slot| Slotted::Got { slot, waited: true }).map_err(fail(UNEXPECTED))
+        }
+    }
 }
 
 /// Serves the Transfer until the Receiver reports it finished: with the Receiver connected it
 /// follows its progress; when the connection is lost it waits, grant dropped, for the
 /// Receiver to dial back. `live` is the control connection of a Transfer that just started;
-/// a recovered one has none.
+/// a recovered one has none. `slot` is the Batch's download slot the Transfer holds while it
+/// has a connected Receiver (a recovered one holds none until its Receiver is back).
 async fn transferring(
     sh: &Arc<Shared>,
     info: &TransferInfo,
@@ -242,6 +346,8 @@ async fn transferring(
     mut resumes: Resumes,
     cancel: &CancellationToken,
     mut stall: Stall,
+    slots: &Arc<Semaphore>,
+    mut slot: Option<OwnedSemaphorePermit>,
 ) -> Result<(), Failure> {
     let (mut live, mut grant) = match live {
         Some((session, grant)) => (Some(session), Some(grant)),
@@ -253,16 +359,34 @@ async fn transferring(
     // run did, has not yet on this Device's event stream.
     let mut announced = live.is_some();
     loop {
-        if let Some(back) = returned.take() {
-            if let Some((session, fresh)) = welcome(sh, info, root, back, &mut keep_alive).await? {
-                live = Some(session);
-                grant = Some(fresh);
-                if !announced {
-                    announced = true;
-                    sh.transition(info, TransferState::Transferring).await;
+        if let Some(mut back) = returned.take() {
+            // The Receiver is answered, and so allowed to fetch, only once it has a slot.
+            let taken = match slot.take() {
+                Some(slot) => Slotted::Got { slot, waited: false },
+                None => take_slot(sh, info, slots, &mut back, cancel, stall.deadline()).await?,
+            };
+            match taken {
+                Slotted::Got { slot: taken, waited } => {
+                    announced &= !waited;
+                    // Otherwise the Receiver went away again before it was answered, and
+                    // `taken` goes back.
+                    if let Some((session, fresh)) = welcome(sh, info, root, back, &mut keep_alive).await? {
+                        live = Some(session);
+                        grant = Some(fresh);
+                        slot = Some(taken);
+                        if !announced {
+                            announced = true;
+                            sh.transition(info, TransferState::Transferring).await;
+                        }
+                    }
                 }
+                Slotted::Stopped(how) => {
+                    stop(sh, info, Some(&mut back), how).await;
+                    return Ok(());
+                }
+                // It went away again while it waited.
+                Slotted::Gone => {}
             }
-            // Otherwise the Receiver went away again before it was answered.
         }
         let Some(mut session) = live.take() else {
             // Nobody is connected: the Receiver may come back until the Transfer stalls out.
@@ -283,9 +407,12 @@ async fn transferring(
             Followed::Finished => return Ok(()),
             Followed::Lost => {
                 drop(grant.take());
+                // Nobody is downloading, and it may be a long while: let another Receiver in.
+                drop(slot.take());
                 save_progress(sh, info, &mut stall).await;
             }
-            // The Receiver is back before we noticed it had gone: the old connection is dead.
+            // The Receiver is back before we noticed it had gone: the old connection is dead,
+            // and the slot stays this Transfer's.
             Followed::Replaced(back) => {
                 drop(grant.take());
                 session.conn.close(0u32.into(), b"replaced");
@@ -411,7 +538,7 @@ async fn check_files(
     }
     let content = HashAndFormat::hash_seq(root);
     if !sh.blobs.remote().local(content).await.is_ok_and(|local| local.is_complete()) {
-        let (hash, tags) = import(sh.blobs.clone(), sources).await?;
+        let (hash, tags) = import(sh.blobs.clone(), &sources).await?;
         if hash != root {
             return Err(changed(&info.name));
         }
@@ -520,7 +647,7 @@ const IMPORT_PARALLELISM: usize = 32;
 /// Collection's hash and the temp tags that keep everything alive.
 async fn import(
     store: iroh_blobs::api::Store,
-    sources: Vec<Source>,
+    sources: &[Source],
 ) -> Result<(Hash, Vec<TempTag>), Failure> {
     // Each import owns what it uses: futures that borrow make the whole task fail to prove
     // that it can be sent between threads.
@@ -542,7 +669,7 @@ async fn import(
     .await
     .map_err(fail("Could not read the files."))?;
     let collection = Collection::from_iter(
-        sources.into_iter().map(|source| source.name).zip(tags.iter().map(TempTag::hash)),
+        sources.iter().map(|source| source.name.clone()).zip(tags.iter().map(TempTag::hash)),
     );
     let root = collection
         .store(&store)
@@ -551,4 +678,47 @@ async fn import(
     let hash = root.hash();
     tags.push(root);
     Ok((hash, tags))
+}
+
+#[cfg(test)]
+mod tests {
+    use std::time::Duration;
+
+    use iroh_blobs::store::mem::MemStore;
+
+    use super::*;
+
+    fn outgoing(dir: &std::path::Path) -> Outgoing {
+        let path = dir.join("a.txt");
+        std::fs::write(&path, b"hello").unwrap();
+        let scan = crate::scan::scan(std::slice::from_ref(&path)).unwrap();
+        Outgoing::new(scan, vec![path], Arc::new(Semaphore::new(MAX_DOWNLOADS)))
+    }
+
+    #[tokio::test]
+    async fn the_transfers_of_a_batch_share_one_hash() {
+        let dir = tempfile::tempdir().unwrap();
+        let (out, store) = (outgoing(dir.path()), MemStore::new());
+
+        let hash = || out.hash((*store).clone());
+        let (a, b, c) = tokio::join!(hash(), hash(), hash());
+
+        let (a, b, c) = (a.unwrap(), b.unwrap(), c.unwrap());
+        assert_eq!((a, b), (b, c));
+        // Asked again later it is not worked out again: the files can even be gone.
+        std::fs::remove_file(dir.path().join("a.txt")).unwrap();
+        assert!(out.hash((*store).clone()).await.is_ok());
+    }
+
+    #[tokio::test]
+    async fn hashing_carries_on_when_the_transfer_that_began_it_is_dropped() {
+        let dir = tempfile::tempdir().unwrap();
+        let (out, store) = (outgoing(dir.path()), MemStore::new());
+
+        // Its Receiver declines while it is under way.
+        let started = tokio::time::timeout(Duration::ZERO, out.hash((*store).clone())).await;
+        assert!(started.is_err(), "still hashing when dropped");
+
+        assert!(out.hash((*store).clone()).await.is_ok());
+    }
 }

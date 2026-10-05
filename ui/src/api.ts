@@ -7,6 +7,7 @@ import { openUrl, revealItemInDir } from "@tauri-apps/plugin-opener";
 import {
   commands,
   events,
+  type BatchId,
   type Contact,
   type DeviceEvent,
   type MyId,
@@ -16,7 +17,7 @@ import {
   type Visibility,
 } from "./bindings";
 
-export type { Contact, DeviceEvent, MyId, ShellEvent, SpaceCheck, TransferId, Visibility };
+export type { BatchId, Contact, DeviceEvent, MyId, ShellEvent, SpaceCheck, TransferId, Visibility };
 
 export interface Api {
   myId(): Promise<MyId>;
@@ -25,6 +26,13 @@ export interface Api {
   /** Offers the files and folders at `paths` to the Device with ID `to` as one Transfer;
    * resolves to the Transfer ID. */
   sendFiles(to: string, paths: string[]): Promise<string>;
+  /** Offers the files and folders at `paths` to every Device with an ID in `to`, as a Batch
+   * (one Transfer each); resolves to the Batch ID. */
+  sendBatch(to: string[], paths: string[]): Promise<string>;
+  /** Stops every Transfer of a Batch that is still running. */
+  cancelBatch(id: BatchId): Promise<unknown>;
+  /** Sends a Failed Transfer of a Batch again with a new Offer; resolves to the new Transfer ID. */
+  retryTransfer(id: TransferId): Promise<string>;
   /** Whether a pending Offer fits in `folder` (the save folder when null). */
   checkOffer(id: TransferId, folder: string | null): Promise<SpaceCheck>;
   /** Accepts into `folder` for this Offer only (the save folder when null). */
@@ -90,6 +98,9 @@ export const tauriApi: Api = {
   myId: commands.myId,
   saveFolder: commands.saveFolder,
   sendFiles: commands.sendFiles,
+  sendBatch: commands.sendBatch,
+  cancelBatch: commands.cancelBatch,
+  retryTransfer: commands.retryTransfer,
   checkOffer: commands.checkOffer,
   acceptOffer: commands.acceptOffer,
   declineOffer: commands.declineOffer,

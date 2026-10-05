@@ -7,7 +7,7 @@ use std::{
     collections::HashMap,
     net::SocketAddr,
     path::{Path, PathBuf},
-    sync::{Arc, Mutex},
+    sync::{Arc, Mutex, Weak},
     time::Duration,
 };
 
@@ -16,7 +16,7 @@ use iroh::{
     endpoint::presets, protocol::Router,
 };
 use iroh_blobs::BlobsProtocol;
-use tokio::sync::oneshot;
+use tokio::sync::{Semaphore, oneshot};
 use tokio_util::{sync::CancellationToken, task::TaskTracker};
 
 use crate::{
@@ -33,7 +33,7 @@ use crate::{
     session::RESTARTED,
     space::{FreeSpace, SpaceCheck},
     store,
-    transfer::{OFFER_TTL_MS, Role, TransferId, TransferState},
+    transfer::{BatchId, OFFER_TTL_MS, Role, TransferId, TransferState},
 };
 
 /// Which network a Device lives on.
@@ -84,6 +84,14 @@ impl DeviceAddr {
     }
 }
 
+/// What [`Device::send_batch`] made.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SentBatch {
+    pub id: BatchId,
+    /// One Transfer per Receiver, in the order the Receivers were given.
+    pub transfers: Vec<TransferId>,
+}
+
 /// The answer a Receiver gives to an Offer.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum Decision {
@@ -119,6 +127,8 @@ pub(crate) struct TransferInfo {
     pub skipped_links: u32,
     /// Names the Receiver adjusted to make them safe to write.
     pub adjusted_names: u32,
+    /// The Batch this Transfer was sent in; a Sender's only.
+    pub batch: Option<BatchId>,
     /// When the Offer lapses if nobody has answered it, by this Device's clock.
     pub expires_at: UnixMillis,
 }
@@ -138,6 +148,7 @@ impl TransferInfo {
             file_count: record.file_count,
             skipped_links: record.skipped_links,
             adjusted_names: record.adjusted_names,
+            batch: record.batch_id,
             // Both sides begin timing an Offer when they record it.
             expires_at: record.created_at + OFFER_TTL_MS,
         })
@@ -171,6 +182,9 @@ pub(crate) struct Shared {
     /// Transfers this Device sends that are waiting for, or following, their Receiver, by
     /// Transfer ID: where a Receiver that dials back with `Resume` is handed over.
     pub resumers: Mutex<HashMap<TransferId, sender::Resumer>>,
+    /// The download slots of each Batch with a Transfer running, which its Transfers share.
+    /// Weak: a Batch's entry lapses with its last running Transfer.
+    pub batch_slots: Mutex<HashMap<BatchId, Weak<Semaphore>>>,
     /// Addresses of other Devices this Device was told about, for dialling them.
     pub lookup: MemoryLookup,
     pub tasks: TaskTracker,
@@ -192,6 +206,21 @@ impl Shared {
 
     pub fn untrack(&self, id: TransferId) {
         self.cancels.lock().unwrap_or_else(|e| e.into_inner()).remove(&id);
+    }
+
+    /// The download slots the Transfers of `batch` share (a Transfer sent on its own has slots
+    /// of its own, which nothing else competes for).
+    pub fn slots(&self, batch: Option<BatchId>) -> Arc<Semaphore> {
+        let fresh = || Arc::new(Semaphore::new(sender::MAX_DOWNLOADS));
+        let Some(batch) = batch else { return fresh() };
+        let mut all = self.batch_slots.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(slots) = all.get(&batch).and_then(Weak::upgrade) {
+            return slots;
+        }
+        all.retain(|_, slots| slots.strong_count() > 0);
+        let slots = fresh();
+        all.insert(batch, Arc::downgrade(&slots));
+        slots
     }
 
     /// What Transfer `id`, an Offer of `needed` bytes whose longest path is `longest_path`
@@ -263,6 +292,7 @@ impl Shared {
                 file_count: t.file_count,
                 skipped_links: t.skipped_links,
                 adjusted_names: t.adjusted_names,
+                batch_id: t.batch,
                 state: state.clone(),
                 created_at: now,
                 updated_at: now,
@@ -302,6 +332,7 @@ impl Shared {
                 file_count: t.file_count,
                 skipped_links: t.skipped_links,
                 adjusted_names: t.adjusted_names,
+                batch_id: t.batch,
                 expires_at: t.expires_at,
                 state,
             }),
@@ -333,7 +364,10 @@ async fn recover(sh: &Arc<Shared>) -> Result<(), Error> {
         let resumed = match (record.role, &record.state, TransferInfo::from_record(&record), root) {
             (
                 Role::Sender,
-                TransferState::Accepted | TransferState::Transferring,
+                // A Waiting Transfer with a hash is one whose Receiver came back from a lost
+                // connection and was queued for a slot again; one still waiting for its first
+                // slot has no hash, and fails like any other without one.
+                TransferState::Accepted | TransferState::Waiting | TransferState::Transferring,
                 Some(info),
                 Some(root),
             ) => {
@@ -433,6 +467,7 @@ impl Device {
             cancels: Mutex::default(),
             expired: Mutex::default(),
             resumers: Mutex::default(),
+            batch_slots: Mutex::default(),
             lookup,
             tasks: TaskTracker::new(),
             cancel: CancellationToken::new(),
@@ -480,11 +515,67 @@ impl Device {
         to: impl Into<DeviceAddr>,
         paths: &[PathBuf],
     ) -> Result<TransferId, Error> {
+        Ok(self.send_to(&[to.into()], paths, None).await?.remove(0))
+    }
+
+    /// Offers the files and folders at `paths` to every Device in `to` at once: a Batch, with
+    /// one Transfer for each, in the order given. Each is an ordinary Transfer to its
+    /// Receiver, whose Offer says nothing about the others; the files are hashed once, and
+    /// at most 3 Receivers download at a time (the rest that accepted show Waiting). Every
+    /// Transfer then succeeds, fails or is cancelled on its own. A selection that cannot be
+    /// sent is refused here, before anything is sent.
+    pub async fn send_batch(&self, to: &[DeviceAddr], paths: &[PathBuf]) -> Result<SentBatch, Error> {
+        if to.is_empty() {
+            return Err(Error::NoReceivers);
+        }
+        if let Some(twice) = to.iter().enumerate().find(|(i, a)| to[..*i].iter().any(|b| b.id == a.id)) {
+            return Err(Error::DuplicateReceiver(twice.1.id));
+        }
+        let id = BatchId::random();
+        let transfers = self.send_to(to, paths, Some(id)).await?;
+        Ok(SentBatch { id, transfers })
+    }
+
+    /// Sends a Failed Transfer of a Batch again, to the same Receiver, as a new Transfer in the
+    /// same Batch with a new Offer. Only a Transfer this Device sent in a Batch and that
+    /// failed can be: a Declined one is the Receiver's answer, and one that is not over is
+    /// still going. The Receiver is dialled by its ID, so a Device that cannot be found by
+    /// its ID alone must have been given an address (`note_address`).
+    pub async fn retry(&self, id: TransferId) -> Result<TransferId, Error> {
+        let sh = &self.inner.shared;
+        let not = |why: &'static str| Error::NotRetryable(id, why);
+        let record = sh.db.transfer(id).await?.ok_or_else(|| not("this Device has no such Transfer"))?;
+        if record.role != Role::Sender {
+            return Err(not("this Device did not send it"));
+        }
+        let batch = record.batch_id.ok_or_else(|| not("it was not sent in a Batch"))?;
+        match record.state {
+            TransferState::Failed { .. } => {}
+            TransferState::Declined => return Err(not("the Receiver declined it")),
+            _ => return Err(not("only a Failed Transfer can be retried")),
+        }
+        let peer: DeviceId = record.peer.parse().map_err(|_| not("its Receiver is unknown"))?;
+        // Oldest first: a later Transfer to the same Receiver in the Batch is a retry of this.
+        let attempts = sh.db.batch_transfers(batch).await?;
+        if attempts.iter().skip_while(|t| t.id != id).skip(1).any(|t| t.peer == record.peer) {
+            return Err(not("it has been retried already"));
+        }
+        let roots =
+            sh.db.batch_roots(batch).await?.ok_or_else(|| not("what it sent is no longer known"))?;
+        Ok(self.send_to(&[DeviceAddr::from(peer)], &roots, Some(batch)).await?[0])
+    }
+
+    /// Scans `paths` once and starts a Transfer to each of `to`, in `batch` if there is one.
+    async fn send_to(
+        &self,
+        to: &[DeviceAddr],
+        paths: &[PathBuf],
+        batch: Option<BatchId>,
+    ) -> Result<Vec<TransferId>, Error> {
         let sh = &self.inner.shared;
         if sh.cancel.is_cancelled() {
             return Err(Error::ShuttingDown);
         }
-        let to = to.into();
         let roots = paths
             .iter()
             .map(|path| std::path::absolute(path).map_err(|e| Error::io("resolving the path", e)))
@@ -494,11 +585,15 @@ impl Device {
             .await
             .map_err(|e| Error::io("reading the files", std::io::Error::other(e)))??;
 
+        if let Some(batch) = batch {
+            sh.db.insert_batch(batch, &roots).await?;
+        }
+
         let items = scan.manifest.top_level_items();
-        let info = TransferInfo {
+        let template = TransferInfo {
             id: TransferId::random(),
             role: Role::Sender,
-            peer: to.id,
+            peer: to[0].id,
             peer_name: None,
             name: items[0].clone(),
             // The scan has been validated, so the total fits.
@@ -507,16 +602,22 @@ impl Device {
             file_count: scan.manifest.file_count(),
             skipped_links: scan.skipped_links,
             adjusted_names: 0,
+            batch,
             expires_at: sh.now() + OFFER_TTL_MS,
         };
-        sh.begin(&info, TransferState::Offered).await?;
-        // The files as they are now, for the check before they are served again.
-        sh.db.insert_sources(info.id, scan.sources.clone()).await?;
-        let id = info.id;
-        let cancel = sh.track(id);
-        let sh = sh.clone();
-        self.inner.shared.tasks.spawn(sender::run(sh, info, to, roots, scan, cancel));
-        Ok(id)
+        let sources = scan.sources.clone();
+        let out = Arc::new(sender::Outgoing::new(scan, roots, sh.slots(batch)));
+        let mut ids = Vec::with_capacity(to.len());
+        for to in to {
+            let info = TransferInfo { id: TransferId::random(), peer: to.id, ..template.clone() };
+            sh.begin(&info, TransferState::Offered).await?;
+            // The files as they are now, for the check before they are served again.
+            sh.db.insert_sources(info.id, sources.clone()).await?;
+            ids.push(info.id);
+            let cancel = sh.track(info.id);
+            sh.tasks.spawn(sender::run(sh.clone(), info, to.clone(), out.clone(), cancel));
+        }
+        Ok(ids)
     }
 
     /// Sends an Offer that expired again, to the same Device, as a new Transfer. Fails if the
@@ -548,6 +649,23 @@ impl Device {
             .cloned()
             .ok_or(Error::NotRunning(id))?;
         token.cancel();
+        Ok(())
+    }
+
+    /// Stops every Transfer of a Batch that is still running, each as `cancel` would. The ones
+    /// that already ended stay as they ended.
+    pub async fn cancel_batch(&self, batch: BatchId) -> Result<(), Error> {
+        let sh = &self.inner.shared;
+        let transfers = sh.db.batch_transfers(batch).await?;
+        if transfers.is_empty() {
+            return Err(Error::UnknownBatch(batch));
+        }
+        let running = sh.cancels.lock().unwrap_or_else(|e| e.into_inner());
+        for transfer in transfers {
+            if let Some(token) = running.get(&transfer.id) {
+                token.cancel();
+            }
+        }
         Ok(())
     }
 

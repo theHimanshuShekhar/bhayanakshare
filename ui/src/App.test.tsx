@@ -10,6 +10,7 @@ afterEach(cleanup);
 const MY_ID = "A".repeat(52);
 const PEER_ID = "K3QF7XNA" + "B".repeat(44);
 const TRANSFER = "ab".repeat(16);
+const BATCH = "ba".repeat(16);
 /** When the Offers in these tests lapse: 10 minutes after the stand-in's clock reads 0. */
 const EXPIRES_AT = 600_000;
 
@@ -49,6 +50,9 @@ function fakeApi(overrides: Partial<Api> = {}, initialContacts: Contact[] = []) 
     myId: () => Promise.resolve({ id: MY_ID, fingerprint: "AAAA-AAAA" }),
     saveFolder: () => Promise.resolve("/home/me/Downloads/BhayanakShare"),
     sendFiles: vi.fn((_to: string, _paths: string[]) => Promise.resolve(TRANSFER)),
+    sendBatch: vi.fn((_to: string[], _paths: string[]) => Promise.resolve(BATCH)),
+    cancelBatch: vi.fn((_id: string) => Promise.resolve(null)),
+    retryTransfer: vi.fn((_id: string) => Promise.resolve("ef".repeat(16))),
     checkOffer: vi.fn((_id: string, _folder: string | null) =>
       Promise.resolve({ needed: 2048, free: 1_000_000, paths_too_long: false }),
     ),
@@ -126,6 +130,7 @@ function fakeApi(overrides: Partial<Api> = {}, initialContacts: Contact[] = []) 
       file_count: 1,
       skipped_links: 0,
       adjusted_names: 0,
+      batch_id: null,
       size: 2048,
       expires_at: EXPIRES_AT,
       state,
@@ -265,6 +270,7 @@ describe("sending", () => {
       file_count: 2,
       skipped_links: 1,
       adjusted_names: 0,
+      batch_id: null,
       size: 1,
       expires_at: EXPIRES_AT,
       state: { kind: "offered" },
@@ -344,6 +350,7 @@ describe("sending", () => {
       file_count: 1,
       skipped_links: 0,
       adjusted_names: 0,
+      batch_id: null,
       size: 1,
       expires_at: EXPIRES_AT,
       state: { kind: "failed", reason: "The other Device went away." },
@@ -524,6 +531,7 @@ describe("receiving", () => {
       file_count: 1,
       skipped_links: 0,
       adjusted_names: 0,
+      batch_id: null,
       size: 1,
       expires_at: EXPIRES_AT,
       state: { kind: "offered" },
@@ -712,6 +720,7 @@ describe("cancelling, expiry and the Offer countdown", () => {
       file_count: 1,
       skipped_links: 0,
       adjusted_names: 0,
+      batch_id: null,
       size: 2048,
       expires_at: EXPIRES_AT,
       state: { kind: "failed", reason: "The other Device already has too many Offers from you." },
@@ -872,6 +881,7 @@ describe("Contacts", () => {
       file_count: 1,
       skipped_links: 0,
       adjusted_names: 0,
+      batch_id: null,
       size: 1,
       expires_at: EXPIRES_AT,
       state: { kind: "offered" },
@@ -1267,6 +1277,7 @@ describe("a clicked notification", () => {
       file_count: 1,
       skipped_links: 0,
       adjusted_names: 0,
+      batch_id: null,
       size: 1,
       expires_at: EXPIRES_AT,
       state: { kind: "offered" },
@@ -1324,5 +1335,182 @@ describe("quitting", () => {
     fireEvent.click(screen.getByRole("button", { name: "Quit" }));
     expect((await screen.findByRole("alert")).textContent).toContain("busy");
     expect(screen.getByRole("button", { name: "Keep running" })).toBeTruthy();
+  });
+});
+
+describe("Batches", () => {
+  const MUM = PEER_ID;
+  const DAD = "Q2WERTYU" + "C".repeat(44);
+  const SIS = "ZZZZ7777" + "D".repeat(44);
+  const contacts = [
+    contact({ id: MUM, nickname: "Mum", added_at: 1 }),
+    contact({ id: DAD, nickname: "Dad", added_at: 2 }),
+    contact({ id: SIS, nickname: "Sis", added_at: 3 }),
+  ];
+  const select = (name: string) =>
+    fireEvent.click(screen.getByRole("checkbox", { name: `Select ${name} to send to several Devices at once` }));
+
+  /** One Transfer of the Batch, as the Sender's Device reports it. */
+  const member = (device: ReturnType<typeof fakeApi>, n: number, peer: string, state: TransferState) =>
+    device.push({
+      type: "transfer",
+      transfer_id: String(n).repeat(32),
+      role: "sender",
+      peer,
+      peer_name: null,
+      name: "photo.jpg",
+      items: ["photo.jpg"],
+      file_count: 1,
+      skipped_links: 0,
+      adjusted_names: 0,
+      batch_id: BATCH,
+      size: 2048,
+      expires_at: EXPIRES_AT,
+      state,
+    });
+
+  it("sends the chosen files to every selected Device as one Batch", async () => {
+    const device = await start(fakeApi({}, contacts));
+    await screen.findByRole("button", { name: "Send to Mum" });
+    select("Mum");
+    expect(screen.getByText("1 Device selected")).toBeTruthy();
+    select("Dad");
+    expect(screen.getByText("2 Devices selected")).toBeTruthy();
+
+    fireEvent.click(screen.getByRole("button", { name: "Choose files…" }));
+
+    await waitFor(() => expect(device.api.sendBatch).toHaveBeenCalled());
+    expect(device.api.sendBatch).toHaveBeenCalledWith([MUM, DAD], ["/tmp/photo.jpg"]);
+    expect(device.api.sendFiles).not.toHaveBeenCalled();
+    // Done: nothing stays selected.
+    await waitFor(() => expect(screen.queryByText("2 Devices selected")).toBeNull());
+  });
+
+  it("sends a folder to one selected Device as an ordinary Transfer", async () => {
+    const device = await start(fakeApi({}, contacts));
+    await screen.findByRole("button", { name: "Send to Mum" });
+    select("Dad");
+    fireEvent.click(screen.getByRole("button", { name: "Choose folder…" }));
+    await waitFor(() => expect(device.api.sendFiles).toHaveBeenCalled());
+    expect(device.api.sendFiles).toHaveBeenCalledWith(DAD, ["/mnt/big"]);
+    expect(device.api.sendBatch).not.toHaveBeenCalled();
+  });
+
+  it("can untick a Device and clear the selection, and sends nothing if the picker is cancelled", async () => {
+    const pickFiles = vi.fn(() => Promise.resolve<string[] | null>(null));
+    const device = await start(fakeApi({ pickFiles }, contacts));
+    await screen.findByRole("button", { name: "Send to Mum" });
+    select("Mum");
+    select("Dad");
+    select("Mum");
+    expect(screen.getByText("1 Device selected")).toBeTruthy();
+    select("Mum");
+    fireEvent.click(screen.getByRole("button", { name: "Choose files…" }));
+    await waitFor(() => expect(pickFiles).toHaveBeenCalled());
+    expect(device.api.sendBatch).not.toHaveBeenCalled();
+    expect(screen.getByText("2 Devices selected")).toBeTruthy();
+
+    fireEvent.click(screen.getByRole("button", { name: "Clear selection" }));
+    expect(screen.queryByText("2 Devices selected")).toBeNull();
+  });
+
+  it("says why the Batch could not be sent, and keeps the selection", async () => {
+    const sendBatch = vi.fn(() => Promise.reject(new Error("no")));
+    await start(fakeApi({ sendBatch }, contacts));
+    await screen.findByRole("button", { name: "Send to Mum" });
+    select("Mum");
+    select("Dad");
+    fireEvent.click(screen.getByRole("button", { name: "Choose files…" }));
+    expect((await screen.findByRole("alert")).textContent).toContain("Could not send. no");
+    expect(screen.getByText("2 Devices selected")).toBeTruthy();
+  });
+
+  it("offers files that are waiting to be sent to the selection, each as a Batch", async () => {
+    const device = await start(fakeApi({}, contacts));
+    await screen.findByRole("button", { name: "Send to Mum" });
+    await device.shell({ type: "send_files", paths: ["/tmp/a.txt", "/tmp/b.txt"] });
+    select("Mum");
+    select("Dad");
+
+    fireEvent.click(screen.getByRole("button", { name: "Send a.txt, b.txt" }));
+
+    await waitFor(() => expect(device.api.sendBatch).toHaveBeenCalledTimes(2));
+    expect(device.api.sendBatch).toHaveBeenNthCalledWith(1, [MUM, DAD], ["/tmp/a.txt"]);
+    expect(device.api.sendBatch).toHaveBeenNthCalledWith(2, [MUM, DAD], ["/tmp/b.txt"]);
+    await waitFor(() => expect(screen.queryByText(/Choose a Device to send/)).toBeNull());
+  });
+
+  it("shows a Batch as one row with its overall status, and each Device when it is opened", async () => {
+    const device = await start(fakeApi({}, contacts));
+    await screen.findByRole("button", { name: "Send to Mum" });
+    await member(device, 1, MUM, { kind: "completed", saved_to: null });
+    await member(device, 2, DAD, { kind: "declined" });
+    await member(device, 3, SIS, { kind: "waiting" });
+
+    expect(screen.getByText("photo.jpg to 3 Devices")).toBeTruthy();
+    expect(screen.getByText("1 of 3 delivered, 1 declined, 1 in progress")).toBeTruthy();
+    expect(screen.queryByText("Dad declined.")).toBeNull();
+
+    const toggle = screen.getByRole("button", { name: /Show each Device/ });
+    expect(toggle.getAttribute("aria-expanded")).toBe("false");
+    fireEvent.click(toggle);
+    expect(toggle.getAttribute("aria-expanded")).toBe("true");
+    expect(screen.getByText("photo.jpg to Mum")).toBeTruthy();
+    expect(screen.getByText("Dad declined.")).toBeTruthy();
+    expect(screen.getByText("Sis accepted. Waiting for a turn to send…")).toBeTruthy();
+
+    fireEvent.click(toggle);
+    expect(screen.queryByText("Dad declined.")).toBeNull();
+  });
+
+  it("cancels one Device of a Batch, or all of them", async () => {
+    const device = await start(fakeApi({}, contacts));
+    await screen.findByRole("button", { name: "Send to Mum" });
+    await member(device, 1, MUM, { kind: "transferring" });
+    await member(device, 2, DAD, { kind: "waiting" });
+    fireEvent.click(screen.getByRole("button", { name: /Show each Device/ }));
+
+    fireEvent.click(screen.getByRole("button", { name: "Cancel all of photo.jpg" }));
+    expect(device.api.cancelBatch).toHaveBeenCalledWith(BATCH);
+
+    const waiting = screen.getByText("Dad accepted. Waiting for a turn to send…").closest("li")!;
+    fireEvent.click(within(waiting).getByRole("button", { name: "Cancel photo.jpg" }));
+    expect(device.api.cancelTransfer).toHaveBeenCalledWith("22".repeat(16));
+  });
+
+  it("offers Cancel all only while something in the Batch can still be cancelled", async () => {
+    const device = await start(fakeApi({}, contacts));
+    await screen.findByRole("button", { name: "Send to Mum" });
+    await member(device, 1, MUM, { kind: "completed", saved_to: null });
+    await member(device, 2, DAD, { kind: "declined" });
+    expect(screen.queryByRole("button", { name: /Cancel all/ })).toBeNull();
+  });
+
+  it("retries a Failed Device with a new Offer, and not a Declined one", async () => {
+    const device = await start(fakeApi({}, contacts));
+    await screen.findByRole("button", { name: "Send to Mum" });
+    await member(device, 1, MUM, { kind: "failed", reason: "The other Device went away." });
+    await member(device, 2, DAD, { kind: "declined" });
+    fireEvent.click(screen.getByRole("button", { name: /Show each Device/ }));
+
+    expect(screen.getAllByRole("button", { name: /^Retry / })).toHaveLength(1);
+    fireEvent.click(screen.getByRole("button", { name: "Retry photo.jpg to Mum" }));
+    expect(device.api.retryTransfer).toHaveBeenCalledWith("11".repeat(16));
+
+    // The new Offer replaces the Failed row; the Failed Transfer is no longer shown.
+    await member(device, 3, MUM, { kind: "offered" });
+    expect(screen.queryByText(/The other Device went away/)).toBeNull();
+    expect(screen.getByText("Waiting for Mum…")).toBeTruthy();
+    expect(screen.getByText("0 of 2 delivered, 1 declined, 1 in progress")).toBeTruthy();
+  });
+
+  it("says why a retry did not go out", async () => {
+    const retryTransfer = vi.fn(() => Promise.reject(new Error("it has been retried already")));
+    const device = await start(fakeApi({ retryTransfer }, contacts));
+    await screen.findByRole("button", { name: "Send to Mum" });
+    await member(device, 1, MUM, { kind: "failed", reason: "x" });
+    fireEvent.click(screen.getByRole("button", { name: /Show each Device/ }));
+    fireEvent.click(screen.getByRole("button", { name: "Retry photo.jpg to Mum" }));
+    expect((await screen.findByRole("alert")).textContent).toContain("it has been retried already");
   });
 });
