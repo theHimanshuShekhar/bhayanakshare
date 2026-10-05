@@ -1,6 +1,7 @@
 import { useState } from "react";
 import type { Api } from "./api";
 import { t } from "./i18n";
+import { TextComposer } from "./TextComposer";
 import { baseName } from "./transfers";
 
 /** The checkbox on a Device's tile that adds it to, or takes it out of, a send to several. */
@@ -28,7 +29,8 @@ export function SelectBox({
 
 /**
  * What to do with the Devices chosen on Home: send them the same files or folder, which makes
- * a Batch (one Transfer each) when there are several. With `files` already chosen (a second
+ * a Batch (one Transfer each) when there are several; or write them a text, sent the same way.
+ * With `files` already chosen (a second
  * launch, or the tray's "Send files…"), they go out as they are, each as a Batch of its own.
  */
 export function SelectionBar({
@@ -52,6 +54,7 @@ export function SelectionBar({
 }) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [composing, setComposing] = useState(false);
 
   const offer = (paths: string[]) =>
     ids.length === 1 ? api.sendFiles(ids[0], paths) : api.sendBatch(ids, paths);
@@ -82,6 +85,16 @@ export function SelectionBar({
       <p role="status">
         {ids.length === 1 ? t("selection.one") : t("selection.many", { count: ids.length })}
       </p>
+      {composing ? (
+        <TextComposer
+          send={(text) => (ids.length === 1 ? api.sendText(ids[0], text) : api.sendTextBatch(ids, text))}
+          onSent={() => {
+            setComposing(false);
+            onSent();
+          }}
+          onBack={() => setComposing(false)}
+        />
+      ) : (
       <div className="actions">
         {files.length > 0 ? (
           <button type="button" onClick={() => send()} disabled={busy}>
@@ -99,12 +112,16 @@ export function SelectionBar({
             >
               {t("send.chooseFolder")}
             </button>
+            <button type="button" onClick={() => setComposing(true)} disabled={busy}>
+              {t("send.writeText")}
+            </button>
           </>
         )}
         <button type="button" onClick={onClear} disabled={busy}>
           {t("selection.clear")}
         </button>
       </div>
+      )}
       {error !== null && <p role="alert">{error}</p>}
     </div>
   );

@@ -29,6 +29,10 @@ export interface Api {
   /** Offers the files and folders at `paths` to every Device with an ID in `to`, as a Batch
    * (one Transfer each); resolves to the Batch ID. */
   sendBatch(to: string[], paths: string[]): Promise<string>;
+  /** Offers `text` to the Device with ID `to`; resolves to the Transfer ID. */
+  sendText(to: string, text: string): Promise<string>;
+  /** Offers `text` to every Device with an ID in `to`, as a Batch; resolves to the Batch ID. */
+  sendTextBatch(to: string[], text: string): Promise<string>;
   /** Stops every Transfer of a Batch that is still running. */
   cancelBatch(id: BatchId): Promise<unknown>;
   /** Sends a Failed Transfer of a Batch again with a new Offer; resolves to the new Transfer ID. */
@@ -99,6 +103,8 @@ export const tauriApi: Api = {
   saveFolder: commands.saveFolder,
   sendFiles: commands.sendFiles,
   sendBatch: commands.sendBatch,
+  sendText: commands.sendText,
+  sendTextBatch: commands.sendTextBatch,
   cancelBatch: commands.cancelBatch,
   retryTransfer: commands.retryTransfer,
   checkOffer: commands.checkOffer,

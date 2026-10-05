@@ -1,7 +1,7 @@
 // What the UI knows about Transfers, built up from the Device's event stream. Pure functions
 // only: the React side just feeds events in and renders the result.
 
-import type { BatchId, DeviceEvent, Role, TransferId, TransferState } from "./bindings";
+import type { BatchId, DeviceEvent, Role, TransferId, TransferKind, TransferState } from "./bindings";
 import { t } from "./i18n";
 
 export interface TransferView {
@@ -13,7 +13,11 @@ export interface TransferView {
   peer: string;
   /** What the other Device calls itself, as it announced; null until known. Untrusted text. */
   peerName: string | null;
-  /** The first of `items`. */
+  /** What it carries: files and folders, or a text that went in the Offer itself. */
+  kind: TransferKind;
+  /** The text of a text Transfer. Untrusted when received: show it as plain text only. */
+  text: string | null;
+  /** The first of `items`; empty for text. */
   name: string;
   /** The names at the top of what is being sent: the files and folders picked, each once. */
   items: string[];
@@ -63,6 +67,8 @@ export function applyEvent(transfers: Transfers, event: DeviceEvent): Transfers 
           batch: event.batch_id,
           peer: event.peer,
           peerName: event.peer_name,
+          kind: event.kind,
+          text: event.text,
           name: event.name,
           items: event.items,
           fileCount: event.file_count,
@@ -228,6 +234,7 @@ export function percent(view: TransferView): number {
 
 /** What a Transfer holds, for a sentence: "photo.jpg", or "photo.jpg and 2 more". */
 export function transferName(view: TransferView): string {
+  if (view.kind === "text") return t("transfer.textName");
   return view.items.length > 1
     ? t("transfer.nameMore", { name: view.name, count: view.items.length - 1 })
     : view.name;
