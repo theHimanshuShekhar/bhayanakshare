@@ -1,13 +1,15 @@
 import { useEffect, useRef, useState, type KeyboardEvent } from "react";
 import type { Api } from "./api";
 import { t } from "./i18n";
+import { parseShareLink } from "./shareLink";
 import { TextComposer } from "./TextComposer";
 import { baseName } from "./transfers";
 
 /**
- * "Send to ID…": paste a Device ID, pick files or a folder or write text, and the Offer goes out. With `files`
- * already chosen (a second launch, or the tray's "Send files…"), there is nothing to pick: they
- * go out as soon as the Device is. Each of those is a Transfer of its own, files or folders.
+ * "Send to ID…": paste a Device ID (or share link), pick files or a folder or write text, and the
+ * Offer goes out. With `files` already chosen (a second launch, or the tray's "Send files…"),
+ * there is nothing to pick: they go out as soon as the Device is. Each of those is a Transfer of
+ * its own, files or folders.
  */
 export function SendDialog({
   api,
@@ -86,7 +88,8 @@ export function SendDialog({
           id="send-to"
           ref={input}
           value={to}
-          onChange={(e) => setTo(e.target.value)}
+          // A pasted share link becomes the Device ID in it; its name is of no use here.
+          onChange={(e) => setTo(parseShareLink(e.target.value)?.id ?? e.target.value)}
           aria-describedby="send-to-hint"
           spellCheck={false}
           autoComplete="off"

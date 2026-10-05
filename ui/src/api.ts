@@ -2,6 +2,7 @@
 // generated (bindings.ts), plus the file picker and "show in folder". Everything else gets an
 // `Api`, so tests can hand the UI a stand-in.
 
+import { getCurrent, onOpenUrl } from "@tauri-apps/plugin-deep-link";
 import { open } from "@tauri-apps/plugin-dialog";
 import { openUrl, revealItemInDir } from "@tauri-apps/plugin-opener";
 import {
@@ -59,6 +60,8 @@ export interface Api {
   cancelTransfer(id: TransferId): Promise<unknown>;
   /** Sends an expired Offer again; resolves to the new Transfer ID. */
   resendTransfer(id: TransferId): Promise<string>;
+  /** This Device's name, as other Devices see it. */
+  deviceName(): Promise<string>;
   /** Who can see this Device as a Nearby Device. */
   visibility(): Promise<Visibility>;
   /** Changes who can see this Device as a Nearby Device; it takes effect at once. */
@@ -100,6 +103,9 @@ export interface Api {
   onDeviceEvent(handler: (event: DeviceEvent) => void): Promise<() => void>;
   /** Calls `handler` for what the shell has to say (files to send, quitting). */
   onShellEvent(handler: (event: ShellEvent) => void): Promise<() => void>;
+  /** Calls `handler` with every `bhayanakshare://` link the user opens, including the one that
+   * started the app. Resolves to the unsubscribe function. */
+  onOpenLink(handler: (url: string) => void): Promise<() => void>;
 }
 
 /** The async clipboard API where the webview has it, else the older copy command. */
@@ -122,6 +128,10 @@ async function copyText(text: string): Promise<void> {
   if (!copied) throw new Error("copy failed");
 }
 
+/** Set once the link that started the app has been handed over: the plugin keeps reporting it,
+ * and a UI that mounts again (or a reloaded page) must not open a dismissed link again. */
+let startupLinkTaken = false;
+
 export const tauriApi: Api = {
   myId: commands.myId,
   saveFolder: commands.saveFolder,
@@ -136,6 +146,7 @@ export const tauriApi: Api = {
   declineOffer: commands.declineOffer,
   cancelTransfer: commands.cancelTransfer,
   resendTransfer: commands.resendTransfer,
+  deviceName: commands.deviceName,
   visibility: commands.visibility,
   setVisibility: commands.setVisibility,
   autostartEnabled: commands.autostartEnabled,
@@ -168,4 +179,26 @@ export const tauriApi: Api = {
     return unlisten;
   },
   onShellEvent: async (handler) => events.shellEvent.listen((e) => handler(e.payload)),
+  onOpenLink: async (handler) => {
+    let live = true;
+    const deliver = (urls: string[] | null) => urls?.forEach((url) => handler(url));
+    const unlisten = await onOpenUrl((urls) => {
+      if (live) deliver(urls);
+    });
+    if (!startupLinkTaken) {
+      // A link that started the app arrived before anyone was listening.
+      getCurrent().then(
+        (urls) => {
+          if (!live || startupLinkTaken) return;
+          startupLinkTaken = true;
+          deliver(urls);
+        },
+        () => {},
+      );
+    }
+    return () => {
+      live = false;
+      unlisten();
+    };
+  },
 };

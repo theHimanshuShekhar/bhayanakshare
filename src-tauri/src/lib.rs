@@ -455,6 +455,35 @@ fn default_config<R: Runtime>(app: &impl Manager<R>) -> Result<DeviceConfig, tau
     })
 }
 
+/// WebKitGTK leaves the camera off, and refuses it when asked, unless the app says otherwise.
+/// It is only asked for (by "Scan QR code…") when the user chooses to scan one.
+#[cfg(target_os = "linux")]
+fn allow_camera<R: Runtime>(app: &AppHandle<R>) {
+    use webkit2gtk::{
+        PermissionRequestExt, SettingsExt, UserMediaPermissionRequest,
+        UserMediaPermissionRequestExt, WebViewExt, glib::prelude::Cast,
+    };
+    let Some(window) = app.get_webview_window("main") else { return };
+    let set = window.with_webview(|webview| {
+        let view = webview.inner();
+        if let Some(settings) = view.settings() {
+            settings.set_enable_media_stream(true);
+        }
+        view.connect_permission_request(|_, request| {
+            match request.downcast_ref::<UserMediaPermissionRequest>() {
+                Some(media) if media.is_for_video_device() && !media.is_for_audio_device() => {
+                    request.allow();
+                    true
+                }
+                _ => false,
+            }
+        });
+    });
+    if let Err(e) = set {
+        tracing::warn!("could not allow the camera: {e}");
+    }
+}
+
 pub fn run() {
     let builder = specta_builder();
     // An instance with its own data folder is a separate install, made to run beside another
@@ -470,6 +499,7 @@ pub fn run() {
         }));
     }
     app = app
+        .plugin(tauri_plugin_deep_link::init())
         .plugin(tauri_plugin_autostart::Builder::new().arg(background::BACKGROUND_FLAG).build())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init());
@@ -490,9 +520,14 @@ pub fn run() {
             if let Err(e) = background::build_tray(handle, visibility) {
                 tracing::warn!("could not create the tray icon: {e}");
             }
+            background::show_on_link(handle);
             if !separate {
                 background::default_autostart(handle);
+                #[cfg(target_os = "linux")]
+                background::register_links(handle);
             }
+            #[cfg(target_os = "linux")]
+            allow_camera(handle);
             // Starting at login leaves the window closed, in the tray.
             if !std::env::args().any(|arg| arg == background::BACKGROUND_FLAG) {
                 background::show_main(handle);

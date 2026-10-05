@@ -16,6 +16,10 @@ _Avoid_: UUID, user ID, node ID, address
 A short form of a Device ID (8 characters, e.g. `K3QF-7XNA`) shown for checking by eye. Never used to dial.
 _Avoid_: Short ID, code
 
+**Share link**:
+The link `bhayanakshare://add/<Device ID>?name=<Device Name>` that hands a Device ID to someone, also shown as a QR code holding the same text. Opening, pasting or scanning it starts adding a Contact. The name in it is only a suggestion by whoever made it, editable and never what identifies the Device: the Fingerprint is still checked. It hands over a Device, not content; sending content is a Transfer.
+_Avoid_: Invite link, pairing code
+
 **Contact**:
 A Device whose Device ID another Device has saved. The relationship is one-sided: Alice having Bob as a Contact says nothing about whether Bob has Alice.
 _Avoid_: Friend, buddy, pairing

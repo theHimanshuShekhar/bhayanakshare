@@ -17,6 +17,7 @@ use tauri::{
     tray::TrayIconBuilder,
 };
 use tauri_plugin_autostart::ManagerExt as _;
+use tauri_plugin_deep_link::DeepLinkExt as _;
 use tauri_plugin_dialog::DialogExt as _;
 use tauri_specta::Event as _;
 
@@ -88,6 +89,24 @@ fn files_in(argv: &[String], cwd: &Path) -> Vec<String> {
         .filter(|path| path.exists())
         .map(|path| path.to_string_lossy().into_owned())
         .collect()
+}
+
+/// Brings the window forward whenever a `bhayanakshare://` link is opened (where that does not
+/// start a second launch, as on macOS). The UI reads the links itself, the one that started the
+/// app included.
+pub fn show_on_link<R: Runtime>(app: &AppHandle<R>) {
+    let handle = app.clone();
+    app.deep_link().on_open_url(move |_| show_main(&handle));
+}
+
+/// Registers the `bhayanakshare://` scheme with the desktop at every start, so that an AppImage
+/// that was moved, or never installed, still gets its links. The bundles of the other platforms
+/// register it when they are installed.
+#[cfg(target_os = "linux")]
+pub fn register_links<R: Runtime>(app: &AppHandle<R>) {
+    if let Err(e) = app.deep_link().register_all() {
+        tracing::warn!("could not register the bhayanakshare:// links: {e}");
+    }
 }
 
 fn emit<R: Runtime>(app: &AppHandle<R>, event: ShellEvent) {
@@ -280,6 +299,9 @@ mod tests {
         let absolute = dir.join("a.txt").to_string_lossy().into_owned();
         assert_eq!(files_in(&args(&["bhayanakshare", &absolute]), Path::new("/nowhere")), [absolute]);
         assert!(files_in(&args(&["bhayanakshare"]), &dir).is_empty());
+        // A link is for the deep-link plugin, not a file to send.
+        let link = format!("bhayanakshare://add/{}", "A".repeat(52));
+        assert!(files_in(&args(&["bhayanakshare", &link]), &dir).is_empty());
 
         let _ = std::fs::remove_dir_all(&dir);
     }
