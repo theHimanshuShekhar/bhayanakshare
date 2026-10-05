@@ -63,6 +63,17 @@ export const commands = {
 	/**  Forgets a Contact; its Transfer records stay. */
 	removeContact: (id: string) => __TAURI_INVOKE<null>("remove_contact", { id }),
 	/**
+	 *  Transfer History, newest first, narrowed by whichever are given: the other Device's ID
+	 *  (`peer`), the role this Device played (`direction`) and a search of the item names.
+	 */
+	history: (peer: string | null, direction: "sender" | "receiver" | null, search: string | null) => __TAURI_INVOKE<HistoryEntry[]>("history", { peer, direction, search }),
+	/**  Deletes one Transfer that has ended from History. */
+	deleteHistoryTransfer: (transferId: TransferId) => __TAURI_INVOKE<null>("delete_history_transfer", { transferId }),
+	/**  Deletes the Transfers of a Batch that have ended from History; resolves to how many. */
+	deleteHistoryBatch: (batchId: BatchId) => __TAURI_INVOKE<number>("delete_history_batch", { batchId }),
+	/**  Clears History of every Transfer that has ended; resolves to how many. */
+	clearHistory: () => __TAURI_INVOKE<number>("clear_history"),
+	/**
 	 *  Not a Device command: the UI calls it once it is listening for `DeviceEvent`s, and
 	 *  receives everything the Device emitted before that, in order.
 	 */
@@ -128,6 +139,26 @@ export type EventKind =
 {
 	type: "nearby",
 } & NearbyEvent;
+
+/**  A row of History, newest first. */
+export type HistoryEntry = 
+/**  A Transfer sent on its own, a Receiver's, or one of a Batch seen as a Device's. */
+{ kind: "transfer"; transfer: HistoryTransfer } | 
+/**
+ *  A Sender's Batch, as one entry: its Transfers, oldest first, one for each time a
+ *  Receiver was sent to (a retry follows the Transfer it retries).
+ */
+{ kind: "batch"; batch_id: BatchId; transfers: HistoryTransfer[] };
+
+/**  A Transfer in History. */
+export type HistoryTransfer = {
+	record: TransferRecord,
+	/**
+	 *  For files this Device received and saved: whether what was saved is still where it was
+	 *  put. `None` for every other Transfer, which has no saved location.
+	 */
+	saved_present: boolean | null,
+};
 
 /**
  *  Where a Contact was last reached: its relay and the direct addresses seen on the latest
@@ -288,6 +319,49 @@ export type TransferKind =
  *  file, so it is a `Files` Transfer.
  */
 "text";
+
+/**  One row of the Transfer table: an entry of Transfer History. */
+export type TransferRecord = {
+	id: TransferId,
+	role: Role,
+	/**  The other Device's ID (base32). */
+	peer: string,
+	/**
+	 *  What the other Device called itself when it last connected for this Transfer; `None` if
+	 *  it never did (an Offer that could not be delivered). Untrusted text.
+	 */
+	peer_name: string | null,
+	/**  The first of `items`: what the Transfer is called where there is room for one name. */
+	name: string,
+	/**  What the Transfer carries: files, or text that went inline in the Offer. */
+	kind: TransferKind,
+	/**  Bytes of files, or of text. */
+	size: number,
+	/**
+	 *  The whole text of a `Text` Transfer. A Receiver keeps it only once it has accepted:
+	 *  text it declined, or that expired, is not kept. Untrusted when received.
+	 */
+	text: string | null,
+	/**  The names at the top of what was offered: the files and folders the user picked. */
+	items: string[],
+	file_count: number,
+	/**  Symlinks the Sender left out. */
+	skipped_links: number,
+	/**  Names a Receiver changed to make them safe to write (spec section 6). */
+	adjusted_names: number,
+	/**
+	 *  The Batch a Sender made this Transfer in; `None` for a Transfer sent on its own and for
+	 *  every Receiver's (a Receiver is never told about the Batch).
+	 */
+	batch_id: BatchId | null,
+	state: TransferState,
+	/**  When the Offer was made. */
+	created_at: number,
+	/**  When the Receiver said yes (or Auto-accept did); `None` if it never was accepted. */
+	accepted_at: number | null,
+	/**  When the state last changed: for a Transfer that has ended, when it ended. */
+	updated_at: number,
+};
 
 /**  Where a Transfer is in its lifecycle (spec section 4, the part the skeleton covers). */
 export type TransferState = { kind: "offered" } | { kind: "accepted" } | { kind: "declined" } | 

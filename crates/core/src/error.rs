@@ -27,6 +27,8 @@ pub enum Error {
     PathsTooLong,
     #[error("Transfer {0} is not running, so it cannot be cancelled")]
     NotRunning(TransferId),
+    #[error("Transfer {0} has not ended, so it cannot be deleted from History")]
+    NotFinished(TransferId),
     #[error("Transfer {0} did not expire on this Device, so there is nothing to send again")]
     NothingToResend(TransferId),
     #[error("There is no text to send.")]

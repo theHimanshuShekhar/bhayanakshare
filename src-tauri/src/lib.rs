@@ -15,8 +15,8 @@ use std::{
 };
 
 use bhayanakshare_core::{
-    BatchId, Contact, Device, DeviceAddr, DeviceConfig, DeviceId, Event, KeySource, Network,
-    SpaceCheck, SystemClock, SystemFreeSpace, TransferId, Visibility,
+    BatchId, Contact, Device, DeviceAddr, DeviceConfig, DeviceId, Event, HistoryEntry, HistoryQuery,
+    KeySource, Network, Role, SpaceCheck, SystemClock, SystemFreeSpace, TransferId, Visibility,
 };
 use serde::Serialize;
 use specta::Type;
@@ -320,6 +320,42 @@ async fn remove_contact(device: State<'_, Device>, id: String) -> Result<(), Str
     device.remove_contact(id).await.map_err(|e| e.to_string())
 }
 
+/// Transfer History, newest first, narrowed by whichever are given: the other Device's ID
+/// (`peer`), the role this Device played (`direction`) and a search of the item names.
+#[tauri::command]
+#[specta::specta]
+async fn history(
+    device: State<'_, Device>,
+    peer: Option<String>,
+    direction: Option<Role>,
+    search: Option<String>,
+) -> Result<Vec<HistoryEntry>, String> {
+    let device_id = peer.as_deref().map(parse_id).transpose()?;
+    let query = HistoryQuery { device: device_id, direction, search };
+    device.history(&query).await.map_err(|e| e.to_string())
+}
+
+/// Deletes one Transfer that has ended from History.
+#[tauri::command]
+#[specta::specta]
+async fn delete_history_transfer(device: State<'_, Device>, transfer_id: TransferId) -> Result<(), String> {
+    device.delete_history_transfer(transfer_id).await.map_err(|e| e.to_string())
+}
+
+/// Deletes the Transfers of a Batch that have ended from History; resolves to how many.
+#[tauri::command]
+#[specta::specta]
+async fn delete_history_batch(device: State<'_, Device>, batch_id: BatchId) -> Result<u64, String> {
+    device.delete_history_batch(batch_id).await.map_err(|e| e.to_string())
+}
+
+/// Clears History of every Transfer that has ended; resolves to how many.
+#[tauri::command]
+#[specta::specta]
+async fn clear_history(device: State<'_, Device>) -> Result<u64, String> {
+    device.clear_history().await.map_err(|e| e.to_string())
+}
+
 /// Not a Device command: the UI calls it once it is listening for `DeviceEvent`s, and
 /// receives everything the Device emitted before that, in order.
 #[tauri::command]
@@ -357,6 +393,10 @@ pub fn specta_builder<R: Runtime>() -> Builder<R> {
             set_nickname,
             set_auto_accept,
             remove_contact,
+            history,
+            delete_history_transfer,
+            delete_history_batch,
+            clear_history,
             events_ready
         ])
         .events(collect_events![DeviceEvent, background::ShellEvent])

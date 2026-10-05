@@ -22,12 +22,13 @@ use tokio_util::{sync::CancellationToken, task::TaskTracker};
 use crate::{
     clock::{Clock, UnixMillis},
     contacts::{Contact, KnownAddress, clean_name},
-    db::{Db, TransferRecord, Unfinished},
+    db::{Db, Scope, TransferRecord, Unfinished},
     device_name,
     discovery::{Discovery, NearbyDevice, Visibility},
     error::Error,
     event::{EventKind, EventSink, EventStream, PreparingEvent, ProgressEvent, TransferEvent},
     gate::Gate,
+    history::{self, HistoryEntry, HistoryQuery},
     identity::{DeviceId, KeySource},
     protocol, receiver,
     sender::{self, Outgoing, Payload},
@@ -316,6 +317,7 @@ impl Shared {
                 id: t.id,
                 role: t.role,
                 peer: t.peer.to_string(),
+                peer_name: t.peer_name.clone(),
                 name: t.name.clone(),
                 kind: t.kind,
                 size: t.size,
@@ -328,6 +330,8 @@ impl Shared {
                 batch_id: t.batch,
                 state: state.clone(),
                 created_at: now,
+                // An Offer Auto-accept answers is accepted as it is made.
+                accepted_at: (state == TransferState::Accepted).then_some(now),
                 updated_at: now,
             })
             .await?;
@@ -945,6 +949,50 @@ impl Device {
     /// Every Transfer this Device has sent or received, oldest first.
     pub async fn transfers(&self) -> Result<Vec<TransferRecord>, Error> {
         Ok(self.inner.shared.db.transfers().await?)
+    }
+
+    /// Transfer History: the Transfers this Device has sent and received, newest first, narrowed
+    /// by `query`. A Batch this Device sent is one entry, unless the query asks about one Device,
+    /// when each Receiver's Transfer is listed as it is in that Device's own History. A
+    /// Transfer that has not ended is listed too, in the state it is in.
+    pub async fn history(&self, query: &HistoryQuery) -> Result<Vec<HistoryEntry>, Error> {
+        let records =
+            self.inner.shared.db.history(query.device.map(|id| id.to_string()), query.direction).await?;
+        let (search, group) = (query.search.clone(), query.device.is_none());
+        // Looks at the disk for where received files went.
+        tokio::task::spawn_blocking(move || history::entries(records, search.as_deref(), group))
+            .await
+            .map_err(|e| Error::io("reading the History", std::io::Error::other(e)))
+    }
+
+    /// Deletes one Transfer from History. Only one that has ended can be: a running Transfer's
+    /// record is what its resume is carried on from.
+    pub async fn delete_history_transfer(&self, id: TransferId) -> Result<(), Error> {
+        let db = &self.inner.shared.db;
+        let record = db.transfer(id).await?.ok_or(Error::UnknownTransfer(id))?;
+        if !record.state.is_terminal() {
+            return Err(Error::NotFinished(id));
+        }
+        db.delete_ended(Scope::Transfer(id)).await?;
+        Ok(())
+    }
+
+    /// Deletes the Transfers of a Batch that have ended from History, and returns how many. Any
+    /// still running stay (they stay in the Batch's entry); once none is left, the Batch can no
+    /// longer be retried.
+    pub async fn delete_history_batch(&self, batch: BatchId) -> Result<u64, Error> {
+        let db = &self.inner.shared.db;
+        if db.batch_transfers(batch).await?.is_empty() {
+            return Err(Error::UnknownBatch(batch));
+        }
+        Ok(db.delete_ended(Scope::Batch(batch)).await?)
+    }
+
+    /// Clears History: deletes every Transfer that has ended, and returns how many. Transfers
+    /// still running are not touched, and carry on, or resume after a restart, as if it had not
+    /// been cleared.
+    pub async fn clear_history(&self) -> Result<u64, Error> {
+        Ok(self.inner.shared.db.delete_ended(Scope::Everything).await?)
     }
 
     /// Tells this Device where to find another one, for when it dials it and discovery cannot
