@@ -5,6 +5,9 @@
 //! the TypeScript for both is generated from the Rust types into `ui/src/bindings.ts`
 //! (`pnpm bindings`; a test fails when the file is stale).
 
+mod background;
+mod notice;
+
 use std::{
     path::PathBuf,
     sync::{Arc, Mutex},
@@ -17,7 +20,8 @@ use bhayanakshare_core::{
 };
 use serde::Serialize;
 use specta::Type;
-use tauri::{Manager, Runtime, State};
+use tauri::{AppHandle, Manager, Runtime, State};
+use tauri_plugin_autostart::AutoLaunchManager;
 use tauri_specta::{Builder, ErrorHandlingMode, Event as _, collect_commands, collect_events};
 
 /// Overrides where this install keeps its data (Device ID, database, blobs). Set it to
@@ -27,7 +31,7 @@ const DATA_DIR_VAR: &str = "BHAYANAKSHARE_DATA_DIR";
 const SAVE_DIR_VAR: &str = "BHAYANAKSHARE_SAVE_DIR";
 
 /// How long quitting waits for the Device to save its Transfers' progress.
-const QUIT_DEADLINE: Duration = Duration::from_secs(30);
+pub(crate) const QUIT_DEADLINE: Duration = Duration::from_secs(30);
 
 /// Every event the Device emits, in order, as one UI event.
 #[derive(Clone, Serialize, Type, tauri_specta::Event)]
@@ -174,8 +178,34 @@ async fn visibility(device: State<'_, Device>) -> Result<Visibility, String> {
 /// Changes who can see this Device as a Nearby Device; it takes effect at once.
 #[tauri::command]
 #[specta::specta]
-async fn set_visibility(device: State<'_, Device>, visibility: Visibility) -> Result<(), String> {
-    device.set_visibility(visibility).await.map_err(|e| e.to_string())
+async fn set_visibility<R: Runtime>(
+    app: AppHandle<R>,
+    device: State<'_, Device>,
+    visibility: Visibility,
+) -> Result<(), String> {
+    device.set_visibility(visibility).await.map_err(|e| e.to_string())?;
+    background::sync_visibility(&app, visibility);
+    Ok(())
+}
+
+/// Whether this Device starts when the user logs in.
+#[tauri::command]
+#[specta::specta]
+fn autostart_enabled(autostart: State<'_, AutoLaunchManager>) -> Result<bool, String> {
+    autostart.is_enabled().map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+#[specta::specta]
+fn set_autostart(autostart: State<'_, AutoLaunchManager>, on: bool) -> Result<(), String> {
+    if on { autostart.enable() } else { autostart.disable() }.map_err(|e| e.to_string())
+}
+
+/// The user confirmed quitting while Transfers are in progress: save their progress and exit.
+#[tauri::command]
+#[specta::specta]
+async fn quit_app<R: Runtime>(app: AppHandle<R>) {
+    background::finish_quit(&app).await;
 }
 
 fn parse_id(id: &str) -> Result<DeviceId, String> {
@@ -256,7 +286,10 @@ pub fn specta_builder<R: Runtime>() -> Builder<R> {
             device_name,
             set_device_name,
             visibility,
-            set_visibility,
+            set_visibility::<tauri::Wry>,
+            autostart_enabled,
+            set_autostart,
+            quit_app::<tauri::Wry>,
             contacts,
             add_contact,
             set_nickname,
@@ -264,7 +297,7 @@ pub fn specta_builder<R: Runtime>() -> Builder<R> {
             remove_contact,
             events_ready
         ])
-        .events(collect_events![DeviceEvent])
+        .events(collect_events![DeviceEvent, background::ShellEvent])
         // A rejected command is a rejected promise, not a wrapped result.
         .error_handling(ErrorHandlingMode::Throw)
         // Sizes and timestamps travel as JSON numbers; they stay far below 2^53.
@@ -293,7 +326,8 @@ pub fn start_device<R: Runtime>(
     }));
     tauri::async_runtime::spawn(async move {
         while let Some(event) = events.next().await {
-            handle.state::<EventGate>().send(event);
+            handle.state::<EventGate>().send(event.clone());
+            notice::notify(&handle, &event).await;
         }
     });
     Ok(())
@@ -321,13 +355,47 @@ fn default_config<R: Runtime>(app: &impl Manager<R>) -> Result<DeviceConfig, tau
 
 pub fn run() {
     let builder = specta_builder();
-    tauri::Builder::default()
+    // An instance with its own data folder is a separate install, made to run beside another
+    // one (see the README), so it neither takes part in single instance nor registers itself
+    // to start at login.
+    let separate = std::env::var_os(DATA_DIR_VAR).is_some();
+    let mut app = tauri::Builder::default();
+    if !separate {
+        // Registered first, as the plugin asks: a second launch ends in its setup, handing
+        // its arguments to the running instance.
+        app = app.plugin(tauri_plugin_single_instance::init(|app, argv, cwd| {
+            background::second_launch(app, &argv, &cwd)
+        }));
+    }
+    app = app
+        .plugin(tauri_plugin_autostart::Builder::new().arg(background::BACKGROUND_FLAG).build())
         .plugin(tauri_plugin_dialog::init())
-        .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_opener::init());
+    #[cfg(not(target_os = "linux"))]
+    {
+        app = app.plugin(tauri_plugin_notification::init());
+    }
+    app.on_window_event(|window, event| background::on_window_event(window, event))
         .invoke_handler(builder.invoke_handler())
         .setup(move |app| {
             builder.mount_events(app);
-            start_device(app, default_config(app)?)
+            app.manage(background::Quitting::default());
+            app.manage(notice::Notifier::default());
+            start_device(app, default_config(app)?)?;
+
+            let handle = app.handle();
+            let visibility = tauri::async_runtime::block_on(app.state::<Device>().visibility());
+            if let Err(e) = background::build_tray(handle, visibility) {
+                tracing::warn!("could not create the tray icon: {e}");
+            }
+            if !separate {
+                background::default_autostart(handle);
+            }
+            // Starting at login leaves the window closed, in the tray.
+            if !std::env::args().any(|arg| arg == background::BACKGROUND_FLAG) {
+                background::show_main(handle);
+            }
+            Ok(())
         })
         .build(tauri::generate_context!())
         .expect("error while building BhayanakShare")

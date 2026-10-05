@@ -29,6 +29,11 @@ export const commands = {
 	visibility: () => __TAURI_INVOKE<Visibility>("visibility"),
 	/**  Changes who can see this Device as a Nearby Device; it takes effect at once. */
 	setVisibility: (visibility: Visibility) => __TAURI_INVOKE<null>("set_visibility", { visibility }),
+	/**  Whether this Device starts when the user logs in. */
+	autostartEnabled: () => __TAURI_INVOKE<boolean>("autostart_enabled"),
+	setAutostart: (on: boolean) => __TAURI_INVOKE<null>("set_autostart", { on }),
+	/**  The user confirmed quitting while Transfers are in progress: save their progress and exit. */
+	quitApp: () => __TAURI_INVOKE<void>("quit_app"),
 	/**  Every Contact, in the order they were added. */
 	contacts: () => __TAURI_INVOKE<Contact[]>("contacts"),
 	/**
@@ -51,6 +56,7 @@ export const commands = {
 /** Events */
 export const events = {
 	deviceEvent: makeEvent<DeviceEvent>("device-event"),
+	shellEvent: makeEvent<ShellEvent>("shell-event"),
 };
 
 /* Types */
@@ -146,6 +152,23 @@ export type ProgressEvent = {
 
 /**  Which side of a Transfer a Device plays. */
 export type Role = "sender" | "receiver";
+
+/**  What the shell tells the UI that is not a Device event. */
+export type ShellEvent = 
+/**
+ *  Files to send, from a second launch or the tray's "Send files…"; the user still has to
+ *  say to whom.
+ */
+{ type: "send_files"; paths: string[] } | 
+/**  A notification about this incoming Offer was clicked. */
+{ type: "open_offer"; transfer_id: TransferId } | 
+/**
+ *  Quit was chosen while `active` Transfers are in progress; the UI asks, and answers with
+ *  the `quit_app` command.
+ */
+{ type: "confirm_quit"; active: number } | 
+/**  Shutdown has begun: the Device is saving its progress, which can take a while. */
+{ type: "quitting" };
 
 /**  What an Offer needs, against what its save folder has. */
 export type SpaceCheck = {

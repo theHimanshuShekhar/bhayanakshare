@@ -89,11 +89,15 @@ export function newestFirst(transfers: Transfers): TransferView[] {
   return transfers.order.map((id) => transfers.byId[id]).reverse();
 }
 
-/** The oldest incoming Offer still waiting for an answer. */
-export function pendingOffer(transfers: Transfers): TransferView | undefined {
-  return transfers.order
+/**
+ * The incoming Offer to answer next: `preferred` (the one a notification was clicked for) if it
+ * is still waiting, else the oldest.
+ */
+export function pendingOffer(transfers: Transfers, preferred?: TransferId): TransferView | undefined {
+  const waiting = transfers.order
     .map((id) => transfers.byId[id])
-    .find((x) => x.role === "receiver" && x.state.kind === "offered");
+    .filter((x) => x.role === "receiver" && x.state.kind === "offered");
+  return waiting.find((x) => x.id === preferred) ?? waiting[0];
 }
 
 /**
@@ -130,6 +134,11 @@ export function formatCountdown(millis: number): string {
 export function percent(view: TransferView): number {
   if (view.size === 0) return 100;
   return Math.min(100, Math.floor((view.bytes * 100) / view.size));
+}
+
+/** The last part of a path, for showing a file by name. */
+export function baseName(path: string): string {
+  return path.split(/[\\/]/).filter(Boolean).pop() ?? path;
 }
 
 /** `XXXX-XXXX`: the first 8 characters of a Device ID, for checking by eye. */

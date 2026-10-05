@@ -76,6 +76,27 @@ const en = {
   "visibility.loadFailed": "Could not read who can see this Device.",
   "visibility.failed": "Could not change who can see this Device. {reason}",
 
+  "autostart.label": "Start at login",
+  "autostart.hint": "BhayanakShare starts in the background when you log in, so you can receive files.",
+  "autostart.loadFailed": "Could not read whether this Device starts at login.",
+  "autostart.failed": "Could not change start at login. {reason}",
+
+  "quit.heading": "Quit BhayanakShare?",
+  "quit.inProgressOne": "A Transfer is in progress.",
+  "quit.inProgress": "{count} Transfers are in progress.",
+  "quit.resumeOne": "It'll resume when BhayanakShare next runs.",
+  "quit.resume": "They'll resume when BhayanakShare next runs.",
+  "quit.confirm": "Quit",
+  "quit.cancel": "Keep running",
+  "quit.saving": "Saving progress…",
+  "quit.savingHint": "BhayanakShare closes when this is done, in at most 30 seconds.",
+  "quit.failed": "Could not quit. {reason}",
+
+  "queued.banner": "Choose a Device to send {names} to.",
+  "queued.clear": "Forget these files",
+  "send.files": "Files",
+  "send.sendFiles": "Send",
+
   "myId.heading": "My ID",
   "myId.fingerprint": "Fingerprint",
   "myId.deviceId": "Device ID",
