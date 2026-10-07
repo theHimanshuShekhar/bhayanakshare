@@ -53,6 +53,10 @@ function fakeApi(overrides: Partial<Api> = {}, initialContacts: Contact[] = []) 
   let linkHandler: (url: string) => void = () => {};
   let autostart = true;
   let debugLogging = false;
+  let publicDht = true;
+  let deviceName = "Alice's desktop";
+  let saveFolder = "/home/me/Downloads/BhayanakShare";
+  let firstRun = false;
   let seq = 0;
   let contacts = initialContacts;
   let visibility: Visibility = "id_holders";
@@ -66,7 +70,16 @@ function fakeApi(overrides: Partial<Api> = {}, initialContacts: Contact[] = []) 
   };
   const api = {
     myId: () => Promise.resolve({ id: MY_ID, fingerprint: "AAAA-AAAA" }),
-    saveFolder: () => Promise.resolve("/home/me/Downloads/BhayanakShare"),
+    saveFolder: vi.fn(() => Promise.resolve(saveFolder)),
+    setSaveFolder: vi.fn((path: string) => {
+      saveFolder = path;
+      return Promise.resolve(path);
+    }),
+    needsFirstRun: vi.fn(() => Promise.resolve(firstRun)),
+    finishFirstRun: vi.fn(() => {
+      firstRun = false;
+      return Promise.resolve(null);
+    }),
     sendFiles: vi.fn((_to: string, _paths: string[]) => Promise.resolve(TRANSFER)),
     sendBatch: vi.fn((_to: string[], _paths: string[]) => Promise.resolve(BATCH)),
     sendText: vi.fn((_to: string, _text: string) => Promise.resolve(TRANSFER)),
@@ -80,10 +93,20 @@ function fakeApi(overrides: Partial<Api> = {}, initialContacts: Contact[] = []) 
     declineOffer: vi.fn(() => Promise.resolve(null)),
     cancelTransfer: vi.fn(() => Promise.resolve(null)),
     resendTransfer: vi.fn(() => Promise.resolve("cd".repeat(16))),
-    deviceName: vi.fn(() => Promise.resolve("Alice's desktop")),
+    deviceName: vi.fn(() => Promise.resolve(deviceName)),
+    // Like the core: trimmed, and cut to 64 characters.
+    setDeviceName: vi.fn((name: string) => {
+      deviceName = name.trim().slice(0, 64);
+      return Promise.resolve(deviceName);
+    }),
     visibility: vi.fn(() => Promise.resolve(visibility)),
     setVisibility: vi.fn((v: Visibility) => {
       visibility = v;
+      return Promise.resolve(null);
+    }),
+    publicDht: vi.fn(() => Promise.resolve(publicDht)),
+    setPublicDht: vi.fn((on: boolean) => {
+      publicDht = on;
       return Promise.resolve(null);
     }),
     autostartEnabled: vi.fn(() => Promise.resolve(autostart)),
@@ -101,6 +124,7 @@ function fakeApi(overrides: Partial<Api> = {}, initialContacts: Contact[] = []) 
       Promise.resolve<string | null>("/home/me/diagnostics.zip"),
     ),
     quitApp: vi.fn(() => Promise.resolve(null)),
+    appVersion: vi.fn(() => Promise.resolve("0.1.0")),
     checkForUpdate: vi.fn(() => Promise.resolve<UpdateAction>({ type: "none" })),
     pendingUpdate: vi.fn(() => Promise.resolve<UpdateAction>({ type: "none" })),
     installUpdate: vi.fn((_version: string) => Promise.resolve(null)),
@@ -209,6 +233,16 @@ async function start(device = fakeApi()) {
   await screen.findByText("AAAA-AAAA");
   return device;
 }
+
+/** The live regions that say something now: some (the one of My ID, until something is copied)
+ * are there empty, to be heard when they change. */
+const saying = () => screen.queryAllByRole("status").filter((el) => el.textContent !== "");
+const findStatus = () =>
+  waitFor(() => {
+    const [first] = saying();
+    expect(first).toBeTruthy();
+    return first;
+  });
 
 async function sendPhoto(device: ReturnType<typeof fakeApi>) {
   fireEvent.click(screen.getByRole("button", { name: "Send to ID…" }));
@@ -1601,6 +1635,571 @@ describe("Start at login", () => {
   });
 });
 
+describe("first run", () => {
+  const needed = (overrides: Partial<Api> = {}) =>
+    fakeApi({ needsFirstRun: vi.fn(() => Promise.resolve(true)), ...overrides });
+  const begin = async (device = needed()) => {
+    render(<App api={device.api} />);
+    await screen.findByRole("heading", { name: "Welcome to BhayanakShare" });
+    return device;
+  };
+  const nameField = () => screen.getByRole("textbox", { name: "Device Name" }) as HTMLInputElement;
+  const getStarted = () => screen.getByRole("button", { name: "Get started" });
+  const radio = (name: string) => screen.getByRole("radio", { name }) as HTMLInputElement;
+  const loginBox = () => screen.getByRole("checkbox", { name: "Start at login" }) as HTMLInputElement;
+
+  it("is one screen instead of the tabs, with a heading, labelled controls and a note on privacy", async () => {
+    await begin();
+    expect(screen.queryByRole("navigation")).toBeNull();
+    expect(screen.queryByRole("button", { name: "Settings" })).toBeNull();
+    expect(screen.queryByText("AAAA-AAAA")).toBeNull();
+    expect(screen.getByRole("heading", { name: "Welcome to BhayanakShare", level: 2 })).toBeTruthy();
+    const region = screen.getByRole("region", { name: "Welcome to BhayanakShare" });
+    expect(within(region).getByRole("group", { name: "Who can see this Device nearby" })).toBeTruthy();
+    expect(within(region).getByRole("button", { name: "Change the folder received files are saved to" })).toBeTruthy();
+    expect(region.textContent).toContain(
+      "Your Device Name is shown only to the people Visibility allows, and is never published online.",
+    );
+  });
+
+  it("starts with the Device's name, Visibility, start at login and save folder, and the name has focus", async () => {
+    await begin();
+    expect(nameField().value).toBe("Alice's desktop");
+    expect(document.activeElement).toBe(nameField());
+    expect(radio("People who have my ID").checked).toBe(true);
+    expect(radio("Everyone").checked).toBe(false);
+    expect(radio("Hidden").checked).toBe(false);
+    expect(loginBox().checked).toBe(true);
+    expect(screen.getByText("/home/me/Downloads/BhayanakShare")).toBeTruthy();
+    expect(screen.queryByRole("alert")).toBeNull();
+  });
+
+  it("keeps all of that at Get started, applies it, marks first run done and shows Home", async () => {
+    const device = await begin();
+    fireEvent.click(getStarted());
+
+    await screen.findByText("AAAA-AAAA");
+    expect(device.api.setDeviceName).toHaveBeenCalledExactlyOnceWith("Alice's desktop");
+    expect(device.api.setVisibility).toHaveBeenCalledExactlyOnceWith("id_holders");
+    // Start at login is on already, and the folder is the default: neither is touched.
+    expect(device.api.setAutostart).not.toHaveBeenCalled();
+    expect(device.api.setSaveFolder).not.toHaveBeenCalled();
+    expect(device.api.finishFirstRun).toHaveBeenCalledTimes(1);
+    expect(screen.getByRole("navigation")).toBeTruthy();
+    expect(screen.queryByRole("heading", { name: "Welcome to BhayanakShare" })).toBeNull();
+    expect(screen.getByRole("heading", { name: "Devices" })).toBeTruthy();
+  });
+
+  it("keeps what the user changed: the name, Visibility, start at login and the folder", async () => {
+    const device = await begin();
+    fireEvent.change(nameField(), { target: { value: "  Bob's PC " } });
+    fireEvent.click(radio("Hidden"));
+    fireEvent.click(loginBox());
+    fireEvent.click(screen.getByRole("button", { name: "Change the folder received files are saved to" }));
+    expect(await screen.findByText("/mnt/big")).toBeTruthy();
+    // Nothing is kept before Get started.
+    expect(device.api.setDeviceName).not.toHaveBeenCalled();
+    expect(device.api.setSaveFolder).not.toHaveBeenCalled();
+    expect(device.api.finishFirstRun).not.toHaveBeenCalled();
+
+    fireEvent.click(getStarted());
+    await screen.findByText("AAAA-AAAA");
+    expect(device.api.setDeviceName).toHaveBeenCalledWith("  Bob's PC ");
+    expect(device.api.setVisibility).toHaveBeenCalledWith("hidden");
+    expect(device.api.setAutostart).toHaveBeenCalledExactlyOnceWith(false);
+    expect(device.api.setSaveFolder).toHaveBeenCalledExactlyOnceWith("/mnt/big");
+    expect(device.api.finishFirstRun).toHaveBeenCalledTimes(1);
+    // The Device has them now: Settings shows them as they were kept.
+    fireEvent.click(screen.getByRole("button", { name: "Settings" }));
+    await waitFor(() => expect(radio("Hidden").checked).toBe(true));
+    expect((await screen.findByRole("textbox", { name: "Device Name" }) as HTMLInputElement).value).toBe("Bob's PC");
+    expect(await screen.findByText("/mnt/big")).toBeTruthy();
+  });
+
+  it("starts at login only as the Device has it: an install that does not is shown unchecked and left alone", async () => {
+    const device = await begin(needed({ autostartEnabled: vi.fn(() => Promise.resolve(false)) }));
+    expect(loginBox().checked).toBe(false);
+    fireEvent.click(getStarted());
+    await screen.findByText("AAAA-AAAA");
+    expect(device.api.setAutostart).not.toHaveBeenCalled();
+  });
+
+  it("keeps the folder the Offer sheet shows from then on", async () => {
+    const device = await begin();
+    fireEvent.click(screen.getByRole("button", { name: "Change the folder received files are saved to" }));
+    await screen.findByText("/mnt/big");
+    fireEvent.click(getStarted());
+    await screen.findByText("AAAA-AAAA");
+    await device.transfer("receiver", { kind: "offered" });
+    const sheet = await screen.findByRole("dialog", { name: "Incoming files" });
+    await waitFor(() => expect(sheet.textContent).toContain("/mnt/big"));
+  });
+
+  it("leaves the folder as it was when the folder dialog is cancelled", async () => {
+    const device = await begin(needed({ pickFolder: vi.fn(() => Promise.resolve<string | null>(null)) }));
+    fireEvent.click(screen.getByRole("button", { name: "Change the folder received files are saved to" }));
+    await waitFor(() => expect(device.api.pickFolder).toHaveBeenCalled());
+    expect(screen.getByText("/home/me/Downloads/BhayanakShare")).toBeTruthy();
+    fireEvent.click(getStarted());
+    await screen.findByText("AAAA-AAAA");
+    expect(device.api.setSaveFolder).not.toHaveBeenCalled();
+  });
+
+  it("says inline that a name is needed, and goes no further", async () => {
+    const device = await begin();
+    fireEvent.change(nameField(), { target: { value: "   " } });
+    fireEvent.click(getStarted());
+
+    expect((await screen.findByRole("alert")).textContent).toBe("Enter a name for this Device.");
+    expect(nameField().getAttribute("aria-invalid")).toBe("true");
+    expect(document.activeElement).toBe(nameField());
+    expect(device.api.setDeviceName).not.toHaveBeenCalled();
+    expect(device.api.finishFirstRun).not.toHaveBeenCalled();
+    expect(screen.getByRole("heading", { name: "Welcome to BhayanakShare" })).toBeTruthy();
+
+    // Fixed, it goes on.
+    fireEvent.change(nameField(), { target: { value: "Bob's PC" } });
+    fireEvent.click(getStarted());
+    await screen.findByText("AAAA-AAAA");
+    expect(device.api.setDeviceName).toHaveBeenCalledWith("Bob's PC");
+  });
+
+  it("limits the name to 64 characters, which is what the Device keeps", async () => {
+    await begin();
+    expect(nameField().maxLength).toBe(64);
+  });
+
+  it("shows the Device's reason when it refuses the name, and the other choices are not kept", async () => {
+    const device = await begin(
+      needed({ setDeviceName: vi.fn(() => Promise.reject(new Error("A Device Name cannot be empty."))) }),
+    );
+    fireEvent.change(nameField(), { target: { value: "\u0007" } });
+    fireEvent.click(getStarted());
+    expect((await screen.findByRole("alert")).textContent).toBe(
+      "Could not save the name. A Device Name cannot be empty.",
+    );
+    expect(device.api.setVisibility).not.toHaveBeenCalled();
+    expect(device.api.finishFirstRun).not.toHaveBeenCalled();
+    expect((getStarted() as HTMLButtonElement).disabled).toBe(false);
+  });
+
+  it("shows the reason inline when the folder cannot be used, and first run is not done", async () => {
+    const device = await begin(
+      needed({ setSaveFolder: vi.fn(() => Promise.reject("BhayanakShare cannot write to that folder.")) }),
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Change the folder received files are saved to" }));
+    await screen.findByText("/mnt/big");
+    fireEvent.click(getStarted());
+    expect((await screen.findByRole("alert")).textContent).toBe(
+      "Could not use that folder. BhayanakShare cannot write to that folder.",
+    );
+    expect(device.api.finishFirstRun).not.toHaveBeenCalled();
+    expect(screen.getByRole("heading", { name: "Welcome to BhayanakShare" })).toBeTruthy();
+  });
+
+  it("says why it could not finish, and can be tried again", async () => {
+    const finishFirstRun = vi
+      .fn<() => Promise<unknown>>()
+      .mockRejectedValueOnce(new Error("disk full"))
+      .mockResolvedValue(null);
+    await begin(needed({ finishFirstRun }));
+    fireEvent.click(getStarted());
+    expect((await screen.findByRole("alert")).textContent).toBe("Could not finish setting up. disk full");
+    fireEvent.click(getStarted());
+    await screen.findByText("AAAA-AAAA");
+    expect(finishFirstRun).toHaveBeenCalledTimes(2);
+  });
+
+  it("offers defaults and a warning when some settings cannot be read", async () => {
+    const device = await begin(needed({ visibility: () => Promise.reject(new Error("no")) }));
+    expect((await screen.findByRole("alert")).textContent).toContain("Could not read some of this Device's settings");
+    expect(radio("People who have my ID").checked).toBe(true);
+    fireEvent.click(getStarted());
+    await screen.findByText("AAAA-AAAA");
+    expect(device.api.setVisibility).toHaveBeenCalledWith("id_holders");
+  });
+
+  it("is not shown when first run is done", async () => {
+    const device = await start();
+    expect(device.api.needsFirstRun).toHaveBeenCalled();
+    expect(screen.queryByRole("heading", { name: "Welcome to BhayanakShare" })).toBeNull();
+    expect(screen.getByRole("navigation")).toBeTruthy();
+  });
+
+  it("does not hold the user up when the Device cannot say whether it is needed", async () => {
+    await start(fakeApi({ needsFirstRun: () => Promise.reject(new Error("no")) }));
+    expect(screen.queryByRole("heading", { name: "Welcome to BhayanakShare" })).toBeNull();
+    expect(screen.getByRole("navigation")).toBeTruthy();
+  });
+
+  it("is not shown again after it was finished", async () => {
+    // The Device keeps whether it was.
+    let done = false;
+    const device = await begin(
+      needed({
+        needsFirstRun: vi.fn(() => Promise.resolve(!done)),
+        finishFirstRun: vi.fn(() => {
+          done = true;
+          return Promise.resolve(null);
+        }),
+      }),
+    );
+    fireEvent.click(getStarted());
+    await screen.findByText("AAAA-AAAA");
+    cleanup();
+    await start(device);
+    expect(screen.queryByRole("heading", { name: "Welcome to BhayanakShare" })).toBeNull();
+  });
+});
+
+describe("Settings sections", () => {
+  const open = async (device = fakeApi()) => {
+    await start(device);
+    fireEvent.click(screen.getByRole("button", { name: "Settings" }));
+    await screen.findByRole("heading", { name: "Diagnostics" });
+    return device;
+  };
+
+  it("has a heading for each section, in order", async () => {
+    await open();
+    expect(screen.getAllByRole("heading", { level: 3 }).map((h) => h.textContent)).toEqual([
+      "This Device",
+      "Privacy",
+      "Receiving",
+      "App",
+      "Identity",
+      "Diagnostics",
+    ]);
+    // What each holds.
+    const inSection = (name: string) => within(screen.getByRole("region", { name }));
+    expect(inSection("This Device").getByRole("textbox", { name: "Device Name" })).toBeTruthy();
+    expect(inSection("This Device").getByRole("heading", { name: "My ID", level: 4 })).toBeTruthy();
+    expect(inSection("Privacy").getByRole("radio", { name: "Hidden" })).toBeTruthy();
+    expect(inSection("Privacy").getByRole("checkbox", { name: "Public DHT" })).toBeTruthy();
+    expect(inSection("Receiving").getByRole("button", { name: "Change the folder received files are saved to" })).toBeTruthy();
+    expect(inSection("App").getByRole("checkbox", { name: "Start at login" })).toBeTruthy();
+    expect(inSection("App").getByRole("button", { name: "Check for updates" })).toBeTruthy();
+    expect(inSection("Identity").getByRole("button", { name: "Export identity…" })).toBeTruthy();
+    expect(inSection("Diagnostics").getByRole("button", { name: "Export diagnostics…" })).toBeTruthy();
+  });
+
+  it("shows My ID: the Fingerprint, the Device ID and the share link with its QR code", async () => {
+    await open();
+    const region = screen.getByRole("region", { name: "My ID" });
+    expect(await within(region).findByText(MY_ID)).toBeTruthy();
+    expect(within(region).getByText(`bhayanakshare://add/${MY_ID}?name=Alice's%20desktop`)).toBeTruthy();
+    expect(within(region).getByRole("img", { name: "QR code of the share link" })).toBeTruthy();
+  });
+
+  describe("Device Name", () => {
+    const field = async () => {
+      const input = (await screen.findByRole("textbox", { name: "Device Name" })) as HTMLInputElement;
+      await waitFor(() => expect(input.value).toBe("Alice's desktop"));
+      return input;
+    };
+    const save = () => screen.getByRole("button", { name: "Save" }) as HTMLButtonElement;
+
+    it("shows the current name, and Save waits for a change", async () => {
+      await open();
+      const input = await field();
+      expect(save().disabled).toBe(true);
+      fireEvent.change(input, { target: { value: "Alice's laptop" } });
+      expect(save().disabled).toBe(false);
+      fireEvent.change(input, { target: { value: "  Alice's desktop " } });
+      expect(save().disabled).toBe(true);
+    });
+
+    it("renames the Device at once, shows the name as kept, and the share link follows", async () => {
+      const device = await open();
+      const input = await field();
+      fireEvent.change(input, { target: { value: "  Bob's PC " } });
+      fireEvent.click(save());
+
+      expect((await findStatus()).textContent).toBe("Saved as Bob's PC.");
+      expect(device.api.setDeviceName).toHaveBeenCalledExactlyOnceWith("  Bob's PC ");
+      expect(input.value).toBe("Bob's PC");
+      expect(save().disabled).toBe(true);
+      await screen.findByText(`bhayanakshare://add/${MY_ID}?name=Bob's%20PC`);
+      expect(screen.queryByRole("alert")).toBeNull();
+    });
+
+    it("says inline that a name is needed, without asking the Device", async () => {
+      const device = await open();
+      const input = await field();
+      fireEvent.change(input, { target: { value: "  " } });
+      fireEvent.click(save());
+      expect((await screen.findByRole("alert")).textContent).toBe("Enter a name for this Device.");
+      expect(input.getAttribute("aria-invalid")).toBe("true");
+      expect(device.api.setDeviceName).not.toHaveBeenCalled();
+      expect(input.maxLength).toBe(64);
+    });
+
+    it("shows the Device's reason when it refuses the name, and keeps what was typed", async () => {
+      await open(fakeApi({ setDeviceName: vi.fn(() => Promise.reject(new Error("the Device is shutting down"))) }));
+      const input = await field();
+      fireEvent.change(input, { target: { value: "Bob's PC" } });
+      fireEvent.click(save());
+      expect((await screen.findByRole("alert")).textContent).toBe(
+        "Could not save the name. the Device is shutting down",
+      );
+      expect(input.value).toBe("Bob's PC");
+      expect(saying().filter((el) => el.textContent?.startsWith("Saved"))).toHaveLength(0);
+    });
+
+    it("says so, and offers no editing, when the name cannot be read", async () => {
+      await open(fakeApi({ deviceName: () => Promise.reject(new Error("no")) }));
+      expect((await screen.findByRole("alert")).textContent).toContain("Could not read this Device's name");
+      expect((screen.getByRole("textbox", { name: "Device Name" }) as HTMLInputElement).disabled).toBe(true);
+      expect(save().disabled).toBe(true);
+    });
+  });
+
+  describe("Public DHT", () => {
+    const box = async () => {
+      const found = (await screen.findByRole("checkbox", { name: "Public DHT" })) as HTMLInputElement;
+      await waitFor(() => expect(found.disabled).toBe(false));
+      return found;
+    };
+
+    it("is on as the Device has it, with a hint, and switches off and on", async () => {
+      const device = await open();
+      const dht = await box();
+      expect(dht.checked).toBe(true);
+      const hint = document.getElementById(dht.getAttribute("aria-describedby") ?? "");
+      expect(hint?.textContent).toContain("public BitTorrent DHT");
+      expect(hint?.textContent).toContain("Your name is never published");
+
+      fireEvent.click(dht);
+      await waitFor(() => expect(device.api.setPublicDht).toHaveBeenCalledWith(false));
+      await waitFor(() => expect(dht.checked).toBe(false));
+      fireEvent.click(dht);
+      await waitFor(() => expect(device.api.setPublicDht).toHaveBeenLastCalledWith(true));
+      await waitFor(() => expect(dht.checked).toBe(true));
+    });
+
+    it("is read again when Settings is opened again", async () => {
+      await open();
+      fireEvent.click(await box());
+      await waitFor(async () => expect((await box()).checked).toBe(false));
+      fireEvent.click(screen.getByRole("button", { name: "Home" }));
+      fireEvent.click(screen.getByRole("button", { name: "Settings" }));
+      await waitFor(async () => expect((await box()).checked).toBe(false));
+    });
+
+    it("keeps the old setting and says why when the change is refused", async () => {
+      await open(fakeApi({ setPublicDht: vi.fn(() => Promise.reject(new Error("the Device is shutting down"))) }));
+      const dht = await box();
+      fireEvent.click(dht);
+      expect((await screen.findByRole("alert")).textContent).toBe(
+        "Could not change the public DHT. the Device is shutting down",
+      );
+      expect(dht.checked).toBe(true);
+    });
+
+    it("says so, and offers no choice, when the setting cannot be read", async () => {
+      await open(fakeApi({ publicDht: () => Promise.reject(new Error("no")) }));
+      expect((await screen.findByRole("alert")).textContent).toContain("Could not read whether the public DHT is on");
+      expect((screen.getByRole("checkbox", { name: "Public DHT" }) as HTMLInputElement).disabled).toBe(true);
+    });
+  });
+
+  describe("Receiving", () => {
+    const change = () => screen.getByRole("button", { name: "Change the folder received files are saved to" });
+    const shown = async () => {
+      const region = screen.getByRole("region", { name: "Receiving" });
+      await waitFor(() => expect(region.querySelector("code")?.textContent).not.toBe(""));
+      return region.querySelector("code")!.textContent;
+    };
+
+    it("shows the save folder, and changes it from the folder dialog", async () => {
+      const device = await open();
+      expect(await shown()).toBe("/home/me/Downloads/BhayanakShare");
+
+      fireEvent.click(change());
+      expect(await screen.findByText("/mnt/big")).toBeTruthy();
+      expect(device.api.setSaveFolder).toHaveBeenCalledExactlyOnceWith("/mnt/big");
+      expect((await findStatus()).textContent).toContain("Files you receive from now on go there");
+      expect(await shown()).toBe("/mnt/big");
+    });
+
+    it("shows the folder as the Device kept it", async () => {
+      await open(fakeApi({ setSaveFolder: vi.fn(() => Promise.resolve("/mnt/big/received")) }));
+      fireEvent.click(change());
+      expect(await screen.findByText("/mnt/big/received")).toBeTruthy();
+    });
+
+    it("changes nothing when the folder dialog is cancelled", async () => {
+      const device = await open(fakeApi({ pickFolder: vi.fn(() => Promise.resolve<string | null>(null)) }));
+      await shown();
+      fireEvent.click(change());
+      await waitFor(() => expect(device.api.pickFolder).toHaveBeenCalled());
+      expect(device.api.setSaveFolder).not.toHaveBeenCalled();
+      expect(await shown()).toBe("/home/me/Downloads/BhayanakShare");
+      expect(screen.queryByRole("alert")).toBeNull();
+    });
+
+    it("keeps the old folder and says why when the folder cannot be used", async () => {
+      await open(fakeApi({ setSaveFolder: vi.fn(() => Promise.reject("That is not a folder.")) }));
+      await shown();
+      fireEvent.click(change());
+      expect((await screen.findByRole("alert")).textContent).toBe("Could not use that folder. That is not a folder.");
+      expect(await shown()).toBe("/home/me/Downloads/BhayanakShare");
+    });
+
+    it("is what the next Offer's sheet shows", async () => {
+      const device = await open();
+      await shown();
+      fireEvent.click(change());
+      await screen.findByText("/mnt/big");
+      fireEvent.click(screen.getByRole("button", { name: "Home" }));
+      await device.transfer("receiver", { kind: "offered" });
+      const sheet = await screen.findByRole("dialog", { name: "Incoming files" });
+      await waitFor(() => expect(sheet.textContent).toContain("/mnt/big"));
+    });
+
+    it("says so when the folder cannot be read", async () => {
+      await open(fakeApi({ saveFolder: () => Promise.reject(new Error("no")) }));
+      expect((await screen.findByRole("alert")).textContent).toContain("Could not read the folder");
+      expect((change() as HTMLButtonElement).disabled).toBe(true);
+    });
+  });
+
+  describe("Updates", () => {
+    const check = () => screen.getByRole("button", { name: "Check for updates" }) as HTMLButtonElement;
+    const updates = () => within(screen.getByRole("region", { name: "Updates" }));
+
+    it("shows this version", async () => {
+      await open();
+      expect(await updates().findByText("Version 0.1.0")).toBeTruthy();
+    });
+
+    it("says when the version cannot be read", async () => {
+      await open(fakeApi({ appVersion: () => Promise.reject(new Error("no")) }));
+      expect(await updates().findByText("The version of BhayanakShare could not be read.")).toBeTruthy();
+    });
+
+    it("looks now, and says when nothing newer was found", async () => {
+      const device = await open();
+      fireEvent.click(check());
+      expect((await findStatus()).textContent).toBe("No newer version was found.");
+      expect(device.api.checkForUpdate).toHaveBeenCalledTimes(1);
+      expect(updates().queryByRole("button", { name: "Install and restart" })).toBeNull();
+      expect(check().disabled).toBe(false);
+
+      // An answer to this press: it is not there when Settings is opened again, nor on Home.
+      fireEvent.click(screen.getByRole("button", { name: "Home" }));
+      expect(screen.queryByText("No newer version was found.")).toBeNull();
+      fireEvent.click(screen.getByRole("button", { name: "Settings" }));
+      await screen.findByRole("heading", { name: "Diagnostics" });
+      expect(screen.queryByText("No newer version was found.")).toBeNull();
+    });
+
+    it("says Checking while it looks, with the button off", async () => {
+      let answer: (a: UpdateAction) => void = () => {};
+      await open(fakeApi({ checkForUpdate: vi.fn(() => new Promise<UpdateAction>((r) => (answer = r))) }));
+      fireEvent.click(check());
+      expect((await findStatus()).textContent).toBe("Checking for updates…");
+      expect(check().disabled).toBe(true);
+      await act(async () => answer({ type: "none" }));
+      expect((await findStatus()).textContent).toBe("No newer version was found.");
+      expect(check().disabled).toBe(false);
+    });
+
+    it("offers an AppImage the update it found, installing only when asked", async () => {
+      const device = await open(
+        fakeApi({ checkForUpdate: vi.fn(() => Promise.resolve<UpdateAction>({ type: "install", version: "0.2.0" })) }),
+      );
+      expect(updates().queryByText(/Update available/)).toBeNull();
+      fireEvent.click(check());
+      expect(await updates().findByText(/Update available \(version 0\.2\.0\)/)).toBeTruthy();
+      expect(device.api.installUpdate).not.toHaveBeenCalled();
+      // It is an answer, not a banner: nothing to dismiss, and not shown twice.
+      expect(updates().queryByRole("button", { name: "Dismiss" })).toBeNull();
+      expect(screen.getAllByText(/Update available/)).toHaveLength(1);
+      expect(screen.getAllByRole("button", { name: "Install and restart" })).toHaveLength(1);
+
+      fireEvent.click(updates().getByRole("button", { name: "Install and restart" }));
+      expect(await screen.findByText("Installing version 0.2.0…")).toBeTruthy();
+      expect(device.api.installUpdate).toHaveBeenCalledExactlyOnceWith("0.2.0");
+      expect(screen.getAllByText("Installing version 0.2.0…")).toHaveLength(1);
+      expect(check().disabled).toBe(true);
+    });
+
+    it("links a package to the release page", async () => {
+      const device = await open(
+        fakeApi({ checkForUpdate: vi.fn(() => Promise.resolve<UpdateAction>({ type: "open_page", version: "0.2.0" })) }),
+      );
+      fireEvent.click(check());
+      await updates().findByText(/Update available \(version 0\.2\.0\)/);
+      expect(updates().queryByRole("button", { name: "Install and restart" })).toBeNull();
+      fireEvent.click(updates().getByRole("link", { name: "Open the release page" }));
+      expect(device.api.openUrl).toHaveBeenCalledWith(
+        "https://github.com/theHimanshuShekhar/bhayanakshare/releases/latest",
+      );
+    });
+
+    it("shows what the shell found already, and the banner shows what a check here found", async () => {
+      const device = await open(
+        fakeApi({
+          pendingUpdate: () => Promise.resolve<UpdateAction>({ type: "install", version: "0.2.0" }),
+        }),
+      );
+      expect(await updates().findByText(/Update available \(version 0\.2\.0\)/)).toBeTruthy();
+      fireEvent.click(screen.getByRole("button", { name: "Home" }));
+      expect(screen.getByText(/Update available \(version 0\.2\.0\)/)).toBeTruthy();
+      expect(device.api.installUpdate).not.toHaveBeenCalled();
+    });
+
+    it("notes what a check in Settings found, for the banner on the other tabs", async () => {
+      await open(
+        fakeApi({ checkForUpdate: vi.fn(() => Promise.resolve<UpdateAction>({ type: "install", version: "0.3.0" })) }),
+      );
+      fireEvent.click(check());
+      await updates().findByText(/Update available \(version 0\.3\.0\)/);
+      fireEvent.click(screen.getByRole("button", { name: "Home" }));
+      expect(screen.getByText(/Update available \(version 0\.3\.0\)/)).toBeTruthy();
+      expect(screen.getByRole("button", { name: "Dismiss" })).toBeTruthy();
+    });
+
+    it("says when the check could not be made", async () => {
+      await open(fakeApi({ checkForUpdate: vi.fn(() => Promise.reject(new Error("offline"))) }));
+      fireEvent.click(check());
+      expect((await screen.findByRole("alert")).textContent).toBe("Could not check for updates. Are you online?");
+      expect(check().disabled).toBe(false);
+    });
+
+    it("is one update at a time: the check waits while an install runs, whoever started it", async () => {
+      const device = await open(
+        fakeApi({
+          pendingUpdate: () => Promise.resolve<UpdateAction>({ type: "install", version: "0.2.0" }),
+          installUpdate: vi.fn(() => new Promise(() => {})),
+        }),
+      );
+      fireEvent.click(await updates().findByRole("button", { name: "Install and restart" }));
+      expect(await screen.findByText("Installing version 0.2.0…")).toBeTruthy();
+      expect(check().disabled).toBe(true);
+      fireEvent.click(check());
+      expect(device.api.checkForUpdate).not.toHaveBeenCalled();
+    });
+
+    it("shows what Update now is doing, once, while Settings is open", async () => {
+      const device = await open(
+        fakeApi({ checkForUpdate: vi.fn(() => Promise.resolve<UpdateAction>({ type: "none" })) }),
+      );
+      await device.push({
+        type: "version_mismatch",
+        peer: PEER_ID,
+        peer_name: "Alice's Laptop",
+        peer_app_version: "9.9.9",
+        outdated: "this_device",
+      });
+      fireEvent.click(await screen.findByRole("button", { name: "Update now" }));
+      expect((await screen.findByRole("alert")).textContent).toBe("No newer version was found.");
+      expect(screen.getAllByText("No newer version was found.")).toHaveLength(1);
+    });
+  });
+});
+
 describe("Diagnostics", () => {
   const open = async (device = fakeApi()) => {
     await start(device);
@@ -1665,7 +2264,7 @@ describe("Diagnostics", () => {
     const device = await open();
     fireEvent.click(exportButton());
 
-    expect((await screen.findByRole("status")).textContent).toBe("Saved to /home/me/diagnostics.zip.");
+    expect((await findStatus()).textContent).toBe("Saved to /home/me/diagnostics.zip.");
     expect(device.api.exportDiagnostics).toHaveBeenCalledWith("/home/me/diagnostics.zip");
     expect(device.api.pickDiagnosticsSavePath).toHaveBeenCalledTimes(1);
     expect(vi.mocked(device.api.pickDiagnosticsSavePath).mock.calls[0][0]).toMatch(
@@ -1678,7 +2277,7 @@ describe("Diagnostics", () => {
     fireEvent.click(exportButton());
     await waitFor(() => expect((exportButton() as HTMLButtonElement).disabled).toBe(false));
     expect(device.api.exportDiagnostics).not.toHaveBeenCalled();
-    expect(screen.queryByRole("status")).toBeNull();
+    expect(saying()).toHaveLength(0);
     expect(screen.queryByRole("alert")).toBeNull();
   });
 
@@ -1690,7 +2289,7 @@ describe("Diagnostics", () => {
     expect((await screen.findByRole("alert")).textContent).toBe(
       "Could not export diagnostics. writing the diagnostics zip: No space left on device",
     );
-    expect(screen.queryByRole("status")).toBeNull();
+    expect(saying()).toHaveLength(0);
     // It can be tried again.
     expect((exportButton() as HTMLButtonElement).disabled).toBe(false);
   });
@@ -1702,10 +2301,10 @@ describe("Diagnostics", () => {
       .mockRejectedValueOnce(new Error("disk full"));
     await open(fakeApi({ exportDiagnostics }));
     fireEvent.click(exportButton());
-    await screen.findByRole("status");
+    await findStatus();
     fireEvent.click(exportButton());
     expect((await screen.findByRole("alert")).textContent).toContain("disk full");
-    expect(screen.queryByRole("status")).toBeNull();
+    expect(saying()).toHaveLength(0);
   });
 });
 
@@ -2849,7 +3448,7 @@ describe("Identity", () => {
         expect(device.api.pickIdentitySavePath).toHaveBeenCalledWith("bhayanakshare-identity-AAAA-AAAA.bhid"),
       );
       await waitFor(() => expect(device.api.exportIdentity).toHaveBeenCalledWith("/home/me/id.bhid", PASSWORD));
-      expect((await screen.findByRole("status")).textContent).toContain("Saved to /home/me/id.bhid");
+      expect((await findStatus()).textContent).toContain("Saved to /home/me/id.bhid");
       const close = screen.getByRole("button", { name: "Close" });
       expect(document.activeElement).toBe(close);
       // The password does not outlive its use.
@@ -2956,7 +3555,7 @@ describe("Identity", () => {
       await waitFor(() =>
         expect(device.api.importIdentity).toHaveBeenCalledWith("/home/me/old-laptop.bhid", PASSWORD),
       );
-      expect((await screen.findByRole("status")).textContent).toBe("Restarting…");
+      expect((await findStatus()).textContent).toBe("Restarting…");
       expect((screen.getByRole("button", { name: "Replace and restart" }) as HTMLButtonElement).disabled).toBe(true);
     });
 
@@ -3019,7 +3618,7 @@ describe("Identity", () => {
       );
       typeInto("Password of this file", PASSWORD);
       fireEvent.click(screen.getByRole("button", { name: "Continue" }));
-      expect((await screen.findByRole("status")).textContent).toContain("Nothing needs to change");
+      expect((await findStatus()).textContent).toContain("Nothing needs to change");
       expect(screen.queryByRole("alertdialog")).toBeNull();
       expect(device.api.importIdentity).not.toHaveBeenCalled();
     });

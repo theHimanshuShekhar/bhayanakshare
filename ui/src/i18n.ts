@@ -149,6 +149,46 @@ const en = {
   "visibility.loadFailed": "Could not read who can see this Device.",
   "visibility.failed": "Could not change who can see this Device. {reason}",
 
+  "settings.thisDevice": "This Device",
+  "settings.privacy": "Privacy",
+  "settings.receiving": "Receiving",
+  "settings.app": "App",
+
+  "deviceName.label": "Device Name",
+  "deviceName.hint": "What other Devices call this one, instead of its Device ID. It is shown to the people Visibility allows.",
+  "deviceName.save": "Save",
+  "deviceName.saved": "Saved as {name}.",
+  "deviceName.empty": "Enter a name for this Device.",
+  "deviceName.loadFailed": "Could not read this Device's name.",
+  "deviceName.failed": "Could not save the name. {reason}",
+
+  "dht.label": "Public DHT",
+  "dht.hint":
+    "Also publish this Device's address to, and look up your Contacts on, the public BitTorrent DHT, besides n0's servers. Your name is never published. Off, only n0's servers are used.",
+  "dht.loadFailed": "Could not read whether the public DHT is on.",
+  "dht.failed": "Could not change the public DHT. {reason}",
+
+  "saveFolder.label": "Received files are saved to",
+  "saveFolder.change": "Change…",
+  "saveFolder.changeLabel": "Change the folder received files are saved to",
+  "saveFolder.hint": "From the next file you receive on. You can still choose another folder for each file when it arrives.",
+  "saveFolder.loadFailed": "Could not read the folder received files are saved to.",
+  "saveFolder.failed": "Could not use that folder. {reason}",
+  "saveFolder.saved": "Saved. Files you receive from now on go there.",
+
+  "updates.heading": "Updates",
+  "updates.version": "Version {version}",
+  "updates.versionUnknown": "The version of BhayanakShare could not be read.",
+  "updates.check": "Check for updates",
+
+  "firstRun.heading": "Welcome to BhayanakShare",
+  "firstRun.intro": "Check these before you start. You can change any of them later in Settings.",
+  "firstRun.privacy": "Your Device Name is shown only to the people Visibility allows, and is never published online.",
+  "firstRun.start": "Get started",
+  "firstRun.starting": "Getting ready…",
+  "firstRun.loadFailed": "Could not read some of this Device's settings. Check them before you start.",
+  "firstRun.failed": "Could not finish setting up. {reason}",
+
   "autostart.label": "Start at login",
   "autostart.hint": "BhayanakShare starts in the background when you log in, so you can receive files.",
   "autostart.loadFailed": "Could not read whether this Device starts at login.",

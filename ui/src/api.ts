@@ -2,6 +2,7 @@
 // generated (bindings.ts), plus the file picker and "show in folder". Everything else gets an
 // `Api`, so tests can hand the UI a stand-in.
 
+import { getVersion } from "@tauri-apps/api/app";
 import { getCurrent, onOpenUrl } from "@tauri-apps/plugin-deep-link";
 import { open, save } from "@tauri-apps/plugin-dialog";
 import { openUrl, revealItemInDir } from "@tauri-apps/plugin-opener";
@@ -44,8 +45,15 @@ export type {
 
 export interface Api {
   myId(): Promise<MyId>;
-  /** The folder accepted files are saved to. */
+  /** The folder accepted files are saved to unless an Offer names another. */
   saveFolder(): Promise<string>;
+  /** Makes `path` the save folder from the next Offer on (made if missing, and it must be
+   * writable); resolves to the folder as kept. Rejects with the reason it cannot be used. */
+  setSaveFolder(path: string): Promise<string>;
+  /** Whether first run is still to be done: its screen is shown instead of the tabs. */
+  needsFirstRun(): Promise<boolean>;
+  /** Records that the user has been through first run. */
+  finishFirstRun(): Promise<unknown>;
   /** Offers the files and folders at `paths` to the Device with ID `to` as one Transfer;
    * resolves to the Transfer ID. */
   sendFiles(to: string, paths: string[]): Promise<string>;
@@ -71,10 +79,18 @@ export interface Api {
   resendTransfer(id: TransferId): Promise<string>;
   /** This Device's name, as other Devices see it. */
   deviceName(): Promise<string>;
+  /** Renames this Device, at once; resolves to the name as kept (trimmed, shortened if too
+   * long). Rejects with the reason it was refused, as when it is empty. */
+  setDeviceName(name: string): Promise<string>;
   /** Who can see this Device as a Nearby Device. */
   visibility(): Promise<Visibility>;
   /** Changes who can see this Device as a Nearby Device; it takes effect at once. */
   setVisibility(visibility: Visibility): Promise<unknown>;
+  /** Whether this Device uses the public DHT, besides n0's servers, to publish its address and
+   * find its Contacts'. */
+  publicDht(): Promise<boolean>;
+  /** Turns the public DHT on or off; it takes effect at once and is kept. */
+  setPublicDht(on: boolean): Promise<unknown>;
   /** Whether this Device starts when the user logs in. */
   autostartEnabled(): Promise<boolean>;
   setAutostart(on: boolean): Promise<unknown>;
@@ -88,6 +104,8 @@ export interface Api {
   pickDiagnosticsSavePath(name: string): Promise<string | null>;
   /** The user confirmed quitting: the Device saves its progress, then the app exits. */
   quitApp(): Promise<unknown>;
+  /** The version of this app. */
+  appVersion(): Promise<string>;
   /** Looks for a newer release now. Rejects when the check fails, as it does offline. */
   checkForUpdate(): Promise<UpdateAction>;
   /** The newer release the last check found, if any. */
@@ -175,6 +193,9 @@ let startupLinkTaken = false;
 export const tauriApi: Api = {
   myId: commands.myId,
   saveFolder: commands.saveFolder,
+  setSaveFolder: commands.setSaveFolder,
+  needsFirstRun: commands.needsFirstRun,
+  finishFirstRun: commands.finishFirstRun,
   sendFiles: commands.sendFiles,
   sendBatch: commands.sendBatch,
   sendText: commands.sendText,
@@ -187,8 +208,11 @@ export const tauriApi: Api = {
   cancelTransfer: commands.cancelTransfer,
   resendTransfer: commands.resendTransfer,
   deviceName: commands.deviceName,
+  setDeviceName: commands.setDeviceName,
   visibility: commands.visibility,
   setVisibility: commands.setVisibility,
+  publicDht: commands.publicDht,
+  setPublicDht: commands.setPublicDht,
   autostartEnabled: commands.autostartEnabled,
   setAutostart: commands.setAutostart,
   debugLogging: commands.debugLogging,
@@ -197,6 +221,7 @@ export const tauriApi: Api = {
   pickDiagnosticsSavePath: (name) =>
     save({ defaultPath: name, filters: [{ name: t("diagnostics.fileType"), extensions: ["zip"] }] }),
   quitApp: commands.quitApp,
+  appVersion: getVersion,
   checkForUpdate: commands.checkForUpdate,
   pendingUpdate: commands.pendingUpdate,
   installUpdate: commands.installUpdate,
