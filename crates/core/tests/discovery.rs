@@ -148,8 +148,11 @@ async fn changing_the_visibility_takes_effect_at_once() {
 }
 
 /// How long a rename may take to show on another Device, in all (Settings → Device Name takes
-/// effect without a restart). The announcements come about every second.
-const RENAME_WITHIN: Duration = Duration::from_secs(10);
+/// effect without a restart, which is all that is required; this only keeps a lost update from
+/// hanging the test). Generous because the tests of this binary run in parallel and share one
+/// multicast group, so swarm-discovery's response rate limiting can hold an update back for a
+/// while: the same bound as `wait_nearby`'s wait for one event, now for the whole wait.
+const RENAME_WITHIN: Duration = Duration::from_secs(30);
 
 #[tokio::test]
 async fn a_new_device_name_is_announced_at_once() {
