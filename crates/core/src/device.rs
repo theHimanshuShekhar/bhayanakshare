@@ -51,6 +51,15 @@ async fn blocking<T: Send + 'static>(
     spawn_blocking(work).await.map_err(|e| Error::io(what, std::io::Error::other(e)))
 }
 
+/// The key in an identity file, and the Device ID it makes.
+async fn open_identity_file(file: &[u8], password: &str) -> Result<(SecretKey, DeviceId), Error> {
+    let (file, password) = (file.to_vec(), Zeroizing::new(password.to_owned()));
+    let secret = blocking("opening the identity file", move || identity_file::open(&file, &password)).await??;
+    let key = SecretKey::from_bytes(&secret);
+    let id = DeviceId::from_endpoint_id(key.public());
+    Ok((key, id))
+}
+
 /// Which network a Device lives on.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Network {
@@ -206,9 +215,8 @@ impl TransferInfo {
 /// State shared by the Device handle and the tasks it spawns.
 pub(crate) struct Shared {
     pub id: DeviceId,
-    /// What the running endpoint is bound to, for exporting it, and where it is kept, for
-    /// replacing it. An import changes the stored key; this one stays until the next start.
-    pub secret: Zeroizing<[u8; 32]>,
+    /// Where the key is kept, for replacing it. An import changes the stored key; the
+    /// endpoint keeps the one it started with until the next start.
     pub key_source: KeySource,
     pub endpoint: Endpoint,
     pub blobs: iroh_blobs::api::Store,
@@ -548,7 +556,6 @@ impl Device {
             }
         }
         let public_dht = PublicDht::new(secret.clone(), dht::load(&db).await);
-        let secret_bytes = Zeroizing::new(secret.to_bytes());
         let mut builder = match network {
             // The preset brings n0 DNS; the DHT is added below.
             Network::Internet => Endpoint::builder(presets::N0),
@@ -579,7 +586,6 @@ impl Device {
         let gate = Arc::new(Gate::default());
         let shared = Arc::new(Shared {
             id: DeviceId::from_endpoint_id(endpoint.id()),
-            secret: secret_bytes,
             key_source,
             endpoint: endpoint.clone(),
             blobs: blobs.clone(),
@@ -625,7 +631,7 @@ impl Device {
     /// AES-256-GCM): the contents of an identity file for [`Device::import_identity`]. The
     /// password cannot be empty.
     pub async fn export_identity(&self, password: &str) -> Result<Vec<u8>, Error> {
-        let secret = self.inner.shared.secret.clone();
+        let secret = Zeroizing::new(self.inner.shared.endpoint.secret_key().to_bytes());
         let password = Zeroizing::new(password.to_owned());
         Ok(blocking("sealing the identity", move || identity_file::seal(&secret, &password)).await??)
     }
@@ -633,9 +639,7 @@ impl Device {
     /// Whose identity `file` holds, if `password` opens it. Changes nothing; this is how an
     /// import is checked before the user is asked to confirm it.
     pub async fn identity_file_owner(file: &[u8], password: &str) -> Result<DeviceId, Error> {
-        let (file, password) = (file.to_vec(), Zeroizing::new(password.to_owned()));
-        let secret = blocking("opening the identity file", move || identity_file::open(&file, &password)).await??;
-        Ok(DeviceId::from_endpoint_id(SecretKey::from_bytes(&secret).public()))
+        Ok(open_identity_file(file, password).await?.1)
     }
 
     /// Makes the identity in `file` this Device's, to be taken up at the next start: the
@@ -644,10 +648,7 @@ impl Device {
     /// key, changes nothing; so does a file with this Device's own identity. Returns the Device
     /// ID the Device will have.
     pub async fn import_identity(&self, file: &[u8], password: &str) -> Result<DeviceId, Error> {
-        let (file, password) = (file.to_vec(), Zeroizing::new(password.to_owned()));
-        let secret = blocking("opening the identity file", move || identity_file::open(&file, &password)).await??;
-        let key = SecretKey::from_bytes(&secret);
-        let id = DeviceId::from_endpoint_id(key.public());
+        let (key, id) = open_identity_file(file, password).await?;
         if id == self.device_id() {
             return Ok(id);
         }
@@ -655,6 +656,7 @@ impl Device {
         blocking("storing the secret key", move || key_source.replace(&key)).await??;
         Ok(id)
     }
+
     /// This Device's ID plus the direct addresses it is listening on.
     pub fn addr(&self) -> DeviceAddr {
         let endpoint = &self.inner.shared.endpoint;

@@ -16,6 +16,7 @@ mod gate;
 mod history;
 mod identity;
 mod identity_file;
+mod keyfile;
 mod keystore;
 pub mod manifest;
 mod names;

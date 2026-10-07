@@ -15,7 +15,7 @@ use std::{
 use iroh::SecretKey;
 use zeroize::Zeroizing;
 
-use crate::identity;
+use crate::keyfile;
 
 const SERVICE: &str = "bhayanakshare";
 const USER: &str = "device-secret-key";
@@ -106,6 +106,13 @@ pub enum KeyError {
         .marker.display()
     )]
     Conflict { file: PathBuf, marker: PathBuf },
+    /// A replacement failed, and so did putting the old key back: the store may hold either.
+    #[error(
+        "The OS secret store may now hold the new secret key instead of the old one, so this \
+         Device's identity may have changed. Restart BhayanakShare and check the Fingerprint in \
+         Settings."
+    )]
+    ReplaceUncertain,
     #[error("The stored secret key is not 32 bytes.")]
     Corrupt,
     #[error("{0}")]
@@ -140,7 +147,7 @@ fn write_marker(fallback: &Path, location: Location) -> Result<(), KeyError> {
         Location::OsStore => "os-store\n",
         Location::File => "file\n",
     };
-    Ok(identity::write_replacing(&marker_path(fallback), text.as_bytes())?)
+    Ok(keyfile::write_replacing(&marker_path(fallback), text.as_bytes())?)
 }
 
 /// What the secret store holds, as startup sees it.
@@ -177,7 +184,7 @@ fn put_in_store(store: &dyn SecretStore, key: &SecretKey) -> bool {
 fn migrate(store: &dyn SecretStore, fallback: &Path, key: &SecretKey) -> Result<(), KeyError> {
     if put_in_store(store, key) {
         write_marker(fallback, Location::OsStore)?;
-        identity::remove_key_file(fallback);
+        keyfile::remove_key_file(fallback);
     } else {
         tracing::warn!("could not move the secret key into the OS secret store; keeping it in {}", fallback.display());
         write_marker(fallback, Location::File)?;
@@ -189,7 +196,7 @@ fn migrate(store: &dyn SecretStore, fallback: &Path, key: &SecretKey) -> Result<
 pub(crate) fn load_or_create(store: &dyn SecretStore, fallback: &Path) -> Result<SecretKey, KeyError> {
     let marker = read_marker(fallback)?;
     let stored = read_store(store)?;
-    let file = identity::read_key_file(fallback)?;
+    let file = keyfile::read_key_file(fallback)?;
     let unavailable = |why: &str| KeyError::StoreUnavailable(why.to_owned());
     let missing_file = || KeyError::MissingKeyFile { file: fallback.to_owned(), marker: marker_path(fallback) };
 
@@ -198,7 +205,7 @@ pub(crate) fn load_or_create(store: &dyn SecretStore, fallback: &Path) -> Result
         // interrupted goes once it is shown to be the same key.
         (Some(Location::OsStore), Stored::Key(key), file) => {
             if file.is_some_and(|f| f.to_bytes() == key.to_bytes()) {
-                identity::remove_key_file(fallback);
+                keyfile::remove_key_file(fallback);
             }
             Ok(key)
         }
@@ -232,7 +239,7 @@ pub(crate) fn load_or_create(store: &dyn SecretStore, fallback: &Path) -> Result
         (None, Stored::Key(key), file) => {
             write_marker(fallback, Location::OsStore)?;
             if file.is_some() {
-                identity::remove_key_file(fallback);
+                keyfile::remove_key_file(fallback);
             }
             Ok(key)
         }
@@ -250,14 +257,14 @@ pub(crate) fn load_or_create(store: &dyn SecretStore, fallback: &Path) -> Result
             if put_in_store(store, &key) {
                 write_marker(fallback, Location::OsStore)?;
             } else {
-                identity::write_new_key_file(fallback, &key.to_bytes())?;
+                keyfile::write_new_key_file(fallback, &key.to_bytes())?;
                 write_marker(fallback, Location::File)?;
             }
             Ok(key)
         }
         (None, Stored::NoStore, None) => {
             let key = SecretKey::generate();
-            identity::write_new_key_file(fallback, &key.to_bytes())?;
+            keyfile::write_new_key_file(fallback, &key.to_bytes())?;
             write_marker(fallback, Location::File)?;
             Ok(key)
         }
@@ -265,24 +272,47 @@ pub(crate) fn load_or_create(store: &dyn SecretStore, fallback: &Path) -> Result
     }
 }
 
-/// Makes `key` this Device's key, in the place the marker names. Nothing is changed unless
-/// the new key can be stored.
+/// Makes `key` this Device's key, in the place the marker names. A store that does not keep
+/// the new key gets the old one back, so that a failed import leaves the Device as it was; only
+/// when that fails too is the outcome unknown.
 pub(crate) fn replace(store: &dyn SecretStore, fallback: &Path, key: &SecretKey) -> Result<(), KeyError> {
     match read_marker(fallback)? {
         Some(Location::OsStore) => {
-            let bytes = Zeroizing::new(key.to_bytes());
-            store.set(bytes.as_slice()).map_err(|e| KeyError::StoreUnavailable(store_reason(e)))?;
-            match store.get() {
-                Ok(Some(back)) if back.as_slice() == bytes.as_slice() => Ok(()),
-                Ok(_) => Err(KeyError::StoreUnavailable("the store did not keep the key".to_owned())),
-                Err(e) => Err(KeyError::StoreUnavailable(store_reason(e))),
+            let old = store.get().map_err(|e| KeyError::StoreUnavailable(store_reason(e)))?;
+            let new = Zeroizing::new(key.to_bytes());
+            let put = store.set(new.as_slice()).and_then(|()| match store.get()? {
+                Some(back) if back.as_slice() == new.as_slice() => Ok(()),
+                _ => Err(StoreError::Failed("the store did not keep the key".to_owned())),
+            });
+            let Err(why) = put else { return Ok(()) };
+            if restore(store, old.as_ref().map(|old| old.as_slice())) {
+                Err(KeyError::StoreUnavailable(store_reason(why)))
+            } else {
+                Err(KeyError::ReplaceUncertain)
             }
         }
         Some(Location::File) | None => {
-            identity::write_replacing(fallback, &key.to_bytes())?;
+            keyfile::write_replacing(fallback, &key.to_bytes())?;
             write_marker(fallback, Location::File)
         }
     }
+}
+
+/// Whether the store holds `old` (or nothing, if there was nothing), putting it back if need be.
+fn restore(store: &dyn SecretStore, old: Option<&[u8]>) -> bool {
+    let holds = |store: &dyn SecretStore| match (store.get(), old) {
+        (Ok(Some(now)), Some(old)) => now.as_slice() == old,
+        (Ok(None), None) => true,
+        _ => false,
+    };
+    if holds(store) {
+        return true;
+    }
+    let put_back = match old {
+        Some(old) => store.set(old),
+        None => store.delete(),
+    };
+    put_back.is_ok() && holds(store)
 }
 
 fn store_reason(e: StoreError) -> String {
@@ -312,7 +342,13 @@ mod tests {
         read_only: bool,
         /// What is set is not what `get` gives back.
         forgetful: bool,
+        /// Calls so far, and the call (counting from 1) that goes wrong: a `set` that keeps
+        /// garbage, a `get` that errors, and the `set` from which every one fails.
         sets: usize,
+        gets: usize,
+        garbage_on_set: Option<usize>,
+        fail_get: Option<usize>,
+        fail_sets_from: Option<usize>,
     }
 
     impl Fake {
@@ -352,6 +388,12 @@ mod tests {
     impl SecretStore for Fake {
         fn get(&self) -> Result<Option<Zeroizing<Vec<u8>>>, StoreError> {
             self.gate()?;
+            let mut s = self.0.borrow_mut();
+            s.gets += 1;
+            if s.fail_get == Some(s.gets) {
+                return Err(StoreError::Failed("the keychain went away".into()));
+            }
+            drop(s);
             Ok(self.0.borrow().entry.clone().map(Zeroizing::new))
         }
         fn set(&self, secret: &[u8]) -> Result<(), StoreError> {
@@ -361,7 +403,11 @@ mod tests {
                 return Err(StoreError::Failed("read-only".into()));
             }
             s.sets += 1;
-            s.entry = Some(if s.forgetful { vec![0; 32] } else { secret.to_vec() });
+            if s.fail_sets_from.is_some_and(|from| s.sets >= from) {
+                return Err(StoreError::Failed("the keychain went away".into()));
+            }
+            let garbage = s.forgetful || s.garbage_on_set == Some(s.sets);
+            s.entry = Some(if garbage { vec![0; 32] } else { secret.to_vec() });
             Ok(())
         }
         fn delete(&self) -> Result<(), StoreError> {
@@ -384,7 +430,7 @@ mod tests {
             std::fs::read_to_string(marker_path(&self.file())).ok().map(|s| s.trim().to_owned())
         }
         fn put_file(&self, key: &SecretKey) {
-            identity::write_new_key_file(&self.file(), &key.to_bytes()).unwrap();
+            keyfile::write_new_key_file(&self.file(), &key.to_bytes()).unwrap();
         }
         fn put_marker(&self, text: &str) {
             std::fs::create_dir_all(self.file().parent().unwrap()).unwrap();
@@ -636,6 +682,33 @@ mod tests {
         }
     }
 
+    // More of the marker: file.
+
+    #[test]
+    fn the_marker_says_file_and_the_store_already_holds_the_same_key_so_the_file_goes() {
+        let (dir, store) = (Dir::new(), Fake::holding(&key(1)));
+        dir.put_marker("file\n");
+        dir.put_file(&key(1));
+        assert_eq!(dir.load(&store).unwrap().to_bytes(), key(1).to_bytes());
+        assert_eq!(store.entry().unwrap(), key(1).to_bytes());
+        assert_eq!(dir.marker().as_deref(), Some("os-store"));
+        assert!(dir.file_key().is_none());
+    }
+
+    #[test]
+    fn the_marker_says_file_and_the_store_is_failing_or_absent_so_the_file_is_used_and_nothing_changes() {
+        for store in [Fake::locked(), Fake::absent()] {
+            let dir = Dir::new();
+            dir.put_marker("file\n");
+            dir.put_file(&key(1));
+            assert_eq!(dir.load(&store).unwrap().to_bytes(), key(1).to_bytes());
+            assert_eq!(dir.file_key().unwrap(), key(1).to_bytes());
+            assert_eq!(dir.marker().as_deref(), Some("file"));
+            assert!(store.entry().is_none());
+            assert_eq!(store.0.borrow().sets, 0);
+        }
+    }
+
     // Damaged state is never repaired by guessing.
 
     #[test]
@@ -673,6 +746,52 @@ mod tests {
         assert_eq!(dir.file_key().unwrap(), key(9).to_bytes());
         assert_eq!(dir.marker().as_deref(), Some("file"));
         assert_eq!(dir.load(&store).unwrap().to_bytes(), key(9).to_bytes());
+    }
+
+    /// A Device whose key is `key(1)`, in the store, as the marker says.
+    fn in_store() -> (Dir, Fake) {
+        let (dir, store) = (Dir::new(), Fake::holding(&key(1)));
+        dir.put_marker("os-store\n");
+        (dir, store)
+    }
+
+    #[test]
+    fn a_replacement_the_store_keeps_wrong_is_undone() {
+        let (dir, store) = in_store();
+        store.0.borrow_mut().garbage_on_set = Some(1);
+        assert!(matches!(replace(&store, &dir.file(), &key(9)), Err(KeyError::StoreUnavailable(_))));
+        assert_eq!(store.entry().unwrap(), key(1).to_bytes());
+        assert_eq!(dir.load(&store).unwrap().to_bytes(), key(1).to_bytes());
+    }
+
+    #[test]
+    fn a_replacement_that_cannot_be_read_back_is_undone() {
+        let (dir, store) = in_store();
+        // The first read is of the old key, the second is the check of the new one.
+        store.0.borrow_mut().fail_get = Some(2);
+        assert!(matches!(replace(&store, &dir.file(), &key(9)), Err(KeyError::StoreUnavailable(_))));
+        assert_eq!(store.entry().unwrap(), key(1).to_bytes());
+        assert_eq!(dir.load(&store).unwrap().to_bytes(), key(1).to_bytes());
+    }
+
+    #[test]
+    fn a_replacement_that_cannot_be_undone_says_the_identity_may_have_changed() {
+        let (dir, store) = in_store();
+        store.0.borrow_mut().garbage_on_set = Some(1);
+        store.0.borrow_mut().fail_sets_from = Some(2);
+        let err = replace(&store, &dir.file(), &key(9)).unwrap_err();
+        assert!(matches!(err, KeyError::ReplaceUncertain), "{err:?}");
+        assert!(err.to_string().contains("may have changed"));
+    }
+
+    #[test]
+    fn a_store_that_cannot_be_read_is_not_written_to_by_a_replacement() {
+        let (dir, store) = in_store();
+        store.set_locked(true);
+        assert!(matches!(replace(&store, &dir.file(), &key(9)), Err(KeyError::StoreUnavailable(_))));
+        store.set_locked(false);
+        assert_eq!(store.0.borrow().sets, 0);
+        assert_eq!(store.entry().unwrap(), key(1).to_bytes());
     }
 
     #[test]

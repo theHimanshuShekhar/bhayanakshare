@@ -46,6 +46,10 @@ pub enum IdentityFileError {
     EmptyPassword,
     #[error("That is not a BhayanakShare identity file.")]
     NotAnIdentityFile,
+    /// Argon2 could not run: this build's export cost is one it refuses, or it cannot get the
+    /// memory.
+    #[error("The password could not be turned into a key.")]
+    KeyDerivation,
     #[error("That identity file was made by a newer BhayanakShare. Update this one to open it.")]
     UnsupportedVersion,
     /// The password does not open the file, or the file was changed: AES-GCM cannot tell the
@@ -75,7 +79,7 @@ fn seal_with(secret: &[u8; KEY_LEN], password: &str, cost: Cost) -> Result<Vec<u
     file.extend_from_slice(&nonce);
     debug_assert_eq!(file.len(), HEADER_LEN);
 
-    let key = derive(password, &salt, cost).ok_or(IdentityFileError::NotAnIdentityFile)?;
+    let key = derive(password, &salt, cost).ok_or(IdentityFileError::KeyDerivation)?;
     let sealed = Aes256Gcm::new(key.as_slice().into())
         .encrypt(Nonce::from_slice(&nonce), Payload { msg: secret, aad: &file })
         .expect("sealing a buffer in memory cannot fail");
