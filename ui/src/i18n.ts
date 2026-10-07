@@ -384,6 +384,7 @@ const en = {
   "batch.inProgress": "{count} in progress",
 
   "selection.select": "Select",
+  "selection.selected": "Selected",
   "selection.selectLabel": "Select {name} to send to several Devices at once",
   "selection.one": "1 Device selected",
   "selection.many": "{count} Devices selected",

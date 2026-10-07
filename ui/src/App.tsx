@@ -289,36 +289,47 @@ export function App({ api = tauriApi }: AppProps) {
                   // A Contact that is Nearby shows what it announces until it has a name here.
                   const here = nearby.find((d) => d.id === c.id);
                   const name = peerName(c.id, contacts, here?.name ?? null);
+                  const picked = chosen.includes(c.id);
                   return (
-                    <div key={c.id} className="tile-group">
+                    <div key={c.id} className={picked ? "tile-group selected" : "tile-group"}>
                       <button
                         type="button"
                         className="tile"
                         aria-label={t("home.sendToContact", { name })}
+                        aria-describedby={`tile-${c.id}-state`}
                         onClick={() => setSending({ to: c.id, name })}
                       >
                         <strong>{name}</strong>
-                        <span className="badge">{t("contacts.badge")}</span>
-                        <span className="note">{fingerprint(c.id)}</span>
-                        {here && <span className="note">{t("home.nearby")}</span>}
+                        {/* What the tile says besides the name, which the name label leaves out. */}
+                        <span id={`tile-${c.id}-state`} className="tile-state">
+                          <span className="badge">{t("contacts.badge")}</span>
+                          <span className="note">{fingerprint(c.id)}</span>
+                          {here && <span className="note">{t("home.nearby")}</span>}
+                          {picked && <span className="note">{t("selection.selected")}</span>}
+                        </span>
                       </button>
-                      <SelectBox name={name} checked={chosen.includes(c.id)} onChange={() => toggle(c.id)} />
+                      <SelectBox name={name} checked={picked} onChange={() => toggle(c.id)} />
                     </div>
                   );
                 })}
                 {strangers.map((d) => {
                   const label = peerName(d.id, contacts, d.name);
+                  const picked = chosen.includes(d.id);
                   return (
-                    <div key={d.id} className="tile-group">
+                    <div key={d.id} className={picked ? "tile-group selected" : "tile-group"}>
                       <button
                         type="button"
                         className="tile"
                         aria-label={t("home.sendToNearby", { name: label })}
+                        aria-describedby={`tile-${d.id}-state`}
                         onClick={() => setSending({ to: d.id, name: label })}
                       >
                         <strong>{d.name ?? fingerprint(d.id)}</strong>
-                        {d.name !== null && <span className="note">{fingerprint(d.id)}</span>}
-                        <span className="note">{t("home.nearby")}</span>
+                        <span id={`tile-${d.id}-state`} className="tile-state">
+                          {d.name !== null && <span className="note">{fingerprint(d.id)}</span>}
+                          <span className="note">{t("home.nearby")}</span>
+                          {picked && <span className="note">{t("selection.selected")}</span>}
+                        </span>
                       </button>
                       <button
                         type="button"
@@ -327,7 +338,7 @@ export function App({ api = tauriApi }: AppProps) {
                       >
                         {t("home.saveAsContact")}
                       </button>
-                      <SelectBox name={label} checked={chosen.includes(d.id)} onChange={() => toggle(d.id)} />
+                      <SelectBox name={label} checked={picked} onChange={() => toggle(d.id)} />
                     </div>
                   );
                 })}

@@ -3,6 +3,7 @@ import type { Api, Contact, SpaceCheck } from "./api";
 import { contactName, findContact } from "./contacts";
 import { t } from "./i18n";
 import { PlainText } from "./PlainText";
+import { Sheet } from "./Sheet";
 import { adjustedNamesText, fingerprint, formatCountdown, formatSize, type TransferView } from "./transfers";
 
 /** How many top-level items the sheet lists before it says how many more there are: an Offer
@@ -81,84 +82,82 @@ export function OfferSheet({
     );
 
   return (
-    <div className="overlay">
-      <div role="dialog" aria-modal="true" aria-labelledby="offer-heading" className="sheet">
-        <h2 id="offer-heading" tabIndex={-1} ref={heading}>
-          {t(isText ? "offer.textHeading" : "offer.heading")}
-        </h2>
-        <dl>
-          <dt>{t("offer.from")}</dt>
-          <dd>
-            {contact ? (
-              <>
-                {contactName(contact) ?? offer.peerName ?? fingerprint(offer.peer)}{" "}
-                <span className="badge">{t("contacts.badge")}</span>
-              </>
-            ) : (
-              <>
-                {offer.peerName !== null && <>{offer.peerName} · </>}
-                {t("offer.notContact")}
-              </>
-            )}
-          </dd>
-          <dt>{t("offer.fingerprint")}</dt>
-          <dd>{fingerprint(offer.peer)}</dd>
-          {isText ? (
+    <Sheet labelledBy="offer-heading">
+      <h2 id="offer-heading" tabIndex={-1} ref={heading}>
+        {t(isText ? "offer.textHeading" : "offer.heading")}
+      </h2>
+      <dl>
+        <dt>{t("offer.from")}</dt>
+        <dd>
+          {contact ? (
             <>
-              <dt>{t("offer.size")}</dt>
-              <dd>{formatSize(offer.size)}</dd>
+              {contactName(contact) ?? offer.peerName ?? fingerprint(offer.peer)}{" "}
+              <span className="badge">{t("contacts.badge")}</span>
             </>
           ) : (
             <>
-              <dt>{t("offer.items")}</dt>
-              <dd>
-                <ul>
-                  {offer.items.slice(0, SHOWN_ITEMS).map((item) => (
-                    <li key={item}>{item}</li>
-                  ))}
-                </ul>
-                {offer.items.length > SHOWN_ITEMS && (
-                  <>{t("offer.moreItems", { count: offer.items.length - SHOWN_ITEMS })}</>
-                )}
-              </dd>
-              <dt>{t("offer.files")}</dt>
-              <dd>{offer.fileCount}</dd>
-              <dt>{t("offer.size")}</dt>
-              <dd>{formatSize(offer.size)}</dd>
-              <dt>{t("offer.saveTo")}</dt>
-              <dd>
-                <code>{folder ?? space?.folder ?? ""}</code>{" "}
-                <button type="button" aria-label={t("offer.changeFolderLabel")} onClick={changeFolder}>
-                  {t("offer.changeFolder")}
-                </button>
-              </dd>
+              {offer.peerName !== null && <>{offer.peerName} · </>}
+              {t("offer.notContact")}
             </>
           )}
-        </dl>
-        {isText && <PlainText text={offer.text ?? ""} />}
-        <Countdown expiresAt={offer.expiresAt} />
-        {short && (
-          <p role="alert">
-            {t("offer.noRoom", { needed: formatSize(short.needed), free: formatSize(short.free) })}
-          </p>
+        </dd>
+        <dt>{t("offer.fingerprint")}</dt>
+        <dd>{fingerprint(offer.peer)}</dd>
+        {isText ? (
+          <>
+            <dt>{t("offer.size")}</dt>
+            <dd>{formatSize(offer.size)}</dd>
+          </>
+        ) : (
+          <>
+            <dt>{t("offer.items")}</dt>
+            <dd>
+              <ul>
+                {offer.items.slice(0, SHOWN_ITEMS).map((item) => (
+                  <li key={item}>{item}</li>
+                ))}
+              </ul>
+              {offer.items.length > SHOWN_ITEMS && (
+                <>{t("offer.moreItems", { count: offer.items.length - SHOWN_ITEMS })}</>
+              )}
+            </dd>
+            <dt>{t("offer.files")}</dt>
+            <dd>{offer.fileCount}</dd>
+            <dt>{t("offer.size")}</dt>
+            <dd>{formatSize(offer.size)}</dd>
+            <dt>{t("offer.saveTo")}</dt>
+            <dd>
+              <code>{folder ?? space?.folder ?? ""}</code>{" "}
+              <button type="button" aria-label={t("offer.changeFolderLabel")} onClick={changeFolder}>
+                {t("offer.changeFolder")}
+              </button>
+            </dd>
+          </>
         )}
-        {tooLong && <p role="alert">{t("offer.pathsTooLong")}</p>}
-        {offer.adjustedNames > 0 && <p>{adjustedNamesText(offer.adjustedNames)}</p>}
-        {folderError !== null && <p role="alert">{folderError}</p>}
-        {error !== null && <p role="alert">{error}</p>}
-        <div className="actions">
-          <button
-            type="button"
-            disabled={short !== null || tooLong || folderError !== null}
-            onClick={() => answer((id) => api.acceptOffer(id, folder))}
-          >
-            {t("offer.accept")}
-          </button>
-          <button type="button" onClick={() => answer(api.declineOffer)}>
-            {t("offer.decline")}
-          </button>
-        </div>
+      </dl>
+      {isText && <PlainText text={offer.text ?? ""} />}
+      <Countdown expiresAt={offer.expiresAt} />
+      {short && (
+        <p role="alert">
+          {t("offer.noRoom", { needed: formatSize(short.needed), free: formatSize(short.free) })}
+        </p>
+      )}
+      {tooLong && <p role="alert">{t("offer.pathsTooLong")}</p>}
+      {offer.adjustedNames > 0 && <p>{adjustedNamesText(offer.adjustedNames)}</p>}
+      {folderError !== null && <p role="alert">{folderError}</p>}
+      {error !== null && <p role="alert">{error}</p>}
+      <div className="actions">
+        <button
+          type="button"
+          disabled={short !== null || tooLong || folderError !== null}
+          onClick={() => answer((id) => api.acceptOffer(id, folder))}
+        >
+          {t("offer.accept")}
+        </button>
+        <button type="button" onClick={() => answer(api.declineOffer)}>
+          {t("offer.decline")}
+        </button>
       </div>
-    </div>
+    </Sheet>
   );
 }

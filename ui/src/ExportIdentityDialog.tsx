@@ -1,6 +1,7 @@
-import { useEffect, useRef, useState, type FormEvent, type KeyboardEvent } from "react";
+import { useEffect, useRef, useState, type FormEvent } from "react";
 import type { Api } from "./api";
 import { t } from "./i18n";
+import { Sheet } from "./Sheet";
 import { identityFailure, passwordProblem, suggestedFileName, MIN_PASSWORD_CHARS } from "./identity";
 
 /**
@@ -24,14 +25,6 @@ export function ExportIdentityDialog({
   const [savedTo, setSavedTo] = useState<string | null>(null);
   const first = useRef<HTMLInputElement>(null);
   const close = useRef<HTMLButtonElement>(null);
-
-  useEffect(() => {
-    // Hand focus back to whatever opened the dialog when it goes away.
-    const opener = document.activeElement;
-    return () => {
-      if (opener instanceof HTMLElement) opener.focus();
-    };
-  }, []);
 
   // Focus starts on the first field, and moves to Close once the file is saved.
   useEffect(() => {
@@ -63,65 +56,53 @@ export function ExportIdentityDialog({
     }
   };
 
-  const onKeyDown = (e: KeyboardEvent) => {
-    if (e.key === "Escape") onClose();
-  };
-
   return (
-    <div className="overlay" onKeyDown={onKeyDown}>
-      <div
-        role="dialog"
-        aria-modal="true"
-        aria-labelledby="export-identity-heading"
-        aria-describedby="export-identity-body"
-        className="sheet"
-      >
-        <h2 id="export-identity-heading">{t("identity.exportHeading")}</h2>
-        <p id="export-identity-body">{t("identity.exportBody")}</p>
-        {savedTo !== null ? (
-          <>
-            <p role="status">{t("identity.exported", { path: savedTo })}</p>
-            <div className="actions">
-              <button type="button" ref={close} onClick={onClose}>
-                {t("identity.close")}
-              </button>
-            </div>
-          </>
-        ) : (
-          <form onSubmit={save}>
-            <label htmlFor="export-identity-password">{t("identity.password")}</label>
-            <input
-              id="export-identity-password"
-              ref={first}
-              type="password"
-              value={password}
-              onChange={(e) => setPassword(e.target.value)}
-              aria-describedby="export-identity-password-hint"
-              autoComplete="new-password"
-            />
-            <p id="export-identity-password-hint" className="note">
-              {t("identity.passwordHint", { min: MIN_PASSWORD_CHARS })}
-            </p>
-            <label htmlFor="export-identity-confirm">{t("identity.confirm")}</label>
-            <input
-              id="export-identity-confirm"
-              type="password"
-              value={confirmation}
-              onChange={(e) => setConfirmation(e.target.value)}
-              autoComplete="new-password"
-            />
-            {error !== null && <p role="alert">{error}</p>}
-            <div className="actions">
-              <button type="submit" disabled={busy}>
-                {t("identity.exportSave")}
-              </button>
-              <button type="button" onClick={onClose}>
-                {t("identity.cancel")}
-              </button>
-            </div>
-          </form>
-        )}
-      </div>
-    </div>
+    <Sheet labelledBy="export-identity-heading" describedBy="export-identity-body" onEscape={onClose}>
+      <h2 id="export-identity-heading">{t("identity.exportHeading")}</h2>
+      <p id="export-identity-body">{t("identity.exportBody")}</p>
+      {savedTo !== null ? (
+        <>
+          <p role="status">{t("identity.exported", { path: savedTo })}</p>
+          <div className="actions">
+            <button type="button" ref={close} onClick={onClose}>
+              {t("identity.close")}
+            </button>
+          </div>
+        </>
+      ) : (
+        <form onSubmit={save}>
+          <label htmlFor="export-identity-password">{t("identity.password")}</label>
+          <input
+            id="export-identity-password"
+            ref={first}
+            type="password"
+            value={password}
+            onChange={(e) => setPassword(e.target.value)}
+            aria-describedby="export-identity-password-hint"
+            autoComplete="new-password"
+          />
+          <p id="export-identity-password-hint" className="note">
+            {t("identity.passwordHint", { min: MIN_PASSWORD_CHARS })}
+          </p>
+          <label htmlFor="export-identity-confirm">{t("identity.confirm")}</label>
+          <input
+            id="export-identity-confirm"
+            type="password"
+            value={confirmation}
+            onChange={(e) => setConfirmation(e.target.value)}
+            autoComplete="new-password"
+          />
+          {error !== null && <p role="alert">{error}</p>}
+          <div className="actions">
+            <button type="submit" disabled={busy}>
+              {t("identity.exportSave")}
+            </button>
+            <button type="button" onClick={onClose}>
+              {t("identity.cancel")}
+            </button>
+          </div>
+        </form>
+      )}
+    </Sheet>
   );
 }
