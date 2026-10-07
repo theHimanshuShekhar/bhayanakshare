@@ -29,6 +29,8 @@ use iroh_blobs::{
     },
 };
 
+use crate::identity::DeviceId;
+
 /// Which events the provider sends us. Every request kind is intercepted (the provider
 /// decides that from `get` alone, see above); the other fields say the same thing for the
 /// versions that read them.
@@ -133,6 +135,8 @@ impl Gate {
         match state.peers.get(&connection_id) {
             Some(peer) if state.grants.contains_key(&(*peer, hash)) => Ok(()),
             peer => {
+                // By Fingerprint: the Debug of an `EndpointId` is the whole ID.
+                let peer = peer.map(|peer| DeviceId::from_endpoint_id(*peer));
                 tracing::debug!(?peer, %hash, "GET refused: not an accepted Transfer of this peer");
                 Err(AbortReason::Permission)
             }

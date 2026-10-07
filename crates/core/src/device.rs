@@ -530,13 +530,15 @@ impl Device {
     /// the network endpoint and starts accepting.
     pub async fn start(config: DeviceConfig) -> Result<(Self, EventStream), Error> {
         let DeviceConfig { data_dir, save_dir, key_source, clock, network, free_space } = config;
+        // The save folder is named in no error: this one is logged, and the user chose that name.
         let io = |what: &'static str, dir: &Path| {
             let ctx = format!("{what} {}", dir.display());
             move |e| Error::io(ctx, e)
         };
+        let save_io = |what: &'static str| move |e| Error::io(format!("{what} the save folder"), e);
         tokio::fs::create_dir_all(&data_dir).await.map_err(io("creating", &data_dir))?;
-        tokio::fs::create_dir_all(&save_dir).await.map_err(io("creating", &save_dir))?;
-        let save_dir = std::path::absolute(&save_dir).map_err(io("resolving", &save_dir))?;
+        tokio::fs::create_dir_all(&save_dir).await.map_err(save_io("creating"))?;
+        let save_dir = std::path::absolute(&save_dir).map_err(save_io("resolving"))?;
         let data_dir = std::path::absolute(&data_dir).map_err(io("resolving", &data_dir))?;
 
         // The OS secret store may ask the user to unlock it, which can take a while.
