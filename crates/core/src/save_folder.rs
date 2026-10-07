@@ -10,37 +10,42 @@ use std::{
 /// The setting the save folder is stored under, as an absolute path.
 pub(crate) const SETTING: &str = "save_folder";
 
-/// Why a folder cannot be the save folder. The reasons name no path: the user chose it, and an
-/// error may be logged.
+/// Why a folder cannot be the save folder. Kinds, not sentences: the UI words them, and none
+/// names a path (the user chose it, and an error may be logged).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 pub enum SaveFolderProblem {
-    /// There is something at that path that is not a folder, or no path at all.
-    #[error("That is not a folder.")]
+    /// A relative path (or none): it would mean whatever folder the app happens to run in.
+    #[error("the path is not absolute")]
+    NotAbsolute,
+    /// There is something at that path that is not a folder.
+    #[error("not a folder")]
     NotAFolder,
     /// It does not exist, and could not be made.
-    #[error("That folder does not exist and could not be created.")]
+    #[error("the folder could not be created")]
     CannotCreate,
     /// BhayanakShare cannot put files in it.
-    #[error("BhayanakShare cannot write to that folder.")]
+    #[error("the folder is not writable")]
     NotWritable,
     /// The setting is kept as text, which that path is not.
-    #[error("That folder's path cannot be used.")]
+    #[error("the path is not text")]
     NotText,
 }
 
-/// Makes `folder` if it is missing and checks that a file can be written in it. Returns it as an
-/// absolute path, the form the setting is kept in.
+/// Makes `folder` if it is missing and checks that a file can be written in it. Returns it as
+/// kept in the setting. It must be an absolute path.
 pub(crate) fn prepare(folder: &Path) -> Result<PathBuf, SaveFolderProblem> {
-    let folder = std::path::absolute(folder).map_err(|_| SaveFolderProblem::NotAFolder)?;
+    if !folder.is_absolute() {
+        return Err(SaveFolderProblem::NotAbsolute);
+    }
     if folder.to_str().is_none() {
         return Err(SaveFolderProblem::NotText);
     }
     if folder.exists() && !folder.is_dir() {
         return Err(SaveFolderProblem::NotAFolder);
     }
-    std::fs::create_dir_all(&folder).map_err(|_| SaveFolderProblem::CannotCreate)?;
-    probe(&folder).map_err(|_| SaveFolderProblem::NotWritable)?;
-    Ok(folder)
+    std::fs::create_dir_all(folder).map_err(|_| SaveFolderProblem::CannotCreate)?;
+    probe(folder).map_err(|_| SaveFolderProblem::NotWritable)?;
+    Ok(folder.to_owned())
 }
 
 /// Writes a file in `folder` and removes it again. A folder's permission bits do not say whether
@@ -72,5 +77,12 @@ mod tests {
         std::fs::write(folder.join(format!(".bhayanakshare-write-check-{}", std::process::id())), b"").unwrap();
         assert_eq!(prepare(&folder), Ok(folder.clone()));
         assert_eq!(std::fs::read_dir(&folder).unwrap().count(), 0);
+    }
+
+    #[test]
+    fn a_path_that_is_not_absolute_is_refused_and_nothing_is_made() {
+        assert_eq!(prepare(Path::new("received")), Err(SaveFolderProblem::NotAbsolute));
+        assert_eq!(prepare(Path::new("")), Err(SaveFolderProblem::NotAbsolute));
+        assert!(!Path::new("received").exists());
     }
 }

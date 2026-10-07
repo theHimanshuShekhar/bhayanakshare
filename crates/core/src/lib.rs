@@ -11,6 +11,7 @@ mod device_name;
 mod discovery;
 mod error;
 mod event;
+mod first_run;
 mod fsmove;
 mod gate;
 mod history;

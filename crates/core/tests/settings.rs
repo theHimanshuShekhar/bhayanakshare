@@ -65,11 +65,6 @@ async fn a_set_save_folder_is_made_if_missing_kept_across_a_restart_and_can_be_s
     alice.restart().await;
     assert_eq!(alice.device.save_folder().await.unwrap(), new, "the setting is lost by a restart");
 
-    // A folder that was removed in the meantime is made again at the next start.
-    std::fs::remove_dir_all(elsewhere.path().join("received")).unwrap();
-    alice.restart().await;
-    assert!(new.is_dir());
-
     let other = elsewhere.path().join("other");
     alice.device.set_save_folder(&other).await.unwrap();
     assert_eq!(alice.device.save_folder().await.unwrap(), other);
@@ -77,14 +72,16 @@ async fn a_set_save_folder_is_made_if_missing_kept_across_a_restart_and_can_be_s
 }
 
 #[tokio::test]
-async fn a_relative_save_folder_is_kept_as_the_absolute_path_it_means() {
+async fn a_path_that_is_not_absolute_is_refused_as_it_would_mean_the_folder_the_app_runs_in() {
     let mut alice = TestDevice::start("alice").await;
-    let set = alice.device.set_save_folder(std::path::Path::new("bhs-relative-test")).await.unwrap();
-    let wanted = std::path::absolute("bhs-relative-test").unwrap();
-    // Made where the process runs: clean up before asserting.
-    let _ = std::fs::remove_dir(&wanted);
-    assert_eq!(set, wanted);
-    assert!(set.is_absolute());
+    let before = alice.device.save_folder().await.unwrap();
+    for path in ["bhs-relative-test", "./bhs-relative-test", ""] {
+        let err = alice.device.set_save_folder(std::path::Path::new(path)).await.unwrap_err();
+        assert!(matches!(err, Error::SaveFolder(SaveFolderProblem::NotAbsolute)), "{path:?}: {err:?}");
+    }
+    // Nothing was made where the test runs, and nothing changed.
+    assert!(!std::path::Path::new("bhs-relative-test").exists());
+    assert_eq!(alice.device.save_folder().await.unwrap(), before);
     alice.shutdown().await;
 }
 
@@ -102,11 +99,7 @@ async fn a_folder_that_cannot_be_used_is_refused_with_the_reason_and_changes_not
     // Nor can a folder be made inside one.
     let err = alice.device.set_save_folder(&file.join("inside")).await.unwrap_err();
     assert!(matches!(err, Error::SaveFolder(SaveFolderProblem::CannotCreate)), "{err:?}");
-    // Nothing at all is not a folder either.
-    let err = alice.device.set_save_folder(std::path::Path::new("")).await.unwrap_err();
-    assert!(matches!(err, Error::SaveFolder(SaveFolderProblem::NotAFolder)), "{err:?}");
-
-    // The reasons are plain sentences that name no path.
+    // The reasons name no path, as they may be logged.
     let said = err.to_string();
     assert!(!said.contains(tmp.path().to_str().unwrap()), "{said}");
 
@@ -144,6 +137,46 @@ async fn a_folder_that_cannot_be_written_to_is_refused() {
 }
 
 #[tokio::test]
+async fn the_default_save_folder_is_made_again_at_start_but_one_the_user_set_that_is_missing_is_not() {
+    let mut alice = TestDevice::start("alice").await;
+    let mut bob = TestDevice::start("bob").await;
+
+    // The default: made at every start, as before.
+    std::fs::remove_dir_all(&bob.save_dir).unwrap();
+    bob.restart().await;
+    assert!(bob.save_dir.is_dir());
+
+    // One the user set may be on a drive that is not there: making it would put it on the drive
+    // that is. The Offer says so instead, until the folder is back.
+    let tmp = tempfile::tempdir().unwrap();
+    let chosen = tmp.path().join("drive").join("received");
+    bob.device.set_save_folder(&chosen).await.unwrap();
+    std::fs::remove_dir_all(tmp.path().join("drive")).unwrap();
+    bob.restart().await;
+    assert!(!chosen.exists(), "a missing folder the user set was made");
+    assert!(!tmp.path().join("drive").exists());
+    assert_eq!(bob.device.save_folder().await.unwrap(), chosen);
+
+    let (_src, path) = write_source("waiting.txt", b"waiting");
+    let id = alice.device.send_file(bob.addr(), &path).await.unwrap();
+    bob.wait_offer().await;
+    let err = bob.device.check_offer(id, None).await.unwrap_err();
+    assert!(matches!(err, Error::NotAFolder(ref dir) if *dir == chosen), "{err:?}");
+    let err = bob.device.accept(id).await.unwrap_err();
+    assert!(matches!(err, Error::NotAFolder(_)), "{err:?}");
+    assert!(!chosen.exists());
+
+    // Back (the drive is mounted again): the same Offer can be accepted.
+    std::fs::create_dir_all(&chosen).unwrap();
+    bob.device.accept(id).await.unwrap();
+    bob.wait_state(id, "completed").await;
+    assert_eq!(std::fs::read(chosen.join("waiting.txt")).unwrap(), b"waiting");
+
+    alice.shutdown().await;
+    bob.shutdown().await;
+}
+
+#[tokio::test]
 async fn an_accept_that_names_no_folder_saves_to_the_current_setting_without_a_restart() {
     let mut alice = TestDevice::start("alice").await;
     let mut bob = TestDevice::start("bob").await;
@@ -174,7 +207,10 @@ async fn an_accept_that_names_no_folder_saves_to_the_current_setting_without_a_r
     let id = alice.device.send_file(bob.addr(), &path).await.unwrap();
     bob.wait_offer().await;
     bob.device.set_save_folder(&first).await.unwrap();
-    assert!(bob.device.check_offer(id, None).await.unwrap().fits());
+    // The check says which folder it looked in: the one that will be used.
+    let check = bob.device.check_offer(id, None).await.unwrap();
+    assert!(check.fits());
+    assert_eq!(check.folder, first);
     bob.device.accept(id).await.unwrap();
     bob.wait_state(id, "completed").await;
     assert_eq!(std::fs::read(first.join("pending.txt")).unwrap(), b"waiting");

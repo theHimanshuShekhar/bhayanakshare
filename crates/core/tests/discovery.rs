@@ -147,6 +147,10 @@ async fn changing_the_visibility_takes_effect_at_once() {
     bob.shutdown().await;
 }
 
+/// How long a rename may take to show on another Device, in all (Settings → Device Name takes
+/// effect without a restart). The announcements come about every second.
+const RENAME_WITHIN: Duration = Duration::from_secs(10);
+
 #[tokio::test]
 async fn a_new_device_name_is_announced_at_once() {
     if !multicast_available() {
@@ -157,33 +161,23 @@ async fn a_new_device_name_is_announced_at_once() {
     let alice_id = alice.device.device_id();
     bob.wait_nearby("the first name", is(alice_id, Some("Alice's laptop"))).await;
 
+    // Everyone: in the clear.
     alice.device.set_device_name("Alice's desktop").await.unwrap();
-    bob.wait_nearby("the new name", is(alice_id, Some("Alice's desktop"))).await;
+    tokio::time::timeout(RENAME_WITHIN, bob.wait_nearby("the new name", is(alice_id, Some("Alice's desktop"))))
+        .await
+        .expect("the new name did not arrive in time");
 
-    alice.shutdown().await;
-    bob.shutdown().await;
-}
-
-/// What Settings → Device Name does: the default Visibility, nothing restarted, and the new name
-/// is in the Nearby list of a Device that holds the ID (within `wait_nearby`'s bound) while the
-/// old one is not.
-#[tokio::test]
-async fn renaming_a_device_at_the_default_visibility_shows_the_new_name_nearby_without_a_restart() {
-    if !multicast_available() {
-        return;
-    }
-    let mut alice = TestDevice::start_discovering("alice").await;
-    alice.device.set_device_name("Alice's laptop").await.unwrap();
-    let mut bob = TestDevice::start_discovering("bob").await;
-    let alice_id = alice.device.device_id();
+    // People who have my ID (the default): in the beacon, for a Device that holds the ID.
+    alice.device.set_visibility(Visibility::IdHolders).await.unwrap();
     bob.device.add_contact(alice_id, None).await.unwrap();
-    assert_eq!(alice.device.visibility().await, Visibility::IdHolders, "the default");
-    bob.wait_nearby("the first name", is(alice_id, Some("Alice's laptop"))).await;
-
-    assert_eq!(alice.device.set_device_name("  Alice's desktop ").await.unwrap(), "Alice's desktop");
-    let seen = bob.wait_nearby("the new name", is(alice_id, Some("Alice's desktop"))).await;
-    assert!(!is(alice_id, Some("Alice's laptop"))(&seen), "{seen:?}");
-    assert_eq!(alice.device.device_name().await, "Alice's desktop");
+    assert_eq!(alice.device.set_device_name("  Alice's tablet ").await.unwrap(), "Alice's tablet");
+    let seen = tokio::time::timeout(
+        RENAME_WITHIN,
+        bob.wait_nearby("the new name in the beacon", is(alice_id, Some("Alice's tablet"))),
+    )
+    .await
+    .expect("the new name did not arrive in time");
+    assert!(!is(alice_id, Some("Alice's desktop"))(&seen), "{seen:?}");
 
     alice.shutdown().await;
     bob.shutdown().await;

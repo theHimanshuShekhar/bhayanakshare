@@ -30,7 +30,7 @@ pub const BACKGROUND_FLAG: &str = "--background";
 /// running in the tray.
 const TRAY_NOTICE_SETTING: &str = "tray_notice_shown";
 /// Set once start at login has been switched on by default, so that switching it off sticks.
-const AUTOSTART_SETTING: &str = "autostart_defaulted";
+pub(crate) const AUTOSTART_SETTING: &str = "autostart_defaulted";
 
 /// What the shell tells the UI that is not a Device event.
 #[derive(Clone, Serialize, Type, tauri_specta::Event)]

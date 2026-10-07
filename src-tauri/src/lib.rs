@@ -22,7 +22,8 @@ use std::{
 
 use bhayanakshare_core::{
     BatchId, Contact, Device, DeviceAddr, DeviceConfig, DeviceId, Error, Event, HistoryEntry,
-    HistoryQuery, IdentityFileError, KeyError, KeySource, Network, Role, SpaceCheck, SystemClock,
+    HistoryQuery, IdentityFileError, KeyError, KeySource, Network, Role, SaveFolderProblem, SpaceCheck,
+    SystemClock,
     SystemFreeSpace, TransferId, Visibility,
 };
 use logging::Logging;
@@ -107,6 +108,44 @@ impl IdentityError {
     }
 }
 
+/// Why a folder could not be made the save folder, in the terms the UI words differently.
+#[derive(Debug, Serialize, Type)]
+pub struct SaveFolderError {
+    kind: SaveFolderErrorKind,
+    /// For the kinds the UI has no wording of its own for.
+    message: String,
+}
+
+#[derive(Debug, PartialEq, Eq, Serialize, Type)]
+#[serde(rename_all = "snake_case")]
+pub enum SaveFolderErrorKind {
+    /// Not an absolute path.
+    NotAbsolute,
+    /// Something that is not a folder is there.
+    NotAFolder,
+    /// It is missing and could not be made.
+    CannotCreate,
+    /// Files cannot be written in it.
+    NotWritable,
+    /// The path is not text.
+    NotText,
+    Other,
+}
+
+impl From<Error> for SaveFolderError {
+    fn from(e: Error) -> Self {
+        let kind = match &e {
+            Error::SaveFolder(SaveFolderProblem::NotAbsolute) => SaveFolderErrorKind::NotAbsolute,
+            Error::SaveFolder(SaveFolderProblem::NotAFolder) => SaveFolderErrorKind::NotAFolder,
+            Error::SaveFolder(SaveFolderProblem::CannotCreate) => SaveFolderErrorKind::CannotCreate,
+            Error::SaveFolder(SaveFolderProblem::NotWritable) => SaveFolderErrorKind::NotWritable,
+            Error::SaveFolder(SaveFolderProblem::NotText) => SaveFolderErrorKind::NotText,
+            _ => SaveFolderErrorKind::Other,
+        };
+        Self { kind, message: e.to_string() }
+    }
+}
+
 /// Whose identity a file holds: a Device ID and its Fingerprint, as for [`MyId`], but not this
 /// Device's.
 #[derive(Serialize, Type)]
@@ -167,12 +206,12 @@ async fn save_folder(device: State<'_, Device>) -> Result<String, String> {
     Ok(folder.to_string_lossy().into_owned())
 }
 
-/// Makes `path` the save folder (made if missing, and it must be writable) from the next Offer
-/// on; resolves to the folder as kept.
+/// Makes `path`, an absolute path, the save folder (made if missing, and it must be writable)
+/// from the next Offer on; resolves to the folder as kept.
 #[tauri::command]
 #[specta::specta]
-async fn set_save_folder(device: State<'_, Device>, path: String) -> Result<String, String> {
-    let folder = device.set_save_folder(std::path::Path::new(&path)).await.map_err(|e| e.to_string())?;
+async fn set_save_folder(device: State<'_, Device>, path: String) -> Result<String, SaveFolderError> {
+    let folder = device.set_save_folder(std::path::Path::new(&path)).await?;
     Ok(folder.to_string_lossy().into_owned())
 }
 
@@ -403,10 +442,34 @@ fn autostart_enabled(autostart: State<'_, AutoLaunchManager>) -> Result<bool, St
     autostart.is_enabled().map_err(|e| e.to_string())
 }
 
+/// Starts this Device at login, or no longer does. The choice is the user's, so the one-time
+/// default (`background::default_autostart`) has nothing left to do: it is marked done, and
+/// cannot undo a choice made before it ran.
 #[tauri::command]
 #[specta::specta]
-fn set_autostart(autostart: State<'_, AutoLaunchManager>, on: bool) -> Result<(), String> {
-    if on { autostart.enable() } else { autostart.disable() }.map_err(|e| e.to_string())
+async fn set_autostart(
+    autostart: State<'_, AutoLaunchManager>,
+    device: State<'_, Device>,
+    on: bool,
+) -> Result<(), String> {
+    autostart_allowed(on, std::env::var_os(DATA_DIR_VAR).is_some())?;
+    if on { autostart.enable() } else { autostart.disable() }.map_err(|e| e.to_string())?;
+    if let Err(e) = device.set_setting(background::AUTOSTART_SETTING, "1").await {
+        tracing::warn!("could not record the start at login choice: {e}");
+    }
+    Ok(())
+}
+
+/// Whether start at login may be switched on: not for an instance with a data folder of its own,
+/// which is made to run beside another install (see the README) and would start that install's
+/// binary, without its folders, at login. Switching it off is always allowed.
+fn autostart_allowed(on: bool, separate_instance: bool) -> Result<(), String> {
+    if on && separate_instance {
+        return Err(format!(
+            "An instance run with {DATA_DIR_VAR} does not start at login, as it is made to run beside another."
+        ));
+    }
+    Ok(())
 }
 
 /// The user confirmed quitting while Transfers are in progress: save their progress and exit.
@@ -961,6 +1024,15 @@ mod tests {
     }
 
     #[test]
+    fn start_at_login_is_not_switched_on_for_an_instance_run_beside_another() {
+        assert!(autostart_allowed(true, false).is_ok());
+        assert!(autostart_allowed(false, false).is_ok());
+        assert!(autostart_allowed(false, true).is_ok());
+        let refused = autostart_allowed(true, true).unwrap_err();
+        assert!(refused.contains(DATA_DIR_VAR), "{refused}");
+    }
+
+    #[test]
     fn the_settings_commands_read_and_change_what_the_device_keeps() {
         use tauri::async_runtime::block_on;
 
@@ -989,7 +1061,10 @@ mod tests {
         let file = tmp.path().join("a-file");
         std::fs::write(&file, b"x").unwrap();
         let err = block_on(set_save_folder(app.state(), file.to_string_lossy().into_owned())).unwrap_err();
-        assert_eq!(err, "That is not a folder.");
+        assert_eq!(err.kind, SaveFolderErrorKind::NotAFolder);
+        let err = block_on(set_save_folder(app.state(), "relative/folder".into())).unwrap_err();
+        assert_eq!(err.kind, SaveFolderErrorKind::NotAbsolute);
+        assert!(!Path::new("relative").exists());
         assert_eq!(block_on(save_folder(app.state())).unwrap(), chosen.to_string_lossy());
 
         // The public DHT is on until switched off, and the Device has the setting.

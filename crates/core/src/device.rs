@@ -35,6 +35,7 @@ use crate::{
     discovery::{Discovery, NearbyDevice, Visibility},
     error::Error,
     event::{EventKind, EventSink, EventStream, PreparingEvent, ProgressEvent, TransferEvent},
+    first_run,
     gate::Gate,
     history::{self, HistoryEntry, HistoryQuery},
     identity::{DeviceId, KeySource},
@@ -63,9 +64,6 @@ async fn open_identity_file(file: &[u8], password: &str) -> Result<(SecretKey, D
     let id = DeviceId::from_endpoint_id(key.public());
     Ok((key, id))
 }
-
-/// The setting that is there once the user has been through first run.
-const FIRST_RUN_SETTING: &str = "first_run_done";
 
 /// Which network a Device lives on.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -326,7 +324,12 @@ impl Shared {
         })
         .await
         .map_err(|e| Error::io("checking free space", std::io::Error::other(e)))??;
-        Ok(SpaceCheck { needed, free, paths_too_long: !receiver::paths_fit(folder, id, longest_path) })
+        Ok(SpaceCheck {
+            folder: folder.to_owned(),
+            needed,
+            free,
+            paths_too_long: !receiver::paths_fit(folder, id, longest_path),
+        })
     }
 
     /// This Device's name as it is announced to others: the stored Device Name, else the
@@ -559,7 +562,6 @@ impl Device {
         };
         let save_io = |what: &'static str| move |e| Error::io(format!("{what} the save folder"), e);
         tokio::fs::create_dir_all(&data_dir).await.map_err(io("creating", &data_dir))?;
-        tokio::fs::create_dir_all(&save_dir).await.map_err(save_io("creating"))?;
         let save_dir = std::path::absolute(&save_dir).map_err(save_io("resolving"))?;
         let data_dir = std::path::absolute(&data_dir).map_err(io("resolving", &data_dir))?;
 
@@ -569,12 +571,14 @@ impl Device {
             blocking("loading the secret key", move || key_source.load_or_create()).await??
         };
         let db = Db::open(&data_dir.join("bhayanakshare.db")).await?;
-        // A save folder the user set may have been removed since: make it again, as for the one
-        // the Device is configured with. If that fails, an Offer says so when it is checked.
-        if let Some(folder) = db.setting(save_folder::SETTING).await? {
-            if let Err(e) = tokio::fs::create_dir_all(&folder).await {
-                tracing::warn!("could not create the save folder: {e}");
+        match db.setting(save_folder::SETTING).await? {
+            None => tokio::fs::create_dir_all(&save_dir).await.map_err(save_io("creating"))?,
+            // Not made: it may be on a drive that is not there, and making it would put it on
+            // the drive that is. An Offer says so when it is checked, until the folder is back.
+            Some(folder) if !Path::new(&folder).is_dir() => {
+                tracing::warn!("the save folder the user set is missing, so Offers cannot be accepted into it");
             }
+            Some(_) => {}
         }
         let store = store::open(&data_dir.join("blobs")).await?;
         let blobs: iroh_blobs::api::Store = (**store).clone();
@@ -906,7 +910,8 @@ impl Device {
         Ok(())
     }
 
-    /// Whether a pending Offer fits in `folder` (the save folder in use when `None`).
+    /// Whether a pending Offer fits in `folder` (the save folder in use when `None`), with the
+    /// folder it checked: where the Offer would be saved.
     pub async fn check_offer(
         &self,
         id: TransferId,
@@ -955,7 +960,8 @@ impl Device {
         };
         if text {
             // Kept in the database, not the folder: there is nothing to run out of room for.
-            return Ok((folder, SpaceCheck { needed: 0, free: None, paths_too_long: false }));
+            let check = SpaceCheck { folder: folder.clone(), needed: 0, free: None, paths_too_long: false };
+            return Ok((folder, check));
         }
         let check = sh.space_check(id, needed, longest_path, &folder).await?;
         Ok((folder, check))
@@ -1131,7 +1137,7 @@ impl Device {
     /// [`Device::finish_first_run`], that the user has been through the first-run screen. It is
     /// the shell's to show that screen while this is true.
     pub async fn needs_first_run(&self) -> Result<bool, Error> {
-        Ok(self.inner.shared.db.setting(FIRST_RUN_SETTING).await?.is_none())
+        Ok(self.inner.shared.db.setting(first_run::SETTING).await?.is_none())
     }
 
     /// Records that the user has been through first run, for good.
@@ -1140,7 +1146,7 @@ impl Device {
         if sh.cancel.is_cancelled() {
             return Err(Error::ShuttingDown);
         }
-        Ok(sh.db.set_setting(FIRST_RUN_SETTING, "1").await?)
+        Ok(sh.db.set_setting(first_run::SETTING, "1").await?)
     }
 
     /// Whether the log is at debug level, which is bigger and for finding what went wrong. Off
