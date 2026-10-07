@@ -78,10 +78,9 @@ export function App({ api = tauriApi }: AppProps) {
   const [waited, setWaited] = useState(false);
   // A Hidden Device lists nobody Nearby, so an empty list there is no sign of a firewall.
   const [visibility, setVisibility] = useState<Visibility | null>(null);
-  const [saveFolder, setSaveFolder] = useState<string | null>(null);
   // Whether first run is still to be done; null until the Device has said. Until it is done its
   // screen is all there is.
-  const [firstRun, setFirstRun] = useState<boolean | null>(null);
+  const [firstRunNeeded, setFirstRunNeeded] = useState<boolean | null>(null);
   // Files waiting for the user to say whom to send them to (from a second launch or the tray).
   const [queued, setQueued] = useState<string[]>([]);
   // The Offer a notification was clicked for; it is shown ahead of older ones.
@@ -90,8 +89,9 @@ export function App({ api = tauriApi }: AppProps) {
   const [quit, setQuit] = useState<{ active: number; saving: boolean } | null>(null);
   const current = TABS.find((x) => x.id === tab) ?? TABS[0];
   const offer = pendingOffer(transfers, preferred);
-  // The tab on show: none while first run is, or may be, still to do.
-  const page = firstRun === false ? tab : null;
+  // The tab on show (none while first run is, or may be, still to do), which the tab bar and the
+  // tab's own content follow.
+  const shownTab = firstRunNeeded === false ? tab : null;
   // Add Contact (and Save as Contact) give way to a link; these do not.
   const busy = sending !== null || removing !== null || clearing || offer !== undefined || quit !== null;
   // While a sheet is open the page behind it can be neither clicked nor tabbed to.
@@ -133,27 +133,13 @@ export function App({ api = tauriApi }: AppProps) {
     let live = true;
     // If the Device cannot say, the user is not held up by a screen about settings.
     api.needsFirstRun().then(
-      (needed) => live && setFirstRun(needed),
-      () => live && setFirstRun(false),
+      (needed) => live && setFirstRunNeeded(needed),
+      () => live && setFirstRunNeeded(false),
     );
     return () => {
       live = false;
     };
   }, [api]);
-
-  // The save folder is changed in Settings, so read it again whenever a tab is opened and an
-  // Offer arrives, as the Offer sheet shows where the files will go.
-  const offerId = offer?.id;
-  useEffect(() => {
-    let live = true;
-    api.saveFolder().then(
-      (folder) => live && setSaveFolder(folder),
-      () => {},
-    );
-    return () => {
-      live = false;
-    };
-  }, [api, tab, offerId]);
 
   useEffect(() => {
     let live = true;
@@ -216,8 +202,8 @@ export function App({ api = tauriApi }: AppProps) {
     return () => clearTimeout(timer);
   }, []);
 
-  // The setting is changed in Settings or the tray, so look again whenever a tab is opened and
-  // when the window is back in front.
+  // The setting is changed in Settings, the tray or first run, so look again whenever a tab is
+  // opened, first run is done and when the window is back in front.
   useEffect(() => {
     let live = true;
     const load = () =>
@@ -231,7 +217,7 @@ export function App({ api = tauriApi }: AppProps) {
       live = false;
       window.removeEventListener("focus", load);
     };
-  }, [api, tab]);
+  }, [api, tab, firstRunNeeded]);
 
   // A connection can refresh a Contact's Device Name or address behind the UI's back, so look
   // again whenever a tab is opened, a Transfer begins or learns the other Device's name, or the
@@ -245,7 +231,7 @@ export function App({ api = tauriApi }: AppProps) {
     <div className="app">
       <header inert={inert}>
         <h1>{t("app.name")}</h1>
-        {page !== null && (
+        {shownTab !== null && (
           <nav aria-label={t("nav.label")}>
             {TABS.map((x) => (
               <button
@@ -260,10 +246,10 @@ export function App({ api = tauriApi }: AppProps) {
           </nav>
         )}
       </header>
-      {page !== null && (
+      {shownTab !== null && (
         <div inert={inert}>
           {/* Settings has the banner's place in its Updates section: one notice, one status. */}
-          {page !== "settings" && offeredVersion(update) !== dismissedUpdate && (
+          {shownTab !== "settings" && offeredVersion(update) !== dismissedUpdate && (
             <UpdateBanner
               api={api}
               update={update}
@@ -279,13 +265,13 @@ export function App({ api = tauriApi }: AppProps) {
             onUpdateNow={updater.updateNow}
             onDismiss={(peer) => dispatchVersion({ type: "dismiss_version_notice", peer })}
           />
-          {page !== "settings" && <UpdateStatus updater={updater} />}
+          {shownTab !== "settings" && <UpdateStatus updater={updater} />}
         </div>
       )}
       <main inert={inert}>
-        {firstRun === true && <FirstRunScreen api={api} onDone={() => setFirstRun(false)} />}
-        {page === "home" && <p>{t(current.placeholder)}</p>}
-        {page === "home" && (
+        {firstRunNeeded === true && <FirstRunScreen api={api} onDone={() => setFirstRunNeeded(false)} />}
+        {shownTab === "home" && <p>{t(current.placeholder)}</p>}
+        {shownTab === "home" && (
           <>
             <MyDeviceId api={api} />
             {queued.length > 0 && (
@@ -397,7 +383,7 @@ export function App({ api = tauriApi }: AppProps) {
             </section>
           </>
         )}
-        {page === "contacts" && (
+        {shownTab === "contacts" && (
           <ContactsScreen
             api={api}
             contacts={contacts}
@@ -410,7 +396,7 @@ export function App({ api = tauriApi }: AppProps) {
             }}
           />
         )}
-        {page === "history" && (
+        {shownTab === "history" && (
           <HistoryScreen
             api={api}
             contacts={contacts}
@@ -424,7 +410,7 @@ export function App({ api = tauriApi }: AppProps) {
             onClear={() => setClearing(true)}
           />
         )}
-        {page === "settings" && (
+        {shownTab === "settings" && (
           <SettingsScreen
             api={api}
             updater={updater}
@@ -495,7 +481,6 @@ export function App({ api = tauriApi }: AppProps) {
           api={api}
           offer={offer}
           contacts={contacts}
-          saveFolder={saveFolder}
         />
       )}
     </div>

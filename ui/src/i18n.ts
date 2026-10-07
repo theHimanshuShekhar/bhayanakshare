@@ -174,6 +174,11 @@ const en = {
   "saveFolder.hint": "From the next file you receive on. You can still choose another folder for each file when it arrives.",
   "saveFolder.loadFailed": "Could not read the folder received files are saved to.",
   "saveFolder.failed": "Could not use that folder. {reason}",
+  "saveFolder.error.notAbsolute": "Could not use that folder. Its path must be a full path, not a relative one.",
+  "saveFolder.error.notAFolder": "Could not use that folder. That is not a folder.",
+  "saveFolder.error.cannotCreate": "Could not use that folder. It does not exist and could not be created.",
+  "saveFolder.error.notWritable": "Could not use that folder. BhayanakShare cannot write to it.",
+  "saveFolder.error.notText": "Could not use that folder. Its path cannot be used.",
   "saveFolder.saved": "Saved. Files you receive from now on go there.",
 
   "updates.heading": "Updates",
@@ -187,6 +192,9 @@ const en = {
   "firstRun.start": "Get started",
   "firstRun.starting": "Getting ready…",
   "firstRun.loadFailed": "Could not read some of this Device's settings. Check them before you start.",
+  "firstRun.continue": "Continue",
+  "firstRun.autostartFailed":
+    "Setup is done, but start at login could not be switched on: {reason} You can try again in Settings.",
   "firstRun.failed": "Could not finish setting up. {reason}",
 
   "autostart.label": "Start at login",

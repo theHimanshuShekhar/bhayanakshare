@@ -86,8 +86,9 @@ function fakeApi(overrides: Partial<Api> = {}, initialContacts: Contact[] = []) 
     sendTextBatch: vi.fn((_to: string[], _text: string) => Promise.resolve(BATCH)),
     cancelBatch: vi.fn((_id: string) => Promise.resolve(null)),
     retryTransfer: vi.fn((_id: string) => Promise.resolve("ef".repeat(16))),
-    checkOffer: vi.fn((_id: string, _folder: string | null) =>
-      Promise.resolve({ needed: 2048, free: 1_000_000, paths_too_long: false }),
+    // Like the core: the folder it checked is the one given, else the save folder in use.
+    checkOffer: vi.fn((_id: string, folder: string | null) =>
+      Promise.resolve({ folder: folder ?? saveFolder, needed: 2048, free: 1_000_000, paths_too_long: false }),
     ),
     acceptOffer: vi.fn((_id: string, _folder: string | null) => Promise.resolve(null)),
     declineOffer: vi.fn(() => Promise.resolve(null)),
@@ -523,6 +524,20 @@ describe("receiving", () => {
     await waitFor(() => expect(sheet.textContent).toContain("/home/me/Downloads/BhayanakShare"));
   });
 
+  it("shows the folder the check says the Offer would be saved to, not one read earlier", async () => {
+    const device = await start(
+      fakeApi({
+        checkOffer: vi.fn(() =>
+          Promise.resolve({ folder: "/mnt/drive/received", needed: 2048, free: 1_000_000, paths_too_long: false }),
+        ),
+      }),
+    );
+    await device.transfer("receiver", { kind: "offered" });
+    const sheet = await screen.findByRole("dialog", { name: "Incoming files" });
+    await waitFor(() => expect(sheet.textContent).toContain("/mnt/drive/received"));
+    expect(sheet.textContent).not.toContain("/home/me/Downloads/BhayanakShare");
+  });
+
   it("lists what is offered: the top-level items, the file count and the total size", async () => {
     const device = await start();
     await device.transfer("receiver", { kind: "offered" }, null, {
@@ -571,7 +586,7 @@ describe("receiving", () => {
 
   it("shows how much is needed and disables Accept when the Offer does not fit", async () => {
     const device = await start(
-      fakeApi({ checkOffer: vi.fn(() => Promise.resolve({ needed: 2048, free: 512, paths_too_long: false })) }),
+      fakeApi({ checkOffer: vi.fn(() => Promise.resolve({ folder: "/home/me/Downloads/BhayanakShare", needed: 2048, free: 512, paths_too_long: false })) }),
     );
     await device.transfer("receiver", { kind: "offered" });
 
@@ -584,7 +599,7 @@ describe("receiving", () => {
 
   it("disables Accept with a warning when the paths are too long for the folder, until another folder is chosen", async () => {
     const checkOffer = vi.fn((_id: string, folder: string | null) =>
-      Promise.resolve({ needed: 2048, free: 1_000_000, paths_too_long: folder === null }),
+      Promise.resolve({ folder: folder ?? "/home/me/Downloads/BhayanakShare", needed: 2048, free: 1_000_000, paths_too_long: folder === null }),
     );
     const device = await start(fakeApi({ checkOffer }));
     await device.transfer("receiver", { kind: "offered" });
@@ -628,7 +643,7 @@ describe("receiving", () => {
 
   it("leaves Accept on when the free space is unknown", async () => {
     const device = await start(
-      fakeApi({ checkOffer: vi.fn(() => Promise.resolve({ needed: 2048, free: null, paths_too_long: false })) }),
+      fakeApi({ checkOffer: vi.fn(() => Promise.resolve({ folder: "/home/me/Downloads/BhayanakShare", needed: 2048, free: null, paths_too_long: false })) }),
     );
     await device.transfer("receiver", { kind: "offered" });
     await waitFor(() => expect(device.api.checkOffer).toHaveBeenCalled());
@@ -638,7 +653,7 @@ describe("receiving", () => {
 
   it("checks again in the folder chosen for this Offer, and accepts into it", async () => {
     const checkOffer = vi.fn((_id: string, folder: string | null) =>
-      Promise.resolve({ needed: 2048, free: folder === null ? 512 : 1_000_000, paths_too_long: false }),
+      Promise.resolve({ folder: folder ?? "/home/me/Downloads/BhayanakShare", needed: 2048, free: folder === null ? 512 : 1_000_000, paths_too_long: false }),
     );
     const device = await start(fakeApi({ checkOffer }));
     await device.transfer("receiver", { kind: "offered" });
@@ -1681,8 +1696,8 @@ describe("first run", () => {
     await screen.findByText("AAAA-AAAA");
     expect(device.api.setDeviceName).toHaveBeenCalledExactlyOnceWith("Alice's desktop");
     expect(device.api.setVisibility).toHaveBeenCalledExactlyOnceWith("id_holders");
-    // Start at login is on already, and the folder is the default: neither is touched.
-    expect(device.api.setAutostart).not.toHaveBeenCalled();
+    // Start at login is on, and said so to the shell; the folder is the default, so it is not kept.
+    expect(device.api.setAutostart).toHaveBeenCalledExactlyOnceWith(true);
     expect(device.api.setSaveFolder).not.toHaveBeenCalled();
     expect(device.api.finishFirstRun).toHaveBeenCalledTimes(1);
     expect(screen.getByRole("navigation")).toBeTruthy();
@@ -1716,12 +1731,44 @@ describe("first run", () => {
     expect(await screen.findByText("/mnt/big")).toBeTruthy();
   });
 
-  it("starts at login only as the Device has it: an install that does not is shown unchecked and left alone", async () => {
+  it("starts with start at login checked, whatever the Device says now, and switches it on at Get started", async () => {
+    // The shell's own default may not have run yet, or may have failed: what the screen shows is
+    // what is applied.
     const device = await begin(needed({ autostartEnabled: vi.fn(() => Promise.resolve(false)) }));
-    expect(loginBox().checked).toBe(false);
+    expect(loginBox().checked).toBe(true);
     fireEvent.click(getStarted());
     await screen.findByText("AAAA-AAAA");
-    expect(device.api.setAutostart).not.toHaveBeenCalled();
+    expect(device.api.setAutostart).toHaveBeenCalledExactlyOnceWith(true);
+  });
+
+  it("finishes first run when start at login cannot be switched on, saying why once before going on", async () => {
+    const device = await begin(
+      needed({ setAutostart: vi.fn(() => Promise.reject("This system has no login items.")) }),
+    );
+    fireEvent.click(getStarted());
+
+    const note = await screen.findByRole("status");
+    expect(note.textContent).toBe(
+      "Setup is done, but start at login could not be switched on: This system has no login items. You can try again in Settings.",
+    );
+    // Everything else was kept and first run is done; nothing is in the way of going on.
+    expect(device.api.setDeviceName).toHaveBeenCalled();
+    expect(device.api.setVisibility).toHaveBeenCalled();
+    expect(device.api.finishFirstRun).toHaveBeenCalledTimes(1);
+    expect(screen.queryByRole("alert")).toBeNull();
+    expect(screen.queryByRole("button", { name: "Get started" })).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Continue" }));
+    expect(await screen.findByText("AAAA-AAAA")).toBeTruthy();
+    expect(screen.getByRole("navigation")).toBeTruthy();
+  });
+
+  it("shows Hidden's hint on Home, not the firewall hint, when Hidden was chosen at first run", async () => {
+    await begin();
+    fireEvent.click(radio("Hidden"));
+    fireEvent.click(getStarted());
+    await screen.findByText("AAAA-AAAA");
+    expect(await screen.findByText(/You're Hidden, so Nearby Devices aren't shown/)).toBeTruthy();
+    expect(screen.queryByText(/a firewall may be blocking local discovery/)).toBeNull();
   });
 
   it("keeps the folder the Offer sheet shows from then on", async () => {
@@ -1785,13 +1832,15 @@ describe("first run", () => {
 
   it("shows the reason inline when the folder cannot be used, and first run is not done", async () => {
     const device = await begin(
-      needed({ setSaveFolder: vi.fn(() => Promise.reject("BhayanakShare cannot write to that folder.")) }),
+      needed({
+        setSaveFolder: vi.fn(() => Promise.reject({ kind: "not_writable", message: "the folder is not writable" })),
+      }),
     );
     fireEvent.click(screen.getByRole("button", { name: "Change the folder received files are saved to" }));
     await screen.findByText("/mnt/big");
     fireEvent.click(getStarted());
     expect((await screen.findByRole("alert")).textContent).toBe(
-      "Could not use that folder. BhayanakShare cannot write to that folder.",
+      "Could not use that folder. BhayanakShare cannot write to it.",
     );
     expect(device.api.finishFirstRun).not.toHaveBeenCalled();
     expect(screen.getByRole("heading", { name: "Welcome to BhayanakShare" })).toBeTruthy();
@@ -1810,13 +1859,33 @@ describe("first run", () => {
     expect(finishFirstRun).toHaveBeenCalledTimes(2);
   });
 
-  it("offers defaults and a warning when some settings cannot be read", async () => {
+  it("does not keep a Visibility it could only guess: unread and not chosen, it is left as it is", async () => {
     const device = await begin(needed({ visibility: () => Promise.reject(new Error("no")) }));
     expect((await screen.findByRole("alert")).textContent).toContain("Could not read some of this Device's settings");
+    // Offered as the default, and not a reason to overwrite whatever the Device has.
     expect(radio("People who have my ID").checked).toBe(true);
     fireEvent.click(getStarted());
     await screen.findByText("AAAA-AAAA");
-    expect(device.api.setVisibility).toHaveBeenCalledWith("id_holders");
+    expect(device.api.setVisibility).not.toHaveBeenCalled();
+    expect(device.api.finishFirstRun).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps a Visibility the user chose even when the Device's could not be read", async () => {
+    const device = await begin(needed({ visibility: () => Promise.reject(new Error("no")) }));
+    fireEvent.click(radio("Everyone"));
+    fireEvent.click(getStarted());
+    await screen.findByText("AAAA-AAAA");
+    expect(device.api.setVisibility).toHaveBeenCalledExactlyOnceWith("everyone");
+  });
+
+  it("offers the Visibility the Device has, such as Hidden from the tray", async () => {
+    // The Device was set to Hidden before first run was shown.
+    const device = needed();
+    await device.api.setVisibility("hidden");
+    vi.mocked(device.api.setVisibility).mockClear();
+    await begin(device);
+    expect(radio("Hidden").checked).toBe(true);
+    expect(device.api.setVisibility).not.toHaveBeenCalled();
   });
 
   it("is not shown when first run is done", async () => {
@@ -2039,7 +2108,9 @@ describe("Settings sections", () => {
     });
 
     it("keeps the old folder and says why when the folder cannot be used", async () => {
-      await open(fakeApi({ setSaveFolder: vi.fn(() => Promise.reject("That is not a folder.")) }));
+      await open(
+        fakeApi({ setSaveFolder: vi.fn(() => Promise.reject({ kind: "not_a_folder", message: "not a folder" })) }),
+      );
       await shown();
       fireEvent.click(change());
       expect((await screen.findByRole("alert")).textContent).toBe("Could not use that folder. That is not a folder.");
@@ -2055,6 +2126,28 @@ describe("Settings sections", () => {
       await device.transfer("receiver", { kind: "offered" });
       const sheet = await screen.findByRole("dialog", { name: "Incoming files" });
       await waitFor(() => expect(sheet.textContent).toContain("/mnt/big"));
+    });
+
+    it("words each reason a folder is refused, and an unknown one with the Device's message", async () => {
+      const cases: [string, string][] = [
+        ["not_absolute", "Could not use that folder. Its path must be a full path, not a relative one."],
+        ["not_a_folder", "Could not use that folder. That is not a folder."],
+        ["cannot_create", "Could not use that folder. It does not exist and could not be created."],
+        ["not_writable", "Could not use that folder. BhayanakShare cannot write to it."],
+        ["not_text", "Could not use that folder. Its path cannot be used."],
+        ["other", "Could not use that folder. the Device is shutting down"],
+      ];
+      for (const [kind, words] of cases) {
+        await open(
+          fakeApi({
+            setSaveFolder: vi.fn(() => Promise.reject({ kind, message: "the Device is shutting down" })),
+          }),
+        );
+        await shown();
+        fireEvent.click(change());
+        expect((await screen.findByRole("alert")).textContent).toBe(words);
+        cleanup();
+      }
     });
 
     it("says so when the folder cannot be read", async () => {

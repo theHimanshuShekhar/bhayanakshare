@@ -2,8 +2,7 @@ import { useEffect, useState } from "react";
 import type { Api } from "./api";
 import { t } from "./i18n";
 import { SaveFolderField } from "./SaveFolderField";
-
-const reasonOf = (e: unknown) => (e instanceof Error ? e.message : String(e));
+import { saveFolderFailure } from "./saveFolder";
 
 /** Settings → Receiving: the folder received files are saved to, which applies from the next
  * Offer on. */
@@ -34,7 +33,7 @@ export function ReceivingSettings({ api }: { api: Api }) {
       setFolder(await api.setSaveFolder(picked));
       setSaved(true);
     } catch (e) {
-      setError(t("saveFolder.failed", { reason: reasonOf(e) }));
+      setError(saveFolderFailure(e));
     }
   };
 

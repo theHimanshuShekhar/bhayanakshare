@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import type { Api, UpdateAction, Visibility } from "./api";
+import { AutostartField } from "./AutostartField";
 import { t } from "./i18n";
 import { DeviceNameSettings } from "./DeviceNameSettings";
 import { DiagnosticsSettings } from "./DiagnosticsSettings";
@@ -120,22 +121,7 @@ export function SettingsScreen({
       </section>
       <section aria-labelledby="settings-app-heading">
         <h3 id="settings-app-heading">{t("settings.app")}</h3>
-        <p>
-          <input
-            id="autostart"
-            type="checkbox"
-            checked={autostart === true}
-            disabled={autostart === null}
-            aria-describedby="autostart-hint"
-            onChange={(e) => chooseAutostart(e.target.checked)}
-          />{" "}
-          <label htmlFor="autostart" className="inline">
-            {t("autostart.label")}
-          </label>
-          <span id="autostart-hint" className="note">
-            {t("autostart.hint")}
-          </span>
-        </p>
+        <AutostartField checked={autostart === true} disabled={autostart === null} onChange={chooseAutostart} />
         {autostartError !== null && <p role="alert">{autostartError}</p>}
         <UpdateSettings api={api} updater={updater} update={update} onCheck={onCheckForUpdates} />
       </section>

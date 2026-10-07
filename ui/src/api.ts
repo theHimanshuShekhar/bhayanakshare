@@ -18,6 +18,7 @@ import {
   type IdentityOwner,
   type MyId,
   type Role,
+  type SaveFolderError,
   type ShellEvent,
   type SpaceCheck,
   type TransferId,
@@ -35,6 +36,7 @@ export type {
   IdentityOwner,
   MyId,
   Role,
+  SaveFolderError,
   ShellEvent,
   SpaceCheck,
   TransferId,
@@ -47,8 +49,8 @@ export interface Api {
   myId(): Promise<MyId>;
   /** The folder accepted files are saved to unless an Offer names another. */
   saveFolder(): Promise<string>;
-  /** Makes `path` the save folder from the next Offer on (made if missing, and it must be
-   * writable); resolves to the folder as kept. Rejects with the reason it cannot be used. */
+  /** Makes `path`, an absolute path, the save folder from the next Offer on (made if missing, and
+   * it must be writable); resolves to the folder as kept. Rejects with a `SaveFolderError`. */
   setSaveFolder(path: string): Promise<string>;
   /** Whether first run is still to be done: its screen is shown instead of the tabs. */
   needsFirstRun(): Promise<boolean>;
@@ -68,7 +70,8 @@ export interface Api {
   cancelBatch(id: BatchId): Promise<unknown>;
   /** Sends a Failed Transfer of a Batch again with a new Offer; resolves to the new Transfer ID. */
   retryTransfer(id: TransferId): Promise<string>;
-  /** Whether a pending Offer fits in `folder` (the save folder when null). */
+  /** Whether a pending Offer fits in `folder` (the save folder when null); says which folder it
+   * checked, where the Offer would be saved. */
   checkOffer(id: TransferId, folder: string | null): Promise<SpaceCheck>;
   /** Accepts into `folder` for this Offer only (the save folder when null). */
   acceptOffer(id: TransferId, folder: string | null): Promise<unknown>;
