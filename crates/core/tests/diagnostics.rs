@@ -36,7 +36,7 @@ async fn the_export_holds_the_logs_and_an_about_file_with_the_fingerprint_and_no
     std::fs::write(logs.join("bhayanakshare.2026-10-07.log"), "today\n").unwrap();
     let dest = tmp.path().join("bhayanakshare-diagnostics-2026-10-07.zip");
 
-    alice.device.export_diagnostics(&logs, &dest, "9.8.7").await.unwrap();
+    alice.device.export_diagnostics(Some(&logs), &dest, "9.8.7").await.unwrap();
 
     let mut zip = zip::ZipArchive::new(File::open(&dest).unwrap()).unwrap();
     let mut files: Vec<String> = zip.file_names().map(str::to_owned).collect();
@@ -59,22 +59,24 @@ async fn the_export_holds_the_logs_and_an_about_file_with_the_fingerprint_and_no
     assert!(about.contains(&format!("System: {}", std::env::consts::OS)), "{about}");
     // Not the whole ID, in either spelling, anywhere in the zip.
     let hex: String = id.as_bytes().iter().map(|b| format!("{b:02x}")).collect();
-    for spelling in [id.to_string(), id.to_string().to_lowercase(), hex] {
+    let z32 = iroh::EndpointId::from_bytes(id.as_bytes()).unwrap().to_z32();
+    for spelling in [id.to_string(), id.to_string().to_lowercase(), hex, z32] {
         assert!(!about.to_lowercase().contains(&spelling.to_lowercase()), "{about}");
     }
     alice.shutdown().await;
 }
 
 #[tokio::test]
-async fn an_export_with_no_logs_yet_is_still_the_about_file() {
+async fn an_export_with_no_logs_is_still_the_about_file() {
     let mut alice = TestDevice::start("alice").await;
     let tmp = tempfile::tempdir().unwrap();
-    let dest = tmp.path().join("out.zip");
 
-    alice.device.export_diagnostics(&tmp.path().join("no-logs-here"), &dest, "1.0.0").await.unwrap();
-
-    let zip = zip::ZipArchive::new(File::open(&dest).unwrap()).unwrap();
-    assert_eq!(zip.file_names().collect::<Vec<_>>(), ["about.txt"]);
+    for logs in [None, Some(tmp.path().join("no-logs-here"))] {
+        let dest = tmp.path().join("out.zip");
+        alice.device.export_diagnostics(logs.as_deref(), &dest, "1.0.0").await.unwrap();
+        let zip = zip::ZipArchive::new(File::open(&dest).unwrap()).unwrap();
+        assert_eq!(zip.file_names().collect::<Vec<_>>(), ["about.txt"]);
+    }
     alice.shutdown().await;
 }
 
@@ -84,7 +86,7 @@ async fn an_export_that_cannot_be_written_says_so() {
     let tmp = tempfile::tempdir().unwrap();
     let dest = tmp.path().join("no-such-folder").join("out.zip");
 
-    let err = alice.device.export_diagnostics(tmp.path(), &dest, "1.0.0").await.unwrap_err();
+    let err = alice.device.export_diagnostics(Some(tmp.path()), &dest, "1.0.0").await.unwrap_err();
 
     assert!(err.to_string().starts_with("writing the diagnostics zip"), "{err}");
     assert!(!err.to_string().contains("no-such-folder"), "{err}");

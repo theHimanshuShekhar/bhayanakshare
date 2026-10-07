@@ -3,7 +3,7 @@ import type { Api } from "./api";
 import { diagnosticsFileName } from "./diagnostics";
 import { t } from "./i18n";
 
-const reason = (e: unknown) => (e instanceof Error ? e.message : String(e));
+const reasonOf = (e: unknown) => (e instanceof Error ? e.message : String(e));
 
 /** Settings → Diagnostics: the debug logging switch, and exporting the log as a zip to hand over. */
 export function DiagnosticsSettings({ api }: { api: Api }) {
@@ -29,7 +29,7 @@ export function DiagnosticsSettings({ api }: { api: Api }) {
     setDebugError(null);
     api.setDebugLogging(on).then(
       () => setDebug(on),
-      (e) => setDebugError(t("diagnostics.debugFailed", { reason: reason(e) })),
+      (e) => setDebugError(t("diagnostics.debugFailed", { reason: reasonOf(e) })),
     );
   };
 
@@ -44,7 +44,7 @@ export function DiagnosticsSettings({ api }: { api: Api }) {
       await api.exportDiagnostics(path);
       setSavedTo(path);
     } catch (e) {
-      setExportError(t("diagnostics.exportFailed", { reason: reason(e) }));
+      setExportError(t("diagnostics.exportFailed", { reason: reasonOf(e) }));
     } finally {
       setBusy(false);
     }

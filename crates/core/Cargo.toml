@@ -46,8 +46,6 @@ thiserror = "2"
 tokio = { version = "1", features = ["fs", "io-util", "macros", "net", "rt-multi-thread", "sync", "time"] }
 tokio-util = { version = "0.7", features = ["rt"] }
 tracing = "0.1"
-# The rolling log file (logs.rs). It also deletes log files older than the last few.
-tracing-appender = "0.2"
 # Wipes secret key material when it is dropped.
 zeroize = "1"
 # The diagnostics export (logs.rs): a zip of the log files, deflated, and nothing else.

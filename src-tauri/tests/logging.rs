@@ -23,13 +23,18 @@ fn the_log_is_a_file_that_follows_the_debug_switch_at_once_and_holds_panics() {
     tracing::info!(target: "iroh::socket", "dependency at info, switch off");
     tracing::warn!(target: "iroh::socket", "dependency at warn");
 
-    logging.set_debug(true);
+    logging.set_debug(true).unwrap();
     tracing::debug!(target: "bhayanakshare_core::sender", "ours at debug, switch on");
     tracing::info!(target: "iroh::socket", "dependency at info, switch on");
     tracing::debug!(target: "iroh::socket", "dependency at debug, switch on");
 
-    logging.set_debug(false);
+    logging.set_debug(false).unwrap();
     tracing::debug!(target: "bhayanakshare_core::sender", "ours at debug, switched off again");
+
+    // What is known to print a whole ID is held down, and what is not known to is redacted.
+    let z32 = "ybndrfg8ejkmcpqxot1uwisza345h769ybndrfg8ejkmcpqxot1u";
+    tracing::warn!(target: "iroh::address_lookup::pkarr", "pkarr publisher for {z32}");
+    tracing::warn!(target: "iroh::socket", "no route to {z32}");
 
     let panicked = std::thread::Builder::new()
         .name("worker".into())
@@ -50,10 +55,13 @@ fn the_log_is_a_file_that_follows_the_debug_switch_at_once_and_holds_panics() {
     ] {
         assert!(log.contains(wanted), "`{wanted}` is not in:\n{log}");
     }
+    assert!(log.contains("no route to <redacted>"), "{log}");
     for unwanted in [
         "switch off",
         "dependency at debug",
         "switched off again",
+        "pkarr publisher",
+        z32,
     ] {
         assert!(!log.contains(unwanted), "`{unwanted}` is in:\n{log}");
     }

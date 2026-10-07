@@ -66,9 +66,11 @@ fn hex(bytes: &[u8; 32]) -> String {
     bytes.iter().map(|b| format!("{b:02x}")).collect()
 }
 
-/// Every way a Device ID can be spelled that something in the stack might print.
+/// Every way a Device ID can be spelled that something in the stack might print: our own base32,
+/// iroh's hex, and the z-base-32 of its pkarr and DNS lookups.
 fn spellings(base32: &str, bytes: &[u8; 32]) -> Vec<String> {
-    [base32.to_owned(), base32.to_lowercase(), hex(bytes), hex(bytes).to_uppercase()].into()
+    let z32 = iroh::EndpointId::from_bytes(bytes).unwrap().to_z32();
+    [base32.to_owned(), base32.to_lowercase(), hex(bytes), hex(bytes).to_uppercase(), z32].into()
 }
 
 #[tokio::test]
@@ -245,7 +247,9 @@ async fn a_transfers_logs_hold_no_full_device_id_file_name_folder_name_or_text()
         .collect();
     assert!(leaking.is_empty(), "the log leaks a full Device ID, a name or text in:\n{}", leaking.join("\n"));
 
-    // Not vacuous: the app's own lines are there, and they name the hostile Sender by Fingerprint.
+    // Not vacuous: the app's own lines are there, debug ones among them (so debug really was on),
+    // and they name the hostile Sender by Fingerprint.
     assert!(logs.contains("bhayanakshare_core"), "nothing of ours was logged:\n{logs}");
+    assert!(logs.contains("DEBUG bhayanakshare_core::gate: GET refused"), "no debug line in:\n{logs}");
     assert!(logs.contains(&hostile_fingerprint), "no Fingerprint ({hostile_fingerprint}) in:\n{logs}");
 }

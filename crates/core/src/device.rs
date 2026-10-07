@@ -565,7 +565,7 @@ impl Device {
             }
         }
         let public_dht = PublicDht::new(secret.clone(), dht::load(&db).await);
-        let debug_logging = logs::load_debug_setting(&db).await;
+        let debug_logging = logs::load(&db).await;
         let mut builder = match network {
             // The preset brings n0 DNS; the DHT is added below.
             Network::Internet => Endpoint::builder(presets::N0),
@@ -1095,18 +1095,19 @@ impl Device {
         if sh.cancel.is_cancelled() {
             return Err(Error::ShuttingDown);
         }
-        sh.db.set_setting(logs::DEBUG_SETTING, if on { "1" } else { "0" }).await?;
+        sh.db.set_setting(logs::SETTING, if on { "1" } else { "0" }).await?;
         sh.debug_logging.store(on, Ordering::Release);
         Ok(())
     }
 
-    /// Writes a zip to `dest` with the log files found in `logs_dir` and an `about.txt` (the
+    /// Writes a zip to `dest` with the log files found in `logs_dir` (none if it is `None`, as
+    /// where there is no log) and an `about.txt` (the
     /// app version, the system, Visibility, whether debug logging is on, the network, and this
     /// Device's Fingerprint, never its ID). Nothing is sent anywhere: the user hands the file
     /// over. Anything already at `dest` is replaced.
     pub async fn export_diagnostics(
         &self,
-        logs_dir: &Path,
+        logs_dir: Option<&Path>,
         dest: &Path,
         app_version: &str,
     ) -> Result<(), Error> {
@@ -1120,8 +1121,8 @@ impl Device {
             if self.debug_logging() { "on" } else { "off" },
             sh.network,
         );
-        let (logs_dir, dest) = (logs_dir.to_owned(), dest.to_owned());
-        blocking("writing the diagnostics", move || logs::write_diagnostics_zip(&logs_dir, &dest, &about))
+        let (logs_dir, dest) = (logs_dir.map(Path::to_owned), dest.to_owned());
+        blocking("writing the diagnostics", move || logs::write_diagnostics_zip(logs_dir.as_deref(), &dest, &about))
             .await?
             // The zip's own name is the user's, so it is not in the message.
             .map_err(|e| Error::io("writing the diagnostics zip", e))

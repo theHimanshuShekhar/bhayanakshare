@@ -16,7 +16,7 @@ pub struct Logging {
     /// Where the log is written; none if the folder could not be used.
     files: Option<Arc<LogFiles>>,
     /// Switches the filter between normal and debug, in the running subscriber.
-    apply_debug: Box<dyn Fn(bool) + Send + Sync>,
+    apply_debug: Box<dyn Fn(bool) -> Result<(), String> + Send + Sync>,
 }
 
 impl Logging {
@@ -41,9 +41,7 @@ impl Logging {
         }
         log_panics();
         Self::new(files, move |on| {
-            if let Err(e) = handle.reload(EnvFilter::new(log_filter(on))) {
-                tracing::warn!("could not change the log level: {e}");
-            }
+            handle.reload(EnvFilter::new(log_filter(on))).map_err(|e| e.to_string())
         })
     }
 
@@ -51,19 +49,19 @@ impl Logging {
     /// of the commands. `apply_debug` is called when the level is changed.
     pub fn new(
         files: Option<Arc<LogFiles>>,
-        apply_debug: impl Fn(bool) + Send + Sync + 'static,
+        apply_debug: impl Fn(bool) -> Result<(), String> + Send + Sync + 'static,
     ) -> Self {
         Self { files, apply_debug: Box::new(apply_debug) }
     }
 
     /// Applies the Debug logging setting to the log, now.
-    pub fn set_debug(&self, on: bool) {
-        (self.apply_debug)(on);
+    pub fn set_debug(&self, on: bool) -> Result<(), String> {
+        (self.apply_debug)(on)
     }
 
-    /// The log files, for the export; none if there are none.
-    pub fn files(&self) -> Option<&LogFiles> {
-        self.files.as_deref()
+    /// The folder of the log files, for the export; none if there is no log.
+    pub fn dir(&self) -> Option<&Path> {
+        self.files.as_deref().map(LogFiles::dir)
     }
 
     /// Makes sure everything logged is in the files, as the app quits.
@@ -77,7 +75,8 @@ impl Logging {
 }
 
 /// Writes a panic to the log, where a crash report would go if there were one, and then does
-/// what would have happened anyway.
+/// what would have happened anyway. (A panic in the log's own write, which holds a lock, is
+/// logged from inside it; `LogFiles` drops that line rather than wait for itself.)
 fn log_panics() {
     let default = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| {

@@ -330,8 +330,14 @@ async fn set_debug_logging(
     logging: State<'_, Logging>,
     on: bool,
 ) -> Result<(), String> {
-    device.set_debug_logging(on).await.map_err(|e| e.to_string())?;
-    logging.set_debug(on);
+    // The log first: if it cannot be switched there is nothing to keep, and if the setting cannot
+    // be kept the log goes back, so that the switch never shows what the log is not doing.
+    let was = device.debug_logging();
+    logging.set_debug(on).map_err(|e| format!("could not change the log level: {e}"))?;
+    if let Err(e) = device.set_debug_logging(on).await {
+        let _ = logging.set_debug(was);
+        return Err(e.to_string());
+    }
     Ok(())
 }
 
@@ -345,9 +351,8 @@ async fn export_diagnostics(
 ) -> Result<(), String> {
     // So the zip has every line logged so far.
     logging.flush();
-    let logs = logging.files().map(|files| files.dir().to_owned()).unwrap_or_default();
     device
-        .export_diagnostics(&logs, std::path::Path::new(&path), env!("CARGO_PKG_VERSION"))
+        .export_diagnostics(logging.dir(), std::path::Path::new(&path), env!("CARGO_PKG_VERSION"))
         .await
         .map_err(|e| e.to_string())
 }
@@ -726,7 +731,7 @@ pub fn run() {
             // folder, which is the Device's to say where.
             match &config {
                 Ok(config) => app.manage(Logging::install(&config.data_dir.join(LOGS_DIR))),
-                Err(_) => app.manage(Logging::new(None, |_| {})),
+                Err(_) => app.manage(Logging::new(None, |_| Ok(()))),
             };
             let started = config.map_err(Into::into).and_then(|config| start_device(app, config));
             if let Err(e) = started {
@@ -736,7 +741,9 @@ pub fn run() {
             }
 
             // The setting is kept by the Device, which opened after the log did.
-            app.state::<Logging>().set_debug(app.state::<Device>().debug_logging());
+            if let Err(e) = app.state::<Logging>().set_debug(app.state::<Device>().debug_logging()) {
+                tracing::warn!("could not set the log level: {e}");
+            }
             let handle = app.handle();
             let visibility = tauri::async_runtime::block_on(app.state::<Device>().visibility());
             if let Err(e) = background::build_tray(handle, visibility) {
@@ -864,9 +871,16 @@ mod tests {
         start_device(&app, config).unwrap();
         let files = Arc::new(bhayanakshare_core::LogFiles::open(&data_dir.join(LOGS_DIR)).unwrap());
         let applied = Arc::new(Mutex::new(Vec::new()));
+        let refuse = Arc::new(AtomicBool::new(false));
         app.manage(Logging::new(Some(files.clone()), {
-            let applied = applied.clone();
-            move |on| applied.lock().unwrap().push(on)
+            let (applied, refuse) = (applied.clone(), refuse.clone());
+            move |on| {
+                if refuse.load(Ordering::SeqCst) {
+                    return Err("the log cannot be changed".into());
+                }
+                applied.lock().unwrap().push(on);
+                Ok(())
+            }
         }));
 
         assert!(!debug_logging(app.state()));
@@ -874,6 +888,13 @@ mod tests {
         assert!(debug_logging(app.state()));
         assert!(app.state::<Device>().debug_logging());
         assert_eq!(*applied.lock().unwrap(), [true]);
+
+        // A log that cannot be switched is an error, and the setting stays as the log is.
+        refuse.store(true, Ordering::SeqCst);
+        let err = tauri::async_runtime::block_on(set_debug_logging(app.state(), app.state(), false)).unwrap_err();
+        assert!(err.contains("the log cannot be changed"), "{err}");
+        assert!(debug_logging(app.state()), "the setting says what the log is not doing");
+        refuse.store(false, Ordering::SeqCst);
 
         (&*files).write_all(b"a line of the log\n").unwrap();
         let dest = tmp.path().join("diagnostics.zip");
