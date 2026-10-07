@@ -8,6 +8,7 @@
 mod background;
 pub mod logging;
 mod notice;
+mod updates;
 
 use std::{
     io::Read as _,
@@ -571,6 +572,9 @@ pub fn specta_builder<R: Runtime>() -> Builder<R> {
             set_debug_logging,
             export_diagnostics,
             quit_app::<tauri::Wry>,
+            updates::check_for_update::<tauri::Wry>,
+            updates::pending_update,
+            updates::install_update::<tauri::Wry>,
             contacts,
             add_contact,
             set_nickname,
@@ -714,7 +718,8 @@ pub fn run() {
         .plugin(tauri_plugin_deep_link::init())
         .plugin(tauri_plugin_autostart::Builder::new().arg(background::BACKGROUND_FLAG).build())
         .plugin(tauri_plugin_dialog::init())
-        .plugin(tauri_plugin_opener::init());
+        .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_updater::Builder::new().build());
     #[cfg(not(target_os = "linux"))]
     {
         app = app.plugin(tauri_plugin_notification::init());
@@ -726,6 +731,7 @@ pub fn run() {
             app.manage(background::Quitting::default());
             app.manage(notice::Notifier::default());
             app.manage(Relaunch::default());
+            app.manage(updates::Updates::default());
             let config = default_config(app);
             // Before anything else that could have something to say: the log is in the data
             // folder, which is the Device's to say where.
@@ -757,6 +763,7 @@ pub fn run() {
             }
             #[cfg(target_os = "linux")]
             allow_camera(handle);
+            updates::spawn_checks(handle);
             // Starting at login leaves the window closed, in the tray.
             if !std::env::args().any(|arg| arg == background::BACKGROUND_FLAG) {
                 background::show_main(handle);

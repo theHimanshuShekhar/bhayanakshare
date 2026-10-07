@@ -56,6 +56,25 @@ export const commands = {
 	exportDiagnostics: (path: string) => __TAURI_INVOKE<null>("export_diagnostics", { path }),
 	/**  The user confirmed quitting while Transfers are in progress: save their progress and exit. */
 	quitApp: () => __TAURI_INVOKE<void>("quit_app"),
+	/**
+	 *  Looks for a newer release now (the "Update now" button). Rejects when the check fails, as it
+	 *  does offline.
+	 */
+	checkForUpdate: () => __TAURI_INVOKE<UpdateAction>("check_for_update"),
+	/**
+	 *  The newer release the last check found, if any: what the UI asks for when it opens, as a
+	 *  check at startup may have finished before it was listening.
+	 */
+	pendingUpdate: () => __TAURI_INVOKE<UpdateAction>("pending_update"),
+	/**
+	 *  Downloads `version`, the release the user agreed to install, replaces this AppImage with it
+	 *  (the plugin checks the signature first), and starts the app again by the way out of quitting,
+	 *  so that the Device saves its Transfers' progress: they resume in the new version. The UI
+	 *  calls this only once the user has agreed (and, with Transfers in progress, been told they
+	 *  stop for the restart). Refused if that is no longer the release found, if the app is
+	 *  quitting, and for a deb or rpm install, which is never updated in place.
+	 */
+	installUpdate: (version: string) => __TAURI_INVOKE<null>("install_update", { version }),
 	/**  Every Contact, in the order they were added. */
 	contacts: () => __TAURI_INVOKE<Contact[]>("contacts"),
 	/**
@@ -302,7 +321,9 @@ export type ShellEvent =
  */
 { type: "confirm_quit"; active: number } | 
 /**  Shutdown has begun: the Device is saving its progress, which can take a while. */
-{ type: "quitting" };
+{ type: "quitting" } | 
+/**  A check found a release newer than this one; `action` is what to offer for it. */
+{ type: "update_available"; action: UpdateAction };
 
 /**  What an Offer needs, against what its save folder has. */
 export type SpaceCheck = {
@@ -448,6 +469,37 @@ export type TransferState = { kind: "offered" } | { kind: "accepted" } | { kind:
 { kind: "expired" } | 
 /**  One side stopped the Transfer before it completed; `by` is which. */
 { kind: "cancelled"; by: Role };
+
+/**  What to do about the latest release. */
+export type UpdateAction = 
+/**  Nothing newer, or nothing that could be compared. */
+{ type: "none" } | 
+/**  Offer to install `version` and restart: an AppImage. */
+{ type: "install"; version: string } | 
+/**  Offer a link to the release page for `version`: a package. */
+{ type: "open_page"; version: string };
+
+/**
+ *  Why an update was not installed, in the terms the UI words (`update.error.*` in `i18n.ts`).
+ *  Deliberately no message: the plugin's are English, and can name the AppImage's path.
+ */
+export type UpdateError = 
+/**  This install is a package, which is never updated in place. */
+"not_app_image" | 
+/**  No newer release has been found. */
+"none_pending" | 
+/**  The release found is no longer the version the user agreed to: a newer check replaced it. */
+"version_changed" | 
+/**  Another install is running. */
+"already_installing" | 
+/**  The app is already quitting. */
+"quitting" | 
+/**  The download failed, as it does offline. */
+"download_failed" | 
+/**  The download was not signed by the update key, so it was not installed. */
+"signature_invalid" | 
+/**  Replacing the AppImage failed. */
+"install_failed";
 
 /**
  *  A connection with another Device was refused for the versions of BhayanakShare. Sent on

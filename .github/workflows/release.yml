@@ -1,0 +1,68 @@
+name: release
+
+# Cutting a release (see "Install and update" in the README): bump the version in
+# src-tauri/tauri.conf.json and Cargo.toml, commit, tag it `vX.Y.Z` and push the tag. This builds
+# the AppImage, deb and rpm, and puts them, their signatures and `latest.json` in a draft
+# GitHub Release. Publishing the draft is what makes the AppImage updater see the release.
+
+on:
+  push:
+    tags:
+      - "v*"
+
+# This job sees the update-signing key, so: every action is pinned to a commit (the tag is in
+# the comment), nothing is cached (a poisoned cache could reach the build), and the write
+# permission is the job's, not the workflow's.
+permissions:
+  contents: read
+
+jobs:
+  release:
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Check that the tag is the app's version
+        run: |
+          tauri_version=$(jq -r .version src-tauri/tauri.conf.json)
+          cargo_version=$(sed -n '/^\[workspace.package\]/,/^\[/{s/^version = "\(.*\)"/\1/p}' Cargo.toml)
+          if [ "v$tauri_version" != "$GITHUB_REF_NAME" ] || [ "v$cargo_version" != "$GITHUB_REF_NAME" ]; then
+            echo "::error::Tag $GITHUB_REF_NAME, but tauri.conf.json says $tauri_version and Cargo.toml says $cargo_version"
+            exit 1
+          fi
+
+      # What building the Tauri shell and its bundles needs
+      # (https://v2.tauri.app/start/prerequisites/#linux and the GitHub pipeline guide).
+      - name: Install system libraries
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev build-essential curl wget file libxdo-dev \
+            libssl-dev libayatana-appindicator3-dev librsvg2-dev patchelf xdg-utils
+
+      # The pnpm version comes from "packageManager" in package.json.
+      - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 22
+
+      - uses: dtolnay/rust-toolchain@89b12181fb390509a0842a86cc55eeb8eb928c1d # stable branch
+
+      - run: pnpm install --frozen-lockfile
+
+      - uses: tauri-apps/tauri-action@1deb371b0cd8bd54025b384f1cd735e725c4060f # v1.0.0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # The update-signing key lives only here, as repository secrets.
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        with:
+          tagName: ${{ github.ref_name }}
+          releaseName: BhayanakShare ${{ github.ref_name }}
+          releaseBody: See the assets to download this version and install it.
+          releaseDraft: true
+          prerelease: false

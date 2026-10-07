@@ -16,6 +16,46 @@ Created in [T3 Code](https://t3.codes).
 
 The core's public seam is `Device`: it is created from a data folder, a save folder, a key source and an injected clock; commands go in as methods and everything that happens comes back, in order, on one `EventStream`. The shell and every test use only that.
 
+## Install and update
+
+Releases are on the [releases page](https://github.com/theHimanshuShekhar/bhayanakshare/releases/latest). On Linux there are three formats, built by Tauri's bundler:
+
+| Format | Install | Updates |
+|---|---|---|
+| AppImage (`BhayanakShare_X.Y.Z_amd64.AppImage`) | `chmod +x` the file and run it | Itself, after the user agrees |
+| deb (`BhayanakShare_X.Y.Z_amd64.deb`; Debian, Ubuntu) | `sudo apt install ./BhayanakShare_X.Y.Z_amd64.deb` | Not itself: a notice with a link to the release page |
+| rpm (`BhayanakShare-X.Y.Z-1.x86_64.rpm`; Fedora, openSUSE) | `sudo dnf install ./BhayanakShare-X.Y.Z-1.x86_64.rpm` | Not itself: a notice with a link to the release page |
+
+The app looks for a newer release when it starts, and again once 24 hours of clock time have passed since the last successful look (it wakes hourly to check, so a machine that was asleep looks soon after waking, and one that was offline at start tries again within the hour), by fetching `latest.json` from the latest release on GitHub: a plain GET, with no Device ID and no user data. There is no telemetry. When a newer release exists the app shows "Update available (version X)":
+
+- **AppImage** (the `APPIMAGE` variable is set, `src-tauri/src/updates.rs`): the notice has "Install and restart". Nothing is installed before the user presses it, and what is installed is the version the notice showed (if a newer one has been found since, the install is refused and the user checks again). With Transfers in progress the user is asked first, as they stop for the restart. The new AppImage is downloaded, its signature is checked against the key in the app, the file is replaced, and the app restarts the way Quit does, so Transfers save their progress and resume.
+- **deb and rpm** (anything that is not an AppImage): the notice links to the release page; the package is updated by hand.
+
+When a Transfer is refused because this Device's version is older, the notice also has "Update now": it looks for the update and, on an AppImage, installs it and restarts (pressing it is the agreement; the version being installed is shown), and on a package opens the release page. If no update is found, or the check cannot be made (offline), it says so. A failed check or install is logged and otherwise ignored, never a crash.
+
+The packages register the `bhayanakshare://` scheme (the desktop file, `src-tauri/linux/bhayanakshare.desktop`, has the scheme handler and `%u` to receive the link), run no install scripts and never change firewall rules; see [`docs/firewall.md`](docs/firewall.md) for allowing local discovery yourself.
+
+### Cutting a release
+
+1. Bump the version in `src-tauri/tauri.conf.json` and `[workspace.package]` in `Cargo.toml` (the same number in both; the release workflow stops if the tag disagrees with either), and commit it.
+2. Tag it `vX.Y.Z` and push the tag.
+3. `.github/workflows/release.yml` builds on Ubuntu 22.04 and uploads the AppImage, deb, rpm, their updater signatures and `latest.json` to a **draft** GitHub Release.
+4. Publish the draft. The updater reads the latest *published* release, so installed AppImages see the new version only then.
+
+The release workflow is the one that sees the signing key, so its actions are pinned to commits (the tag is in a comment beside each), it caches nothing, and only its job has write permission. Update the pins by hand, checking the new tag.
+
+`.github/workflows/ci.yml` runs `pnpm typecheck` and `pnpm test` on every push and pull request (without `BHAYANAKSHARE_REQUIRE_MULTICAST`, as multicast may not work on a runner).
+
+### The update-signing key
+
+Updates are signed. The **private** key lives only as the repository secrets `TAURI_SIGNING_PRIVATE_KEY` and `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`, which only the release workflow reads. It is never committed or logged. The **public** key is `plugins.updater.pubkey` in `src-tauri/tauri.conf.json`, and every installed AppImage carries it.
+
+The key pair was made with `pnpm tauri signer generate`. An update whose signature does not match the public key is refused, and the error is logged.
+
+Losing the private key means no release can be signed for the AppImages already installed: their users must install a new AppImage by hand, signed with a new key, which then carries the new public key. Keep a copy somewhere safe.
+
+A local `pnpm build` makes updater artifacts too (`createUpdaterArtifacts`), so it needs `TAURI_SIGNING_PRIVATE_KEY` set. To build the installers without them, run `pnpm tauri build --config '{"bundle":{"createUpdaterArtifacts":false}}'`.
+
 ## Commands
 
 Requirements: a Rust toolchain, Node 22+ and pnpm. Building the Tauri shell on Linux also needs `pkg-config` and the `webkit2gtk-4.1`, `libsoup-3.0` and GTK 3 development packages (see the [Tauri prerequisites](https://v2.tauri.app/start/prerequisites/)).
@@ -58,7 +98,7 @@ Settings → Identity exports the key alone, under a password, as a `.bhid` file
 
 ### Privacy and diagnostics
 
-BhayanakShare logs what it does to files in `logs/` in its data folder: one file a day (UTC), the last 7 kept and about 50 MB in all at the most (the oldest files go first; if a single day's file reaches the cap, the rest of that day is not logged), so a week of use at most. A line says when, how serious and what happened, and names another Device only by its Fingerprint, never its whole ID; no file name, folder name or text is ever logged, and neither is a path inside the save folder (one rare line, an incoming store that could not be opened, can still carry the save folder's path in its error, though the store's own files are named by hash and Transfer ID, never by a transferred file's name). Anything shaped like a Device ID (the base32 form, iroh's hex form, the z-base-32 form of its lookups) is also redacted from every line on its way to the file, as are the 64-digit hex hashes of content, and two chatty iroh lookups are silenced, since they print whole IDs. Settings → Diagnostics has a "Debug logging" switch (a bigger log, which follows the same rules) and "Export diagnostics…", which saves a zip of the log files and an `about.txt` (app version, operating system, Visibility, whether debug logging is on, the network, this Device's Fingerprint) wherever the user says. Nothing is sent anywhere: there is no telemetry and no crash reporting, and a crash only leaves a line in the local log (where it happened, and its message if that is a fixed one). Passing the zip on is up to the user.
+BhayanakShare logs what it does to files in `logs/` in its data folder: one file a day (UTC), the last 7 kept and about 50 MB in all at the most (the oldest files go first; if a single day's file reaches the cap, the rest of that day is not logged), so a week of use at most. A line says when, how serious and what happened, and names another Device only by its Fingerprint, never its whole ID; no file name, folder name or text is ever logged, and neither is a path inside the save folder (one rare line, an incoming store that could not be opened, can still carry the save folder's path in its error, though the store's own files are named by hash and Transfer ID, never by a transferred file's name). Anything shaped like a Device ID (the base32 form, iroh's hex form, the z-base-32 form of its lookups) is also redacted from every line on its way to the file, as are the 64-digit hex hashes of content, and two chatty iroh lookups are silenced, since they print whole IDs. Settings → Diagnostics has a "Debug logging" switch (a bigger log, which follows the same rules) and "Export diagnostics…", which saves a zip of the log files and an `about.txt` (app version, operating system, Visibility, whether debug logging is on, the network, this Device's Fingerprint) wherever the user says. Nothing is sent anywhere: there is no telemetry and no crash reporting, and a crash only leaves a line in the local log (where it happened, and its message if that is a fixed one). Passing the zip on is up to the user. (The one thing the app fetches on its own is the check for a newer release, a plain GET of `latest.json`; see [Install and update](#install-and-update).)
 
 For code: log a Device with `DeviceId::fingerprint()` (never `{id}` on a `DeviceId` or an `EndpointId`), never log a path under a save folder or a source being sent (use the Transfer ID), and never log a `Message` or an `Offer` with `{:?}`, nor an `Error` that has a path in it (`Error::for_log`). `crates/core/tests/log_privacy.rs` runs Transfers, refusals and failures with the app's own filter at debug (`log_filter(true)`) and fails if the log holds a whole Device ID, a name or text. The subscriber is installed by the shell (`src-tauri/src/logging.rs`), the filter, the rolling files, the redaction and the export are in `crates/core/src/logs.rs` (the writer is synchronous, under a lock, not a background thread: lines are small and rare, and a panic's line or an export must find everything written). `RUST_LOG` is not read; a debug build also writes to stderr.
 

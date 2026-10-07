@@ -20,6 +20,8 @@ import {
   type ShellEvent,
   type SpaceCheck,
   type TransferId,
+  type UpdateAction,
+  type UpdateError,
   type Visibility,
 } from "./bindings";
 
@@ -35,6 +37,8 @@ export type {
   ShellEvent,
   SpaceCheck,
   TransferId,
+  UpdateAction,
+  UpdateError,
   Visibility,
 };
 
@@ -84,6 +88,14 @@ export interface Api {
   pickDiagnosticsSavePath(name: string): Promise<string | null>;
   /** The user confirmed quitting: the Device saves its progress, then the app exits. */
   quitApp(): Promise<unknown>;
+  /** Looks for a newer release now. Rejects when the check fails, as it does offline. */
+  checkForUpdate(): Promise<UpdateAction>;
+  /** The newer release the last check found, if any. */
+  pendingUpdate(): Promise<UpdateAction>;
+  /** Installs `version`, the release the user agreed to, and restarts the app (an AppImage
+   * only). The caller has the user's agreement. Rejects with an `UpdateError` if it could not be
+   * installed, as when `version` is no longer the release found. */
+  installUpdate(version: string): Promise<unknown>;
   /** Every Contact, in the order they were added. */
   contacts(): Promise<Contact[]>;
   /** Saves a Device as a Contact; `deviceName` is the name it goes by, if known. */
@@ -129,7 +141,7 @@ export interface Api {
   copyText(text: string): Promise<void>;
   /** Calls `handler` for every Device event, in order. Resolves to the unsubscribe function. */
   onDeviceEvent(handler: (event: DeviceEvent) => void): Promise<() => void>;
-  /** Calls `handler` for what the shell has to say (files to send, quitting). */
+  /** Calls `handler` for what the shell has to say (files to send, quitting, updates). */
   onShellEvent(handler: (event: ShellEvent) => void): Promise<() => void>;
   /** Calls `handler` with every `bhayanakshare://` link the user opens, including the one that
    * started the app. Resolves to the unsubscribe function. */
@@ -185,6 +197,9 @@ export const tauriApi: Api = {
   pickDiagnosticsSavePath: (name) =>
     save({ defaultPath: name, filters: [{ name: t("diagnostics.fileType"), extensions: ["zip"] }] }),
   quitApp: commands.quitApp,
+  checkForUpdate: commands.checkForUpdate,
+  pendingUpdate: commands.pendingUpdate,
+  installUpdate: commands.installUpdate,
   contacts: commands.contacts,
   addContact: commands.addContact,
   setNickname: commands.setNickname,

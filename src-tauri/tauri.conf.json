@@ -24,11 +24,28 @@
     }
   },
   "plugins": {
-    "deep-link": { "desktop": { "schemes": ["bhayanakshare"] } }
+    "deep-link": { "desktop": { "schemes": ["bhayanakshare"] } },
+    "updater": {
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEUzREIwRkM2RjVBNzI3MzMKUldReko2ZjF4Zy9iNCthSUVya0hSZzllTlBXM01UbGdmVGJuKzlSMzk0bmJMSjZTajY3dmxqWGcK",
+      "endpoints": ["https://github.com/theHimanshuShekhar/bhayanakshare/releases/latest/download/latest.json"]
+    }
   },
   "bundle": {
     "active": true,
     "targets": "all",
+    "createUpdaterArtifacts": true,
+    "publisher": "Himanshu Shekhar",
+    "copyright": "Copyright (c) 2026 Himanshu Shekhar",
+    "license": "MIT",
+    "licenseFile": "../LICENSE",
+    "homepage": "https://github.com/theHimanshuShekhar/bhayanakshare",
+    "category": "Utility",
+    "shortDescription": "Send files directly from one device to another.",
+    "longDescription": "BhayanakShare sends files and text directly from one device to another over a peer-to-peer connection, AirDrop-style, with no account and no server holding your files.",
+    "linux": {
+      "deb": { "desktopTemplate": "linux/bhayanakshare.desktop" },
+      "rpm": { "desktopTemplate": "linux/bhayanakshare.desktop" }
+    },
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",
