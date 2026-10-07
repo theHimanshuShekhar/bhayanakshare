@@ -40,6 +40,7 @@ use crate::{
     identity::{DeviceId, KeySource},
     identity_file, logs, protocol, receiver,
     sender::{self, Outgoing, Payload},
+    save_folder,
     session::RESTARTED,
     space::{FreeSpace, SpaceCheck},
     store,
@@ -62,6 +63,9 @@ async fn open_identity_file(file: &[u8], password: &str) -> Result<(SecretKey, D
     let id = DeviceId::from_endpoint_id(key.public());
     Ok((key, id))
 }
+
+/// The setting that is there once the user has been through first run.
+const FIRST_RUN_SETTING: &str = "first_run_done";
 
 /// Which network a Device lives on.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -231,7 +235,8 @@ pub(crate) struct Shared {
     pub clock: Arc<dyn Clock>,
     /// Where settings, Transfer records and the Sender's store live.
     pub data_dir: PathBuf,
-    /// The folder an Offer is saved to unless the Receiver picks another.
+    /// The save folder as the Device was configured with it: the one in use until the user sets
+    /// another. Read the folder in use with [`Shared::save_folder`].
     pub save_dir: PathBuf,
     pub free_space: Arc<dyn FreeSpace>,
     pub events: EventSink,
@@ -336,6 +341,16 @@ impl Shared {
             }
         }
         .unwrap_or_else(device_name::default_name)
+    }
+
+    /// The folder an Offer is saved to unless the Receiver picks another: the save folder
+    /// setting, else the folder the Device was configured with. Read each time, so a change
+    /// applies to the next Offer.
+    pub async fn save_folder(&self) -> Result<PathBuf, Error> {
+        Ok(match self.db.setting(save_folder::SETTING).await? {
+            Some(folder) => PathBuf::from(folder),
+            None => self.save_dir.clone(),
+        })
     }
 
     /// Notes how a connection to `peer` is reaching it and what it calls itself, if `peer` is a
@@ -554,6 +569,13 @@ impl Device {
             blocking("loading the secret key", move || key_source.load_or_create()).await??
         };
         let db = Db::open(&data_dir.join("bhayanakshare.db")).await?;
+        // A save folder the user set may have been removed since: make it again, as for the one
+        // the Device is configured with. If that fails, an Offer says so when it is checked.
+        if let Some(folder) = db.setting(save_folder::SETTING).await? {
+            if let Err(e) = tokio::fs::create_dir_all(&folder).await {
+                tracing::warn!("could not create the save folder: {e}");
+            }
+        }
         let store = store::open(&data_dir.join("blobs")).await?;
         let blobs: iroh_blobs::api::Store = (**store).clone();
 
@@ -884,7 +906,7 @@ impl Device {
         Ok(())
     }
 
-    /// Whether a pending Offer fits in `folder` (the save folder when `None`).
+    /// Whether a pending Offer fits in `folder` (the save folder in use when `None`).
     pub async fn check_offer(
         &self,
         id: TransferId,
@@ -893,13 +915,13 @@ impl Device {
         self.check_space(id, folder).await.map(|(_, check)| check)
     }
 
-    /// Accepts a pending Offer into the save folder; the content is then fetched and saved.
-    /// Fails, leaving the Offer pending, if it does not fit there.
+    /// Accepts a pending Offer into the save folder as it is now; the content is then fetched
+    /// and saved. Fails, leaving the Offer pending, if it does not fit there.
     pub async fn accept(&self, id: TransferId) -> Result<(), Error> {
         self.accept_into(id, None).await
     }
 
-    /// Accepts a pending Offer into `folder` for this Transfer only (the save folder when
+    /// Accepts a pending Offer into `folder` for this Transfer only (the save folder in use when
     /// `None`). Fails, leaving the Offer pending, if it does not fit there or its paths would
     /// be too long.
     pub async fn accept_into(&self, id: TransferId, folder: Option<&Path>) -> Result<(), Error> {
@@ -929,7 +951,7 @@ impl Device {
             .ok_or(Error::UnknownTransfer(id))?;
         let folder = match folder {
             Some(folder) => std::path::absolute(folder).map_err(|e| Error::io("resolving the folder", e))?,
-            None => sh.save_dir.clone(),
+            None => sh.save_folder().await?,
         };
         if text {
             // Kept in the database, not the folder: there is nothing to run out of room for.
@@ -1079,6 +1101,46 @@ impl Device {
         sh.db.set_setting(dht::SETTING, if on { "1" } else { "0" }).await?;
         sh.public_dht.set_enabled(on);
         Ok(())
+    }
+
+    /// The folder accepted files are saved to unless the Receiver picks another for an Offer: the
+    /// one set with [`Device::set_save_folder`], else the one the Device was configured with.
+    pub async fn save_folder(&self) -> Result<PathBuf, Error> {
+        self.inner.shared.save_folder().await
+    }
+
+    /// Makes `folder` the save folder, from the next Offer accepted on (one waiting for an answer
+    /// goes to it too, unless a folder is named when it is accepted), and keeps the choice across
+    /// restarts. The folder is made if it is missing and must be one files can be written in,
+    /// else this fails with [`Error::SaveFolder`] and the save folder is as it was. Returns the
+    /// folder as kept, an absolute path.
+    pub async fn set_save_folder(&self, folder: &Path) -> Result<PathBuf, Error> {
+        let sh = &self.inner.shared;
+        if sh.cancel.is_cancelled() {
+            return Err(Error::ShuttingDown);
+        }
+        let folder = folder.to_owned();
+        let folder = blocking("checking the save folder", move || save_folder::prepare(&folder)).await??;
+        // `prepare` has checked that the path is text.
+        let text = folder.to_string_lossy();
+        sh.db.set_setting(save_folder::SETTING, &text).await?;
+        Ok(folder)
+    }
+
+    /// Whether first run has not been finished yet: the Device has never been told, with
+    /// [`Device::finish_first_run`], that the user has been through the first-run screen. It is
+    /// the shell's to show that screen while this is true.
+    pub async fn needs_first_run(&self) -> Result<bool, Error> {
+        Ok(self.inner.shared.db.setting(FIRST_RUN_SETTING).await?.is_none())
+    }
+
+    /// Records that the user has been through first run, for good.
+    pub async fn finish_first_run(&self) -> Result<(), Error> {
+        let sh = &self.inner.shared;
+        if sh.cancel.is_cancelled() {
+            return Err(Error::ShuttingDown);
+        }
+        Ok(sh.db.set_setting(FIRST_RUN_SETTING, "1").await?)
     }
 
     /// Whether the log is at debug level, which is bigger and for finding what went wrong. Off

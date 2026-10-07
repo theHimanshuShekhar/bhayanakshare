@@ -164,6 +164,31 @@ async fn a_new_device_name_is_announced_at_once() {
     bob.shutdown().await;
 }
 
+/// What Settings → Device Name does: the default Visibility, nothing restarted, and the new name
+/// is in the Nearby list of a Device that holds the ID (within `wait_nearby`'s bound) while the
+/// old one is not.
+#[tokio::test]
+async fn renaming_a_device_at_the_default_visibility_shows_the_new_name_nearby_without_a_restart() {
+    if !multicast_available() {
+        return;
+    }
+    let mut alice = TestDevice::start_discovering("alice").await;
+    alice.device.set_device_name("Alice's laptop").await.unwrap();
+    let mut bob = TestDevice::start_discovering("bob").await;
+    let alice_id = alice.device.device_id();
+    bob.device.add_contact(alice_id, None).await.unwrap();
+    assert_eq!(alice.device.visibility().await, Visibility::IdHolders, "the default");
+    bob.wait_nearby("the first name", is(alice_id, Some("Alice's laptop"))).await;
+
+    assert_eq!(alice.device.set_device_name("  Alice's desktop ").await.unwrap(), "Alice's desktop");
+    let seen = bob.wait_nearby("the new name", is(alice_id, Some("Alice's desktop"))).await;
+    assert!(!is(alice_id, Some("Alice's laptop"))(&seen), "{seen:?}");
+    assert_eq!(alice.device.device_name().await, "Alice's desktop");
+
+    alice.shutdown().await;
+    bob.shutdown().await;
+}
+
 #[tokio::test]
 async fn an_announced_name_is_never_stored_in_a_contact() {
     if !multicast_available() {

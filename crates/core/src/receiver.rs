@@ -450,12 +450,19 @@ async fn auto_accept_folder(sh: &Shared, info: &TransferInfo, longest_path: usiz
             return None;
         }
     }
+    let save_dir = match sh.save_folder().await {
+        Ok(folder) => folder,
+        Err(e) => {
+            tracing::warn!("Auto-accept held back, the save folder cannot be read: {}", e.for_log());
+            return None;
+        }
+    };
     if info.text.is_some() {
         // Kept in the database, not the save folder: there is nothing to check.
-        return Some(sh.save_dir.clone());
+        return Some(save_dir);
     }
-    match sh.space_check(info.id, info.size, longest_path, &sh.save_dir).await {
-        Ok(check) if check.passes() => Some(sh.save_dir.clone()),
+    match sh.space_check(info.id, info.size, longest_path, &save_dir).await {
+        Ok(check) if check.passes() => Some(save_dir),
         Ok(_) => None,
         Err(e) => {
             tracing::warn!("Auto-accept held back, the save folder cannot be checked: {}", e.for_log());
