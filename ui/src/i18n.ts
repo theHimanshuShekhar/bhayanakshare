@@ -30,14 +30,26 @@ const en = {
 
   "update.available": "Update available (version {version})",
   "update.install": "Install and restart",
-  "update.restartHint": "Transfers in progress resume after the restart.",
   "update.releasePage": "Open the release page",
   "update.dismiss": "Dismiss",
   "update.checking": "Checking for updates…",
   "update.installing": "Installing version {version}…",
+  "update.activeOne":
+    "A Transfer is in progress. It stops for the restart and resumes when BhayanakShare is back.",
+  "update.active":
+    "{count} Transfers are in progress. They stop for the restart and resume when BhayanakShare is back.",
+  "update.confirm": "Install version {version} and restart",
+  "update.cancel": "Not now",
   "update.none": "No newer version was found.",
   "update.checkFailed": "Could not check for updates. Are you online?",
-  "update.installFailed": "Could not install the update. {reason}",
+  "update.error.notAppImage": "This install is updated from the release page, not by BhayanakShare itself.",
+  "update.error.nonePending": "There is no update to install. Check again.",
+  "update.error.versionChanged": "A newer version came out in the meantime. Check again to install it.",
+  "update.error.alreadyInstalling": "An update is already being installed.",
+  "update.error.quitting": "BhayanakShare is closing, so nothing was installed.",
+  "update.error.downloadFailed": "Could not download the update. Are you online?",
+  "update.error.signatureInvalid": "The update's signature did not check out, so it was not installed.",
+  "update.error.installFailed": "Could not install the update.",
 
   "home.transfers": "Transfers",
   "home.noTransfers": "No Transfers yet.",

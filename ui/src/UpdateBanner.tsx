@@ -1,11 +1,12 @@
 import type { Api, UpdateAction } from "./api";
 import { t } from "./i18n";
-import { offeredVersion, useUpdater, type UpdateProgress } from "./updates";
+import { offeredVersion, type Updater } from "./updates";
 import { RELEASES_URL } from "./versions";
 
-/** What an update is doing now, or why it did not work. */
-export function UpdateStatus({ progress }: { progress: UpdateProgress | null }) {
-  if (progress === null) return null;
+/** What the one update under way is doing, or why it did not work. */
+export function UpdateStatus({ updater }: { updater: Updater }) {
+  const { progress } = updater;
+  if (progress === null || progress.step === "preparing") return null;
   switch (progress.step) {
     case "checking":
       return <p role="status">{t("update.checking")}</p>;
@@ -13,6 +14,18 @@ export function UpdateStatus({ progress }: { progress: UpdateProgress | null }) 
       return <p role="status">{t("update.installing", { version: progress.version })}</p>;
     case "failed":
       return <p role="alert">{progress.message}</p>;
+    case "confirm":
+      return (
+        <p role="alert">
+          {progress.active === 1 ? t("update.activeOne") : t("update.active", { count: progress.active })}{" "}
+          <button type="button" onClick={() => updater.confirm()}>
+            {t("update.confirm", { version: progress.version })}
+          </button>{" "}
+          <button type="button" onClick={updater.cancel}>
+            {t("update.cancel")}
+          </button>
+        </p>
+      );
   }
 }
 
@@ -23,43 +36,42 @@ export function UpdateStatus({ progress }: { progress: UpdateProgress | null }) 
 export function UpdateBanner({
   api,
   update,
+  busy,
+  onInstall,
   onDismiss,
 }: {
   api: Api;
   update: UpdateAction;
+  /** An update is under way: nothing else may start. */
+  busy: boolean;
+  /** The user chose to install `version`, the one shown. */
+  onInstall: (version: string) => void;
   onDismiss: () => void;
 }) {
-  const updater = useUpdater(api);
   const version = offeredVersion(update);
   if (version === null) return null;
   return (
-    <>
-      <p role="status" className="hint">
-        {t("update.available", { version })}{" "}
-        {update.type === "install" ? (
-          <>
-            <button type="button" disabled={updater.busy} onClick={() => updater.install(version)}>
-              {t("update.install")}
-            </button>{" "}
-            {t("update.restartHint")}
-          </>
-        ) : (
-          <a
-            href={RELEASES_URL}
-            onClick={(e) => {
-              // The webview must not navigate away from the app.
-              e.preventDefault();
-              api.openUrl(RELEASES_URL).catch(() => {});
-            }}
-          >
-            {t("update.releasePage")}
-          </a>
-        )}{" "}
-        <button type="button" disabled={updater.busy} onClick={onDismiss}>
-          {t("update.dismiss")}
+    <p role="status" className="hint">
+      {t("update.available", { version })}{" "}
+      {update.type === "install" ? (
+        <button type="button" disabled={busy} onClick={() => onInstall(version)}>
+          {t("update.install")}
         </button>
-      </p>
-      <UpdateStatus progress={updater.progress} />
-    </>
+      ) : (
+        <a
+          href={RELEASES_URL}
+          onClick={(e) => {
+            // The webview must not navigate away from the app.
+            e.preventDefault();
+            api.openUrl(RELEASES_URL).catch(() => {});
+          }}
+        >
+          {t("update.releasePage")}
+        </a>
+      )}{" "}
+      <button type="button" disabled={busy} onClick={onDismiss}>
+        {t("update.dismiss")}
+      </button>
+    </p>
   );
 }

@@ -67,12 +67,14 @@ export const commands = {
 	 */
 	pendingUpdate: () => __TAURI_INVOKE<UpdateAction>("pending_update"),
 	/**
-	 *  Downloads the release the last check found, replaces this AppImage with it (the plugin checks
-	 *  the signature first), and starts the app again by the way out of quitting, so that the
-	 *  Device saves its Transfers' progress: they resume in the new version. The UI calls this only
-	 *  once the user has agreed. A deb or rpm install is refused: those are never updated in place.
+	 *  Downloads `version`, the release the user agreed to install, replaces this AppImage with it
+	 *  (the plugin checks the signature first), and starts the app again by the way out of quitting,
+	 *  so that the Device saves its Transfers' progress: they resume in the new version. The UI
+	 *  calls this only once the user has agreed (and, with Transfers in progress, been told they
+	 *  stop for the restart). Refused if that is no longer the release found, if the app is
+	 *  quitting, and for a deb or rpm install, which is never updated in place.
 	 */
-	installUpdate: () => __TAURI_INVOKE<null>("install_update"),
+	installUpdate: (version: string) => __TAURI_INVOKE<null>("install_update", { version }),
 	/**  Every Contact, in the order they were added. */
 	contacts: () => __TAURI_INVOKE<Contact[]>("contacts"),
 	/**
@@ -476,6 +478,28 @@ export type UpdateAction =
 { type: "install"; version: string } | 
 /**  Offer a link to the release page for `version`: a package. */
 { type: "open_page"; version: string };
+
+/**
+ *  Why an update was not installed, in the terms the UI words (`update.error.*` in `i18n.ts`).
+ *  Deliberately no message: the plugin's are English, and can name the AppImage's path.
+ */
+export type UpdateError = 
+/**  This install is a package, which is never updated in place. */
+"not_app_image" | 
+/**  No newer release has been found. */
+"none_pending" | 
+/**  The release found is no longer the version the user agreed to: a newer check replaced it. */
+"version_changed" | 
+/**  Another install is running. */
+"already_installing" | 
+/**  The app is already quitting. */
+"quitting" | 
+/**  The download failed, as it does offline. */
+"download_failed" | 
+/**  The download was not signed by the update key, so it was not installed. */
+"signature_invalid" | 
+/**  Replacing the AppImage failed. */
+"install_failed";
 
 /**
  *  A connection with another Device was refused for the versions of BhayanakShare. Sent on

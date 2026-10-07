@@ -103,7 +103,7 @@ function fakeApi(overrides: Partial<Api> = {}, initialContacts: Contact[] = []) 
     quitApp: vi.fn(() => Promise.resolve(null)),
     checkForUpdate: vi.fn(() => Promise.resolve<UpdateAction>({ type: "none" })),
     pendingUpdate: vi.fn(() => Promise.resolve<UpdateAction>({ type: "none" })),
-    installUpdate: vi.fn(() => Promise.resolve(null)),
+    installUpdate: vi.fn((_version: string) => Promise.resolve(null)),
     contacts: vi.fn(() => Promise.resolve(contacts)),
     addContact: vi.fn((id: string, deviceName: string | null) => {
       const added = contact({ id, device_name: deviceName, added_at: contacts.length + 1 });
@@ -2518,7 +2518,8 @@ describe("version mismatches", () => {
     fireEvent.click(screen.getByRole("button", { name: "Update now" }));
     expect((await screen.findByText("Installing version 9.9.9…")).getAttribute("role")).toBe("status");
     expect(device.api.checkForUpdate).toHaveBeenCalledTimes(1);
-    expect(device.api.installUpdate).toHaveBeenCalledTimes(1);
+    // The version it was shown is the version it installs.
+    expect(device.api.installUpdate).toHaveBeenCalledWith("9.9.9");
     expect(device.api.openUrl).not.toHaveBeenCalled();
     expect((screen.getByRole("button", { name: "Update now" }) as HTMLButtonElement).disabled).toBe(true);
   });
@@ -2545,12 +2546,48 @@ describe("version mismatches", () => {
     const device = await start(
       fakeApi({
         checkForUpdate: () => Promise.resolve({ type: "install", version: "9.9.9" }),
-        installUpdate: () => Promise.reject("signature mismatch"),
+        installUpdate: () => Promise.reject("signature_invalid"),
       }),
     );
     await refused(device, "this_device");
     fireEvent.click(screen.getByRole("button", { name: "Update now" }));
-    expect((await screen.findByRole("alert")).textContent).toBe("Could not install the update. signature mismatch");
+    expect((await screen.findByRole("alert")).textContent).toBe(
+      "The update's signature did not check out, so it was not installed.",
+    );
+  });
+
+  it("asks first when Transfers are in progress, and installs once the user says so", async () => {
+    const device = await start(
+      fakeApi({
+        checkForUpdate: () => Promise.resolve({ type: "install", version: "9.9.9" }),
+        transfersInProgress: () => Promise.resolve(2),
+      }),
+    );
+    await refused(device, "this_device");
+    fireEvent.click(screen.getByRole("button", { name: "Update now" }));
+    expect((await screen.findByRole("alert")).textContent).toContain(
+      "2 Transfers are in progress. They stop for the restart and resume when BhayanakShare is back.",
+    );
+    expect(device.api.installUpdate).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getByRole("button", { name: "Install version 9.9.9 and restart" }));
+    await waitFor(() => expect(device.api.installUpdate).toHaveBeenCalledWith("9.9.9"));
+  });
+
+  it("does not install when the user says not now", async () => {
+    const device = await start(
+      fakeApi({
+        checkForUpdate: () => Promise.resolve({ type: "install", version: "9.9.9" }),
+        transfersInProgress: () => Promise.resolve(1),
+      }),
+    );
+    await refused(device, "this_device");
+    fireEvent.click(screen.getByRole("button", { name: "Update now" }));
+    expect((await screen.findByRole("alert")).textContent).toContain("A Transfer is in progress. It stops");
+    fireEvent.click(screen.getByRole("button", { name: "Not now" }));
+    expect(screen.queryByRole("alert")).toBeNull();
+    expect(device.api.installUpdate).not.toHaveBeenCalled();
+    expect((screen.getByRole("button", { name: "Update now" }) as HTMLButtonElement).disabled).toBe(false);
   });
 
   it("goes away when dismissed", async () => {
@@ -2563,7 +2600,9 @@ describe("version mismatches", () => {
 
 describe("updates", () => {
   const RELEASES = "https://github.com/theHimanshuShekhar/bhayanakshare/releases/latest";
-  const found = (action: UpdateAction) => fakeApi({ pendingUpdate: () => Promise.resolve(action) });
+  const found = (action: UpdateAction, overrides: Partial<Api> = {}) =>
+    fakeApi({ pendingUpdate: () => Promise.resolve(action), ...overrides });
+  const installing = (): Partial<Api> => ({ installUpdate: vi.fn(() => new Promise(() => {})) });
 
   it("shows nothing when there is no newer release", async () => {
     await start();
@@ -2578,8 +2617,15 @@ describe("updates", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "Install and restart" }));
     expect(await screen.findByText("Installing version 0.2.0…")).toBeTruthy();
-    expect(device.api.installUpdate).toHaveBeenCalledTimes(1);
+    // No Transfers in progress: nothing more to ask.
+    expect(device.api.installUpdate).toHaveBeenCalledWith("0.2.0");
     expect(device.api.openUrl).not.toHaveBeenCalled();
+  });
+
+  it("installs the version the banner showed, not whatever is newest now", async () => {
+    const device = await start(found({ type: "install", version: "0.2.0" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Install and restart" }));
+    await waitFor(() => expect(device.api.installUpdate).toHaveBeenCalledWith("0.2.0"));
   });
 
   it("links a package to the release page instead of updating it", async () => {
@@ -2599,16 +2645,105 @@ describe("updates", () => {
     expect(screen.getByRole("button", { name: "Install and restart" })).toBeTruthy();
   });
 
-  it("says when the update could not be installed, and lets the user try again", async () => {
+  it("says in words why the update could not be installed, and lets the user try again", async () => {
+    const cases: [string, string][] = [
+      ["version_changed", "A newer version came out in the meantime. Check again to install it."],
+      ["none_pending", "There is no update to install. Check again."],
+      ["already_installing", "An update is already being installed."],
+      ["quitting", "BhayanakShare is closing, so nothing was installed."],
+      ["not_app_image", "This install is updated from the release page, not by BhayanakShare itself."],
+      ["download_failed", "Could not download the update. Are you online?"],
+      ["signature_invalid", "The update's signature did not check out, so it was not installed."],
+      ["install_failed", "Could not install the update."],
+      // Not a kind: never shown as it is, as it could be English or name a path.
+      ["No such file /home/me/x.AppImage", "Could not install the update."],
+    ];
+    for (const [kind, words] of cases) {
+      const device = await start(
+        found(
+          { type: "install", version: "0.2.0" },
+          { installUpdate: vi.fn(() => Promise.reject(kind)) },
+        ),
+      );
+      fireEvent.click(await screen.findByRole("button", { name: "Install and restart" }));
+      expect((await screen.findByRole("alert")).textContent).toBe(words);
+      expect((screen.getByRole("button", { name: "Install and restart" }) as HTMLButtonElement).disabled).toBe(false);
+      expect(device.api.installUpdate).toHaveBeenCalledTimes(1);
+      cleanup();
+    }
+  });
+
+  it("asks first when Transfers are in progress, and installs only once the user says so", async () => {
+    const device = await start(found({ type: "install", version: "0.2.0" }, { transfersInProgress: () => Promise.resolve(3) }));
+    fireEvent.click(await screen.findByRole("button", { name: "Install and restart" }));
+    expect((await screen.findByRole("alert")).textContent).toContain(
+      "3 Transfers are in progress. They stop for the restart and resume when BhayanakShare is back.",
+    );
+    expect(device.api.installUpdate).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getByRole("button", { name: "Install version 0.2.0 and restart" }));
+    expect(await screen.findByText("Installing version 0.2.0…")).toBeTruthy();
+    expect(device.api.installUpdate).toHaveBeenCalledWith("0.2.0");
+  });
+
+  it("says Transfer, not Transfers, for one in progress, and does nothing on not now", async () => {
+    const device = await start(found({ type: "install", version: "0.2.0" }, { transfersInProgress: () => Promise.resolve(1) }));
+    fireEvent.click(await screen.findByRole("button", { name: "Install and restart" }));
+    expect((await screen.findByRole("alert")).textContent).toContain("A Transfer is in progress. It stops for the restart");
+
+    fireEvent.click(screen.getByRole("button", { name: "Not now" }));
+    expect(screen.queryByRole("alert")).toBeNull();
+    expect(device.api.installUpdate).not.toHaveBeenCalled();
+    expect((screen.getByRole("button", { name: "Install and restart" }) as HTMLButtonElement).disabled).toBe(false);
+  });
+
+  it("installs without asking when how many Transfers are in progress cannot be read", async () => {
     const device = await start(
-      fakeApi({
-        pendingUpdate: () => Promise.resolve({ type: "install", version: "0.2.0" }),
-        installUpdate: vi.fn(() => Promise.reject("no space left")),
-      }),
+      found({ type: "install", version: "0.2.0" }, { transfersInProgress: () => Promise.reject(new Error("db")) }),
     );
     fireEvent.click(await screen.findByRole("button", { name: "Install and restart" }));
-    expect((await screen.findByRole("alert")).textContent).toBe("Could not install the update. no space left");
-    expect((screen.getByRole("button", { name: "Install and restart" }) as HTMLButtonElement).disabled).toBe(false);
+    await waitFor(() => expect(device.api.installUpdate).toHaveBeenCalledWith("0.2.0"));
+  });
+
+  it("is one update at a time: Update now waits while the banner's install runs", async () => {
+    const device = await start(found({ type: "install", version: "0.2.0" }, installing()));
+    await device.push({
+      type: "version_mismatch",
+      peer: PEER_ID,
+      peer_name: "Alice's Laptop",
+      peer_app_version: "9.9.9",
+      outdated: "this_device",
+    });
+    fireEvent.click(await screen.findByRole("button", { name: "Install and restart" }));
+    expect(await screen.findByText("Installing version 0.2.0…")).toBeTruthy();
+
+    // Both buttons are off, so there is no second install to fail, and one status line.
+    expect((screen.getByRole("button", { name: "Update now" }) as HTMLButtonElement).disabled).toBe(true);
+    expect((screen.getByRole("button", { name: "Install and restart" }) as HTMLButtonElement).disabled).toBe(true);
+    fireEvent.click(screen.getByRole("button", { name: "Update now" }));
+    expect(device.api.checkForUpdate).not.toHaveBeenCalled();
+    expect(screen.getAllByText("Installing version 0.2.0…")).toHaveLength(1);
+    expect(screen.queryByRole("alert")).toBeNull();
+  });
+
+  it("is one update at a time: the banner waits while Update now's install runs", async () => {
+    const device = await start(
+      found({ type: "install", version: "0.2.0" }, {
+        ...installing(),
+        checkForUpdate: vi.fn(() => Promise.resolve<UpdateAction>({ type: "install", version: "0.2.0" })),
+      }),
+    );
+    await device.push({
+      type: "version_mismatch",
+      peer: PEER_ID,
+      peer_name: "Alice's Laptop",
+      peer_app_version: "9.9.9",
+      outdated: "this_device",
+    });
+    await screen.findByRole("button", { name: "Install and restart" });
+    fireEvent.click(screen.getByRole("button", { name: "Update now" }));
+    expect(await screen.findByText("Installing version 0.2.0…")).toBeTruthy();
+    expect((screen.getByRole("button", { name: "Install and restart" }) as HTMLButtonElement).disabled).toBe(true);
     expect(device.api.installUpdate).toHaveBeenCalledTimes(1);
   });
 

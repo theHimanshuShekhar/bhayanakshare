@@ -1,20 +1,19 @@
-import type { Api, Contact } from "./api";
+import type { Contact } from "./api";
 import { peerName } from "./contacts";
 import { t } from "./i18n";
-import { UpdateStatus } from "./UpdateBanner";
-import { useUpdater } from "./updates";
 import type { VersionNotice } from "./versions";
 
 interface VersionNoticesProps {
-  api: Api;
   contacts: Contact[];
   notices: VersionNotice[];
+  /** An update is under way: "Update now" waits for it. */
+  updating: boolean;
+  onUpdateNow: () => void;
   onDismiss: (peer: string) => void;
 }
 
 /** Devices that were refused for their version, and who has to update. */
-export function VersionNotices({ api, contacts, notices, onDismiss }: VersionNoticesProps) {
-  const updater = useUpdater(api);
+export function VersionNotices({ contacts, notices, updating, onUpdateNow, onDismiss }: VersionNoticesProps) {
   return (
     <>
       {notices.map((notice) => {
@@ -24,7 +23,7 @@ export function VersionNotices({ api, contacts, notices, onDismiss }: VersionNot
           <p key={notice.peer} role="status" className="hint">
             {t(thisDevice ? "version.thisOlder" : "version.peerOlder", { name })}{" "}
             {thisDevice && (
-              <button type="button" disabled={updater.busy} onClick={() => updater.updateNow()}>
+              <button type="button" disabled={updating} onClick={onUpdateNow}>
                 {t("version.update")}
               </button>
             )}{" "}
@@ -34,7 +33,6 @@ export function VersionNotices({ api, contacts, notices, onDismiss }: VersionNot
           </p>
         );
       })}
-      {notices.length > 0 && <UpdateStatus progress={updater.progress} />}
     </>
   );
 }

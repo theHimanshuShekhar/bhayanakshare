@@ -54,6 +54,11 @@ pub enum ShellEvent {
 #[derive(Default)]
 pub struct Quitting(AtomicBool);
 
+/// Whether the user has confirmed quitting, so that the app is on its way out.
+pub fn is_quitting<R: Runtime>(app: &AppHandle<R>) -> bool {
+    app.state::<Quitting>().0.load(Ordering::SeqCst)
+}
+
 /// Glue between the tray's Visibility choices and the Visibility the Device holds.
 struct TrayVisibility<R: Runtime>(Vec<(Visibility, CheckMenuItem<R>)>);
 

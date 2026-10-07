@@ -12,14 +12,14 @@ import { SelectBox, SelectionBar } from "./SelectionBar";
 import { SendDialog } from "./SendDialog";
 import { SettingsScreen } from "./SettingsScreen";
 import { TransferList } from "./TransferList";
-import { UpdateBanner } from "./UpdateBanner";
+import { UpdateBanner, UpdateStatus } from "./UpdateBanner";
 import { VersionNotices } from "./VersionNotices";
 import { peerName, sortedContacts } from "./contacts";
 import { t, type MessageKey } from "./i18n";
 import { FIREWALL_DOCS_URL, NEARBY_WAIT_MS, applyNearby, nearbyStrangers } from "./nearby";
 import { parseShareLink, type Shared } from "./shareLink";
 import { applyEvent, baseName, fingerprint, listItems, noTransfers, pendingOffer } from "./transfers";
-import { offeredVersion } from "./updates";
+import { offeredVersion, useUpdater } from "./updates";
 import { applyVersionNotices } from "./versions";
 
 const TABS = [
@@ -71,6 +71,8 @@ export function App({ api = tauriApi }: AppProps) {
   // A newer release the shell found, and the version of it the user dismissed.
   const [update, setUpdate] = useState<UpdateAction>({ type: "none" });
   const [dismissedUpdate, setDismissedUpdate] = useState<string | null>(null);
+  // Looking for and installing an update: one at a time, whatever started it.
+  const updater = useUpdater(api);
   // Set once Home has waited long enough for a Nearby Device to show up.
   const [waited, setWaited] = useState(false);
   // A Hidden Device lists nobody Nearby, so an empty list there is no sign of a firewall.
@@ -220,14 +222,22 @@ export function App({ api = tauriApi }: AppProps) {
       </header>
       <div inert={inert}>
         {offeredVersion(update) !== dismissedUpdate && (
-          <UpdateBanner api={api} update={update} onDismiss={() => setDismissedUpdate(offeredVersion(update))} />
+          <UpdateBanner
+            api={api}
+            update={update}
+            busy={updater.busy}
+            onInstall={updater.install}
+            onDismiss={() => setDismissedUpdate(offeredVersion(update))}
+          />
         )}
         <VersionNotices
-          api={api}
           contacts={contacts}
           notices={versionNotices}
+          updating={updater.busy}
+          onUpdateNow={updater.updateNow}
           onDismiss={(peer) => dispatchVersion({ type: "dismiss_version_notice", peer })}
         />
+        <UpdateStatus updater={updater} />
       </div>
       <main inert={inert}>
         {tab === "home" && <p>{t(current.placeholder)}</p>}
