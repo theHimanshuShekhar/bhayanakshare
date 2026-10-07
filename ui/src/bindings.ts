@@ -77,6 +77,8 @@ export const commands = {
 	exportIdentity: (path: string, password: string) => __TAURI_INVOKE<null>("export_identity", { path, password }),
 	/**  Whose identity the file at `path` holds, if `password` opens it. Changes nothing. */
 	checkIdentityImport: (path: string, password: string) => __TAURI_INVOKE<IdentityOwner>("check_identity_import", { path, password }),
+	/**  How many Transfers are in progress, which a new identity stops: the count quitting asks about. */
+	transfersInProgress: () => __TAURI_INVOKE<number>("transfers_in_progress"),
 	/**
 	 *  Replaces this Device's identity with the one in the file at `path`, and starts the app again
 	 *  to take it up, as it was started from the menu or the desktop: whatever it was launched with

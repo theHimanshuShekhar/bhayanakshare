@@ -25,6 +25,8 @@ export function ImportIdentityDialog({
   const [password, setPassword] = useState("");
   // Set once the password has opened the file: whose identity it holds.
   const [incoming, setIncoming] = useState<IdentityOwner | null>(null);
+  // How many Transfers the replacement stops; read with the file's owner, for the warning.
+  const [active, setActive] = useState(0);
   const [restarting, setRestarting] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -51,7 +53,10 @@ export function ImportIdentityDialog({
     setError(null);
     setBusy(true);
     try {
-      setIncoming(await api.checkIdentityImport(path, password));
+      const owner = await api.checkIdentityImport(path, password);
+      // Only a count for the warning: not knowing it must not stop the import.
+      setActive(await api.transfersInProgress().catch(() => 0));
+      setIncoming(owner);
     } catch (e) {
       setError(identityFailure(e));
       passwordInput.current?.focus();
@@ -96,6 +101,11 @@ export function ImportIdentityDialog({
                 {t("identity.replaceId", { current: current.fingerprint, incoming: incoming.fingerprint })}
               </p>
               <p>{t("identity.replaceOld")}</p>
+              {active > 0 && (
+                <p>
+                  {active === 1 ? t("identity.replaceActiveOne") : t("identity.replaceActive", { count: active })}
+                </p>
+              )}
               <p>{t("identity.replaceRestart")}</p>
             </div>
             {error !== null && <p role="alert">{error}</p>}

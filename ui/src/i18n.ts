@@ -168,6 +168,8 @@ const en = {
   "identity.replaceId": "This Device's ID will be replaced: {current} becomes {incoming}. People who have the old one can no longer reach this Device with it.",
   "identity.replaceOld":
     "The install this file came from must not keep running with this identity. Two Devices with the same Device ID cannot both be reached. Stop or uninstall it first.",
+  "identity.replaceActiveOne": "A Transfer is in progress. It will stop and won't resume.",
+  "identity.replaceActive": "{count} Transfers are in progress. They will stop and won't resume.",
   "identity.replaceRestart": "BhayanakShare will restart. Your Contacts and Transfer History stay.",
   "identity.replaceConfirm": "Replace and restart",
   "identity.restarting": "Restarting…",

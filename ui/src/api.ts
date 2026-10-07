@@ -105,6 +105,8 @@ export interface Api {
   /** Replaces this Device's identity with the one in the file, and restarts the app. Rejects
    * with an `IdentityError`. */
   importIdentity(path: string, password: string): Promise<unknown>;
+  /** How many Transfers are in progress: the ones replacing the identity stops. */
+  transfersInProgress(): Promise<number>;
   /** Asks the user for an identity file; null if they cancel. */
   pickIdentityFile(): Promise<string | null>;
   /** Asks the user where to save an identity file, suggesting `name`; null if they cancel. */
@@ -182,6 +184,7 @@ export const tauriApi: Api = {
   exportIdentity: commands.exportIdentity,
   checkIdentityImport: commands.checkIdentityImport,
   importIdentity: commands.importIdentity,
+  transfersInProgress: commands.transfersInProgress,
   pickIdentityFile: async () => {
     const picked = await open({
       multiple: false,

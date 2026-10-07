@@ -117,6 +117,7 @@ function fakeApi(overrides: Partial<Api> = {}, initialContacts: Contact[] = []) 
       Promise.resolve({ id: FILE_ID, fingerprint: "BBBB-BBBB" }),
     ),
     importIdentity: vi.fn((_path: string, _password: string) => Promise.resolve(null)),
+    transfersInProgress: vi.fn(() => Promise.resolve(0)),
     pickIdentityFile: vi.fn(() => Promise.resolve<string | null>("/home/me/old-laptop.bhid")),
     pickIdentitySavePath: vi.fn((_name: string) => Promise.resolve<string | null>("/home/me/id.bhid")),
     pickFiles: vi.fn(() => Promise.resolve<string[] | null>(["/tmp/photo.jpg"])),
@@ -2554,6 +2555,31 @@ describe("Identity", () => {
       expect(body?.textContent).toContain("must not keep running");
       expect(document.activeElement).toBe(screen.getByRole("button", { name: "Cancel" }));
       expect(device.api.importIdentity).not.toHaveBeenCalled();
+    });
+
+    it("says how many Transfers in progress will stop, and won't resume, when there are some", async () => {
+      const device = await startImport(fakeApi({ transfersInProgress: vi.fn(() => Promise.resolve(2)) }));
+      await toConfirmation(device);
+      const warning = screen.getByRole("alertdialog", { name: "Replace this Device's identity?" });
+      expect(warning.textContent).toContain("2 Transfers are in progress. They will stop and won't resume.");
+      // Part of what the dialog is described by, like the rest of the warning.
+      const body = document.getElementById(warning.getAttribute("aria-describedby") ?? "");
+      expect(body?.textContent).toContain("2 Transfers are in progress");
+    });
+
+    it("has the singular form for one Transfer", async () => {
+      const device = await startImport(fakeApi({ transfersInProgress: vi.fn(() => Promise.resolve(1)) }));
+      await toConfirmation(device);
+      expect(screen.getByRole("alertdialog").textContent).toContain(
+        "A Transfer is in progress. It will stop and won't resume.",
+      );
+    });
+
+    it("says nothing about Transfers when none are in progress", async () => {
+      const device = await startImport();
+      await toConfirmation(device);
+      expect(device.api.transfersInProgress).toHaveBeenCalled();
+      expect(screen.getByRole("alertdialog").textContent).not.toMatch(/in progress/);
     });
 
     it("replaces the identity only when confirmed, and says it is restarting", async () => {

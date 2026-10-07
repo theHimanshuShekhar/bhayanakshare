@@ -236,19 +236,24 @@ pub fn default_autostart<R: Runtime>(app: &AppHandle<R>) {
     });
 }
 
+/// How many Transfers are in progress: the ones a clean shutdown leaves to resume.
+pub async fn in_progress(device: &Device) -> usize {
+    match device.transfers().await {
+        Ok(all) => all.iter().filter(|t| t.state.is_in_progress()).count(),
+        Err(e) => {
+            tracing::warn!("could not count the Transfers in progress: {e}");
+            0
+        }
+    }
+}
+
 /// Quit was chosen. With Transfers in progress the UI is asked to confirm first; otherwise the
 /// Device shuts down at once.
 pub fn request_quit<R: Runtime>(app: &AppHandle<R>) {
     let app = app.clone();
     tauri::async_runtime::spawn(async move {
         let active = match app.try_state::<Device>() {
-            Some(device) => match device.transfers().await {
-                Ok(all) => all.iter().filter(|t| t.state.is_in_progress()).count(),
-                Err(e) => {
-                    tracing::warn!("could not count the Transfers in progress: {e}");
-                    0
-                }
-            },
+            Some(device) => in_progress(&device).await,
             None => 0,
         };
         if active == 0 {

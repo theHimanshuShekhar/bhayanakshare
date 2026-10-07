@@ -441,6 +441,13 @@ async fn check_identity_import(path: String, password: String) -> Result<Identit
     Ok(IdentityOwner { id: id.to_string(), fingerprint: id.fingerprint() })
 }
 
+/// How many Transfers are in progress, which a new identity stops: the count quitting asks about.
+#[tauri::command]
+#[specta::specta]
+async fn transfers_in_progress(device: State<'_, Device>) -> Result<u32, String> {
+    Ok(background::in_progress(&device).await as u32)
+}
+
 /// Replaces this Device's identity with the one in the file at `path`, and starts the app again
 /// to take it up, as it was started from the menu or the desktop: whatever it was launched with
 /// (to stay in the tray, to open a link) is not repeated. Importing the Device's own identity
@@ -525,6 +532,7 @@ pub fn specta_builder<R: Runtime>() -> Builder<R> {
             clear_history,
             export_identity,
             check_identity_import,
+            transfers_in_progress,
             import_identity::<tauri::Wry>,
             events_ready
         ])
