@@ -73,6 +73,19 @@ export const commands = {
 	deleteHistoryBatch: (batchId: BatchId) => __TAURI_INVOKE<number>("delete_history_batch", { batchId }),
 	/**  Clears History of every Transfer that has ended; resolves to how many. */
 	clearHistory: () => __TAURI_INVOKE<number>("clear_history"),
+	/**  Writes this Device's identity, protected by `password`, to the file at `path`. */
+	exportIdentity: (path: string, password: string) => __TAURI_INVOKE<null>("export_identity", { path, password }),
+	/**  Whose identity the file at `path` holds, if `password` opens it. Changes nothing. */
+	checkIdentityImport: (path: string, password: string) => __TAURI_INVOKE<IdentityOwner>("check_identity_import", { path, password }),
+	/**  How many Transfers are in progress, which a new identity stops: the count quitting asks about. */
+	transfersInProgress: () => __TAURI_INVOKE<number>("transfers_in_progress"),
+	/**
+	 *  Replaces this Device's identity with the one in the file at `path`, and starts the app again
+	 *  to take it up, as it was started from the menu or the desktop: whatever it was launched with
+	 *  (to stay in the tray, to open a link) is not repeated. Importing the Device's own identity
+	 *  changes nothing and does not restart.
+	 */
+	importIdentity: (path: string, password: string) => __TAURI_INVOKE<null>("import_identity", { path, password }),
 	/**
 	 *  Not a Device command: the UI calls it once it is listening for `DeviceEvent`s, and
 	 *  receives everything the Device emitted before that, in order.
@@ -165,6 +178,35 @@ export type HistoryTransfer = {
 	 *  put. `None` for every other Transfer, which has no saved location.
 	 */
 	saved_present: boolean | null,
+};
+
+/**  What went wrong with an identity export or import, in the terms the UI words differently. */
+export type IdentityError = {
+	kind: IdentityErrorKind,
+	/**  For the kinds the UI has no wording of its own for. */
+	message: string,
+};
+
+export type IdentityErrorKind = 
+/**  The password does not open the file (or the file is damaged). */
+"wrong_password" | "not_an_identity_file" | 
+/**  The OS secret store cannot be used. */
+"store_unavailable" | 
+/**
+ *  The store may hold either key, because replacing the old one failed half-way and so did
+ *  putting it back.
+ */
+"replace_uncertain" | "other";
+
+/**
+ *  Whose identity a file holds: a Device ID and its Fingerprint, as for [`MyId`], but not this
+ *  Device's.
+ */
+export type IdentityOwner = {
+	/**  52-character base32 Device ID. */
+	id: string,
+	/**  First 8 characters, `XXXX-XXXX`. */
+	fingerprint: string,
 };
 
 /**

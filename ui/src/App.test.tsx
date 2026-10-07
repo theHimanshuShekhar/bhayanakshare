@@ -19,6 +19,8 @@ vi.mock("./QrScanner", () => ({
 afterEach(cleanup);
 
 const MY_ID = "A".repeat(52);
+/** The Device an identity file in these tests holds. */
+const FILE_ID = "B".repeat(52);
 const PEER_ID = "K3QF7XNA" + "B".repeat(44);
 const TRANSFER = "ab".repeat(16);
 const BATCH = "ba".repeat(16);
@@ -110,6 +112,14 @@ function fakeApi(overrides: Partial<Api> = {}, initialContacts: Contact[] = []) 
     deleteHistoryTransfer: vi.fn((_id: string) => Promise.resolve(null)),
     deleteHistoryBatch: vi.fn((_id: string) => Promise.resolve(null)),
     clearHistory: vi.fn(() => Promise.resolve(null)),
+    exportIdentity: vi.fn((_path: string, _password: string) => Promise.resolve(null)),
+    checkIdentityImport: vi.fn((_path: string, _password: string) =>
+      Promise.resolve({ id: FILE_ID, fingerprint: "BBBB-BBBB" }),
+    ),
+    importIdentity: vi.fn((_path: string, _password: string) => Promise.resolve(null)),
+    transfersInProgress: vi.fn(() => Promise.resolve(0)),
+    pickIdentityFile: vi.fn(() => Promise.resolve<string | null>("/home/me/old-laptop.bhid")),
+    pickIdentitySavePath: vi.fn((_name: string) => Promise.resolve<string | null>("/home/me/id.bhid")),
     pickFiles: vi.fn(() => Promise.resolve<string[] | null>(["/tmp/photo.jpg"])),
     pickFolder: vi.fn(() => Promise.resolve<string | null>("/mnt/big")),
     showInFolder: vi.fn(() => Promise.resolve()),
@@ -2379,5 +2389,272 @@ describe("version mismatches", () => {
     await refused(device, "this_device");
     fireEvent.click(screen.getByRole("button", { name: "Dismiss" }));
     expect(screen.queryByRole("button", { name: "Update now" })).toBeNull();
+  });
+});
+
+describe("Identity", () => {
+  const PASSWORD = "correct horse";
+  const fail = (kind: string, message = "details") => Promise.reject({ kind, message });
+
+  const open = async (device = fakeApi()) => {
+    await start(device);
+    fireEvent.click(screen.getByRole("button", { name: "Settings" }));
+    await screen.findByRole("heading", { name: "Identity" });
+    return device;
+  };
+  const typeInto = (label: string, value: string) =>
+    fireEvent.change(screen.getByLabelText(label), { target: { value } });
+  /** Clicks as a person does, which leaves the button focused (a bare click event does not). */
+  const press = (name: string) => {
+    const button = screen.getByRole("button", { name });
+    button.focus();
+    fireEvent.click(button);
+  };
+  const startExport = async (device = fakeApi()) => {
+    await open(device);
+    await waitFor(() =>
+      expect((screen.getByRole("button", { name: "Export identity…" }) as HTMLButtonElement).disabled).toBe(false),
+    );
+    press("Export identity…");
+    await screen.findByRole("dialog", { name: "Export identity" });
+    return device;
+  };
+  const fillExport = (password: string, again = password) => {
+    typeInto("Password", password);
+    typeInto("Type the password again", again);
+    fireEvent.click(screen.getByRole("button", { name: "Save as…" }));
+  };
+  const startImport = async (device = fakeApi()) => {
+    await open(device);
+    await waitFor(() =>
+      expect((screen.getByRole("button", { name: "Import identity…" }) as HTMLButtonElement).disabled).toBe(false),
+    );
+    press("Import identity…");
+    await screen.findByLabelText("Password of this file");
+    return device;
+  };
+  /** Through the password step, to the confirmation. */
+  const toConfirmation = async (device: ReturnType<typeof fakeApi>) => {
+    typeInto("Password of this file", PASSWORD);
+    fireEvent.click(screen.getByRole("button", { name: "Continue" }));
+    await screen.findByRole("alertdialog", { name: "Replace this Device's identity?" });
+    return device;
+  };
+
+  it("is a section of Settings with this Device's Fingerprint and the two actions", async () => {
+    await open();
+    const section = screen.getByRole("region", { name: "Identity" });
+    expect(await within(section).findByText("AAAA-AAAA")).toBeTruthy();
+    expect(within(section).getByRole("button", { name: "Export identity…" })).toBeTruthy();
+    expect(within(section).getByRole("button", { name: "Import identity…" })).toBeTruthy();
+  });
+
+  describe("export", () => {
+    it("asks for the password twice, and refuses a short one before any dialog or file", async () => {
+      const device = await startExport();
+      fillExport("short");
+      expect((await screen.findByRole("alert")).textContent).toBe("Use at least 8 characters.");
+      expect(device.api.pickIdentitySavePath).not.toHaveBeenCalled();
+      expect(device.api.exportIdentity).not.toHaveBeenCalled();
+    });
+
+    it("refuses two passwords that differ", async () => {
+      const device = await startExport();
+      fillExport(PASSWORD, PASSWORD + "!");
+      expect((await screen.findByRole("alert")).textContent).toBe("The two passwords are not the same.");
+      expect(device.api.pickIdentitySavePath).not.toHaveBeenCalled();
+      expect(device.api.exportIdentity).not.toHaveBeenCalled();
+    });
+
+    it("labels both fields, and keeps them out of sight", async () => {
+      await startExport();
+      for (const label of ["Password", "Type the password again"]) {
+        expect(screen.getByLabelText(label).getAttribute("type")).toBe("password");
+      }
+      // The first field has focus, so typing can start at once.
+      expect(document.activeElement).toBe(screen.getByLabelText("Password"));
+    });
+
+    it("suggests a file name with the Fingerprint, writes the file there and says where", async () => {
+      const device = await startExport();
+      fillExport(PASSWORD);
+      await waitFor(() =>
+        expect(device.api.pickIdentitySavePath).toHaveBeenCalledWith("bhayanakshare-identity-AAAA-AAAA.bhid"),
+      );
+      await waitFor(() => expect(device.api.exportIdentity).toHaveBeenCalledWith("/home/me/id.bhid", PASSWORD));
+      expect((await screen.findByRole("status")).textContent).toContain("Saved to /home/me/id.bhid");
+      const close = screen.getByRole("button", { name: "Close" });
+      expect(document.activeElement).toBe(close);
+      // The password does not outlive its use.
+      expect(screen.queryByLabelText("Password")).toBeNull();
+      fireEvent.click(close);
+      expect(screen.queryByRole("dialog")).toBeNull();
+      expect(document.activeElement).toBe(screen.getByRole("button", { name: "Export identity…" }));
+    });
+
+    it("writes nothing when the save dialog is cancelled, and stays open", async () => {
+      const device = await startExport(
+        fakeApi({ pickIdentitySavePath: vi.fn(() => Promise.resolve<string | null>(null)) }),
+      );
+      fillExport(PASSWORD);
+      await waitFor(() => expect(device.api.pickIdentitySavePath).toHaveBeenCalled());
+      expect(device.api.exportIdentity).not.toHaveBeenCalled();
+      expect(screen.getByRole("dialog", { name: "Export identity" })).toBeTruthy();
+      expect(screen.queryByRole("alert")).toBeNull();
+    });
+
+    it("shows a failure to write in the dialog", async () => {
+      await startExport(fakeApi({ exportIdentity: vi.fn(() => fail("other", "writing /ro/id.bhid: read-only")) }));
+      fillExport(PASSWORD);
+      expect((await screen.findByRole("alert")).textContent).toBe(
+        "Something went wrong. writing /ro/id.bhid: read-only",
+      );
+    });
+
+    it("is closed by Escape and Cancel, which hand focus back", async () => {
+      await startExport();
+      fireEvent.keyDown(screen.getByLabelText("Password"), { key: "Escape" });
+      expect(screen.queryByRole("dialog")).toBeNull();
+      expect(document.activeElement).toBe(screen.getByRole("button", { name: "Export identity…" }));
+      press("Export identity…");
+      fireEvent.click(await screen.findByRole("button", { name: "Cancel" }));
+      expect(screen.queryByRole("dialog")).toBeNull();
+    });
+  });
+
+  describe("import", () => {
+    it("does nothing when no file is chosen", async () => {
+      const device = await open(fakeApi({ pickIdentityFile: vi.fn(() => Promise.resolve<string | null>(null)) }));
+      await waitFor(() =>
+        expect((screen.getByRole("button", { name: "Import identity…" }) as HTMLButtonElement).disabled).toBe(false),
+      );
+      fireEvent.click(screen.getByRole("button", { name: "Import identity…" }));
+      await waitFor(() => expect(device.api.pickIdentityFile).toHaveBeenCalled());
+      expect(screen.queryByRole("dialog")).toBeNull();
+    });
+
+    it("names the file and asks for its password, with focus on the field", async () => {
+      await startImport();
+      expect(screen.getByText("File: old-laptop.bhid")).toBeTruthy();
+      expect(screen.getByLabelText("Password of this file").getAttribute("type")).toBe("password");
+      expect(document.activeElement).toBe(screen.getByLabelText("Password of this file"));
+    });
+
+    it("warns before replacing, showing the Fingerprint being replaced, and changes nothing yet", async () => {
+      const device = await startImport();
+      await toConfirmation(device);
+      expect(device.api.checkIdentityImport).toHaveBeenCalledWith("/home/me/old-laptop.bhid", PASSWORD);
+      const warning = screen.getByRole("alertdialog", { name: "Replace this Device's identity?" });
+      // The two Fingerprints, so the user can see what is replaced by what.
+      expect(warning.textContent).toContain("AAAA-AAAA becomes BBBB-BBBB");
+      expect(warning.textContent).toContain("must not keep running with this identity");
+      expect(warning.textContent).toContain("BhayanakShare will restart");
+      expect(warning.textContent).toContain("Contacts and Transfer History stay");
+      // The warning is what the dialog is described by, and the safe answer has focus.
+      const body = document.getElementById(warning.getAttribute("aria-describedby") ?? "");
+      expect(body?.textContent).toContain("must not keep running");
+      expect(document.activeElement).toBe(screen.getByRole("button", { name: "Cancel" }));
+      expect(device.api.importIdentity).not.toHaveBeenCalled();
+    });
+
+    it("says how many Transfers in progress will stop, and won't resume, when there are some", async () => {
+      const device = await startImport(fakeApi({ transfersInProgress: vi.fn(() => Promise.resolve(2)) }));
+      await toConfirmation(device);
+      const warning = screen.getByRole("alertdialog", { name: "Replace this Device's identity?" });
+      expect(warning.textContent).toContain("2 Transfers are in progress. They will stop and won't resume.");
+      // Part of what the dialog is described by, like the rest of the warning.
+      const body = document.getElementById(warning.getAttribute("aria-describedby") ?? "");
+      expect(body?.textContent).toContain("2 Transfers are in progress");
+    });
+
+    it("has the singular form for one Transfer", async () => {
+      const device = await startImport(fakeApi({ transfersInProgress: vi.fn(() => Promise.resolve(1)) }));
+      await toConfirmation(device);
+      expect(screen.getByRole("alertdialog").textContent).toContain(
+        "A Transfer is in progress. It will stop and won't resume.",
+      );
+    });
+
+    it("says nothing about Transfers when none are in progress", async () => {
+      const device = await startImport();
+      await toConfirmation(device);
+      expect(device.api.transfersInProgress).toHaveBeenCalled();
+      expect(screen.getByRole("alertdialog").textContent).not.toMatch(/in progress/);
+    });
+
+    it("replaces the identity only when confirmed, and says it is restarting", async () => {
+      const device = await startImport();
+      await toConfirmation(device);
+      fireEvent.click(screen.getByRole("button", { name: "Replace and restart" }));
+      await waitFor(() =>
+        expect(device.api.importIdentity).toHaveBeenCalledWith("/home/me/old-laptop.bhid", PASSWORD),
+      );
+      expect((await screen.findByRole("status")).textContent).toBe("Restarting…");
+      expect((screen.getByRole("button", { name: "Replace and restart" }) as HTMLButtonElement).disabled).toBe(true);
+    });
+
+    it("leaves the identity alone when cancelled at the warning", async () => {
+      const device = await startImport();
+      await toConfirmation(device);
+      fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+      expect(screen.queryByRole("alertdialog")).toBeNull();
+      expect(device.api.importIdentity).not.toHaveBeenCalled();
+      expect(document.activeElement).toBe(screen.getByRole("button", { name: "Import identity…" }));
+    });
+
+    it("shows a wrong password in the dialog and goes no further", async () => {
+      const device = await startImport(
+        fakeApi({ checkIdentityImport: vi.fn(() => fail("wrong_password")) }),
+      );
+      typeInto("Password of this file", "nope");
+      fireEvent.click(screen.getByRole("button", { name: "Continue" }));
+      expect((await screen.findByRole("alert")).textContent).toBe("Wrong password, or the file is damaged.");
+      expect(screen.queryByRole("alertdialog")).toBeNull();
+      expect(device.api.importIdentity).not.toHaveBeenCalled();
+      // Back in the field, to try again.
+      await waitFor(() => expect(document.activeElement).toBe(screen.getByLabelText("Password of this file")));
+    });
+
+    it("says when the file is not an identity file", async () => {
+      await startImport(fakeApi({ checkIdentityImport: vi.fn(() => fail("not_an_identity_file")) }));
+      typeInto("Password of this file", PASSWORD);
+      fireEvent.click(screen.getByRole("button", { name: "Continue" }));
+      expect((await screen.findByRole("alert")).textContent).toBe("That is not a BhayanakShare identity file.");
+    });
+
+    it("says when the secret store cannot take the key, at the warning", async () => {
+      const device = await startImport(
+        fakeApi({ importIdentity: vi.fn(() => fail("store_unavailable", "the keychain is locked")) }),
+      );
+      await toConfirmation(device);
+      fireEvent.click(screen.getByRole("button", { name: "Replace and restart" }));
+      expect((await screen.findByRole("alert")).textContent).toBe(
+        "The secret key could not be stored. the keychain is locked",
+      );
+      expect(screen.queryByText("Restarting…")).toBeNull();
+      // Nothing was replaced, so the user may try again or cancel.
+      expect((screen.getByRole("button", { name: "Replace and restart" }) as HTMLButtonElement).disabled).toBe(false);
+    });
+
+    it("says so when replacing the key failed half-way and the identity may have changed", async () => {
+      const device = await startImport(
+        fakeApi({ importIdentity: vi.fn(() => fail("replace_uncertain")) }),
+      );
+      await toConfirmation(device);
+      fireEvent.click(screen.getByRole("button", { name: "Replace and restart" }));
+      expect((await screen.findByRole("alert")).textContent).toContain("identity may have changed");
+      expect(screen.queryByText("Restarting…")).toBeNull();
+    });
+
+    it("does not warn about replacing when the file holds this Device's own identity", async () => {
+      const device = await startImport(
+        fakeApi({ checkIdentityImport: vi.fn(() => Promise.resolve({ id: MY_ID, fingerprint: "AAAA-AAAA" })) }),
+      );
+      typeInto("Password of this file", PASSWORD);
+      fireEvent.click(screen.getByRole("button", { name: "Continue" }));
+      expect((await screen.findByRole("status")).textContent).toContain("Nothing needs to change");
+      expect(screen.queryByRole("alertdialog")).toBeNull();
+      expect(device.api.importIdentity).not.toHaveBeenCalled();
+    });
   });
 });

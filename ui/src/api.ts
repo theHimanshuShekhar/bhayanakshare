@@ -3,8 +3,9 @@
 // `Api`, so tests can hand the UI a stand-in.
 
 import { getCurrent, onOpenUrl } from "@tauri-apps/plugin-deep-link";
-import { open } from "@tauri-apps/plugin-dialog";
+import { open, save } from "@tauri-apps/plugin-dialog";
 import { openUrl, revealItemInDir } from "@tauri-apps/plugin-opener";
+import { t } from "./i18n";
 import {
   commands,
   events,
@@ -12,6 +13,8 @@ import {
   type Contact,
   type DeviceEvent,
   type HistoryEntry,
+  type IdentityError,
+  type IdentityOwner,
   type MyId,
   type Role,
   type ShellEvent,
@@ -25,6 +28,8 @@ export type {
   Contact,
   DeviceEvent,
   HistoryEntry,
+  IdentityError,
+  IdentityOwner,
   MyId,
   Role,
   ShellEvent,
@@ -91,6 +96,21 @@ export interface Api {
   deleteHistoryBatch(id: BatchId): Promise<unknown>;
   /** Deletes every Transfer that has ended from History; the ones still going stay. */
   clearHistory(): Promise<unknown>;
+  /** Writes this Device's identity, protected by `password`, to the file at `path`. Rejects with
+   * an `IdentityError`. */
+  exportIdentity(path: string, password: string): Promise<unknown>;
+  /** Whose identity the file at `path` holds, if `password` opens it. Changes nothing. Rejects
+   * with an `IdentityError`. */
+  checkIdentityImport(path: string, password: string): Promise<IdentityOwner>;
+  /** Replaces this Device's identity with the one in the file, and restarts the app. Rejects
+   * with an `IdentityError`. */
+  importIdentity(path: string, password: string): Promise<unknown>;
+  /** How many Transfers are in progress: the ones replacing the identity stops. */
+  transfersInProgress(): Promise<number>;
+  /** Asks the user for an identity file; null if they cancel. */
+  pickIdentityFile(): Promise<string | null>;
+  /** Asks the user where to save an identity file, suggesting `name`; null if they cancel. */
+  pickIdentitySavePath(name: string): Promise<string | null>;
   /** Asks the user for one or more files; null if they cancel. */
   pickFiles(): Promise<string[] | null>;
   /** Asks the user for a folder; null if they cancel. */
@@ -161,6 +181,23 @@ export const tauriApi: Api = {
   deleteHistoryTransfer: commands.deleteHistoryTransfer,
   deleteHistoryBatch: commands.deleteHistoryBatch,
   clearHistory: commands.clearHistory,
+  exportIdentity: commands.exportIdentity,
+  checkIdentityImport: commands.checkIdentityImport,
+  importIdentity: commands.importIdentity,
+  transfersInProgress: commands.transfersInProgress,
+  pickIdentityFile: async () => {
+    const picked = await open({
+      multiple: false,
+      directory: false,
+      filters: [
+        { name: t("identity.fileType"), extensions: ["bhid"] },
+        { name: t("identity.fileTypeAll"), extensions: ["*"] },
+      ],
+    });
+    return typeof picked === "string" ? picked : null;
+  },
+  pickIdentitySavePath: (name) =>
+    save({ defaultPath: name, filters: [{ name: t("identity.fileType"), extensions: ["bhid"] }] }),
   pickFiles: async () => {
     const picked = await open({ multiple: true, directory: false });
     return Array.isArray(picked) && picked.length > 0 ? picked : null;

@@ -1,15 +1,15 @@
 //! Device identity: the Device ID, its Fingerprint, and where the secret key comes from.
 
-use std::{
-    fmt,
-    io::{self, Write},
-    path::{Path, PathBuf},
-    str::FromStr,
-};
+use std::{fmt, path::PathBuf, str::FromStr};
 
 use data_encoding::BASE32_NOPAD;
 use iroh::{EndpointId, SecretKey};
 use serde::{Serialize, Serializer};
+
+use crate::{
+    keyfile,
+    keystore::{self, KeyError, OsSecretStore},
+};
 
 /// Length of a Device ID in characters (32 bytes as unpadded base32).
 pub const DEVICE_ID_LEN: usize = 52;
@@ -89,72 +89,33 @@ impl Serialize for DeviceId {
 pub enum KeySource {
     /// A file holding the 32 raw key bytes, created with mode 0600 if missing.
     File(PathBuf),
+    /// The OS secret store (Secret Service on Linux, Keychain on macOS, Credential Manager on
+    /// Windows), or this file where there is none. See [`crate::keystore`] for how the two are
+    /// kept from ever giving a Device two identities.
+    OsStore { fallback: PathBuf },
 }
 
 impl KeySource {
-    pub(crate) fn load_or_create(&self) -> io::Result<SecretKey> {
+    pub(crate) fn load_or_create(&self) -> Result<SecretKey, KeyError> {
         match self {
-            Self::File(path) => load_or_create_key_file(path),
+            Self::File(path) => keyfile::load_or_create(path),
+            Self::OsStore { fallback } => keystore::load_or_create(&OsSecretStore, fallback),
         }
     }
-}
 
-fn load_or_create_key_file(path: &Path) -> io::Result<SecretKey> {
-    match std::fs::read(path) {
-        Ok(bytes) => {
-            let key = SecretKey::try_from(bytes.as_slice()).map_err(|_| {
-                io::Error::new(io::ErrorKind::InvalidData, "secret key file is not 32 bytes")
-            })?;
-            restrict_permissions(path)?;
-            Ok(key)
+    /// Makes `key` the key the next start loads, where the current one is kept.
+    pub(crate) fn replace(&self, key: &SecretKey) -> Result<(), KeyError> {
+        match self {
+            Self::File(path) => Ok(keyfile::write_replacing(path, &key.to_bytes())?),
+            Self::OsStore { fallback } => keystore::replace(&OsSecretStore, fallback, key),
         }
-        Err(e) if e.kind() == io::ErrorKind::NotFound => {
-            let key = SecretKey::generate();
-            write_new_key_file(path, &key.to_bytes())?;
-            Ok(key)
-        }
-        Err(e) => Err(e),
     }
-}
-
-/// Writes through a private temp file and links it into place, so the key file is never
-/// visible half-written or with wider permissions, and an existing key is never replaced.
-fn write_new_key_file(path: &Path, bytes: &[u8; 32]) -> io::Result<()> {
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
-    let tmp = path.with_extension("tmp");
-    let _ = std::fs::remove_file(&tmp);
-    let mut opts = std::fs::OpenOptions::new();
-    opts.write(true).create_new(true);
-    #[cfg(unix)]
-    std::os::unix::fs::OpenOptionsExt::mode(&mut opts, 0o600);
-    let mut file = opts.open(&tmp)?;
-    file.write_all(bytes)?;
-    file.sync_all()?;
-    let linked = std::fs::hard_link(&tmp, path);
-    std::fs::remove_file(&tmp)?;
-    linked
-}
-
-#[cfg(unix)]
-fn restrict_permissions(path: &Path) -> io::Result<()> {
-    use std::os::unix::fs::PermissionsExt;
-    let mode = std::fs::metadata(path)?.permissions().mode();
-    if mode & 0o077 != 0 {
-        tracing::warn!("secret key file was readable by others; restricting it to 0600");
-        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))?;
-    }
-    Ok(())
-}
-
-#[cfg(not(unix))]
-fn restrict_permissions(_path: &Path) -> io::Result<()> {
-    Ok(())
 }
 
 #[cfg(test)]
 mod tests {
+    use std::io;
+
     use super::*;
 
     fn id_from(bytes: [u8; 32]) -> DeviceId {
@@ -224,6 +185,6 @@ mod tests {
         let path = dir.path().join("secret.key");
         std::fs::write(&path, b"short").unwrap();
         let err = KeySource::File(path).load_or_create().unwrap_err();
-        assert_eq!(err.kind(), io::ErrorKind::InvalidData);
+        assert!(matches!(err, KeyError::Io(e) if e.kind() == io::ErrorKind::InvalidData));
     }
 }

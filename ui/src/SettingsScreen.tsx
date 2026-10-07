@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import type { Api, Visibility } from "./api";
 import { t, type MessageKey } from "./i18n";
+import { IdentitySettings } from "./IdentitySettings";
 
 const OPTIONS = [
   { value: "everyone", label: "visibility.everyone", hint: "visibility.everyoneHint" },
@@ -8,7 +9,7 @@ const OPTIONS = [
   { value: "hidden", label: "visibility.hidden", hint: "visibility.hiddenHint" },
 ] as const satisfies readonly { value: Visibility; label: MessageKey; hint: MessageKey }[];
 
-/** The Settings tab: who can see this Device as a Nearby Device, and start at login. */
+/** The Settings tab: who can see this Device as a Nearby Device, start at login, and Identity. */
 export function SettingsScreen({ api }: { api: Api }) {
   // null until the setting has been read; nothing is shown selected before then.
   const [visibility, setVisibility] = useState<Visibility | null>(null);
@@ -95,6 +96,7 @@ export function SettingsScreen({ api }: { api: Api }) {
         </span>
       </p>
       {autostartError !== null && <p role="alert">{autostartError}</p>}
+      <IdentitySettings api={api} />
     </section>
   );
 }

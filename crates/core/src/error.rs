@@ -6,6 +6,8 @@ use std::path::PathBuf;
 use crate::{
     db::DbError,
     identity::DeviceId,
+    identity_file::IdentityFileError,
+    keystore::KeyError,
     store::StoreError,
     transfer::{BatchId, TransferId},
 };
@@ -53,6 +55,12 @@ pub enum Error {
     EmptyDeviceName,
     #[error("the Device is shutting down")]
     ShuttingDown,
+    /// Reading or storing the secret key.
+    #[error(transparent)]
+    Key(#[from] KeyError),
+    /// Sealing or opening an identity export.
+    #[error(transparent)]
+    IdentityFile(#[from] IdentityFileError),
     #[error("{context}: {source}")]
     Io { context: String, source: std::io::Error },
     #[error(transparent)]

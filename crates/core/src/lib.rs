@@ -15,6 +15,9 @@ mod fsmove;
 mod gate;
 mod history;
 mod identity;
+mod identity_file;
+mod keyfile;
+mod keystore;
 pub mod manifest;
 mod names;
 pub mod protocol;
@@ -39,6 +42,8 @@ pub use event::{
 };
 pub use history::{HistoryEntry, HistoryQuery, HistoryTransfer};
 pub use identity::{DEVICE_ID_LEN, DeviceId, DeviceIdError, KeySource};
+pub use identity_file::IdentityFileError;
+pub use keystore::KeyError;
 pub use names::{NameError, validate_file_name};
 pub use receiver::INCOMING_DIR;
 pub use space::{FreeSpace, SpaceCheck, SystemFreeSpace};
