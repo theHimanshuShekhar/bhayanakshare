@@ -14,6 +14,7 @@ import { RemoveContactDialog } from "./RemoveContactDialog";
 import { SelectBox, SelectionBar } from "./SelectionBar";
 import { SendDialog } from "./SendDialog";
 import { SettingsScreen } from "./SettingsScreen";
+import { TileState, tileStateId } from "./TileState";
 import { TransferList } from "./TransferList";
 import { UpdateBanner, UpdateStatus } from "./UpdateBanner";
 import { VersionNotices } from "./VersionNotices";
@@ -311,17 +312,17 @@ function Screens({ api }: { api: Api }) {
                         type="button"
                         className="tile"
                         aria-label={t("home.sendToContact", { name })}
-                        aria-describedby={`tile-${c.id}-state`}
+                        aria-describedby={tileStateId(c.id)}
                         onClick={() => setSending({ to: c.id, name })}
                       >
                         <strong>{name}</strong>
-                        {/* What the tile says besides the name, which the name label leaves out. */}
-                        <span id={`tile-${c.id}-state`} className="tile-state">
-                          <span className="badge">{t("contacts.badge")}</span>
-                          <span className="note">{fingerprint(c.id)}</span>
-                          {here && <span className="note">{t("home.nearby")}</span>}
-                          {picked && <span className="note">{t("selection.selected")}</span>}
-                        </span>
+                        <TileState
+                          deviceId={c.id}
+                          badge
+                          print={fingerprint(c.id)}
+                          nearby={here !== undefined}
+                          picked={picked}
+                        />
                       </button>
                       <SelectBox name={name} checked={picked} onChange={() => toggle(c.id)} />
                     </div>
@@ -336,15 +337,17 @@ function Screens({ api }: { api: Api }) {
                         type="button"
                         className="tile"
                         aria-label={t("home.sendToNearby", { name: label })}
-                        aria-describedby={`tile-${d.id}-state`}
+                        aria-describedby={tileStateId(d.id)}
                         onClick={() => setSending({ to: d.id, name: label })}
                       >
                         <strong>{d.name ?? fingerprint(d.id)}</strong>
-                        <span id={`tile-${d.id}-state`} className="tile-state">
-                          {d.name !== null && <span className="note">{fingerprint(d.id)}</span>}
-                          <span className="note">{t("home.nearby")}</span>
-                          {picked && <span className="note">{t("selection.selected")}</span>}
-                        </span>
+                        <TileState
+                          deviceId={d.id}
+                          badge={false}
+                          print={d.name !== null ? fingerprint(d.id) : null}
+                          nearby
+                          picked={picked}
+                        />
                       </button>
                       <button
                         type="button"
