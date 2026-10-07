@@ -298,9 +298,7 @@ function Screens({ api }: { api: Api }) {
               </p>
             )}
             <section aria-labelledby="devices-heading">
-              <h2 id="devices-heading" tabIndex={-1}>
-                {t("home.devices")}
-              </h2>
+              <h2 id="devices-heading">{t("home.devices")}</h2>
               <div className="tiles">
                 {sortedContacts(contacts).map((c) => {
                   // A Contact that is Nearby shows what it announces until it has a name here.
@@ -372,12 +370,9 @@ function Screens({ api }: { api: Api }) {
                   api={api}
                   ids={chosen}
                   files={queued}
-                  // The bar goes with the selection, and the button pressed with it: focus is
-                  // given to the heading of what comes next, so it is not lost to the page.
-                  onClear={() => {
-                    focusHeading("devices-heading");
-                    setSelected([]);
-                  }}
+                  onClear={() => setSelected([])}
+                  // The bar goes with the selection and the button pressed with it: what was
+                  // sent is what is looked at next, so that is where focus goes.
                   onSent={() => {
                     focusHeading("transfers-heading");
                     setSelected([]);
