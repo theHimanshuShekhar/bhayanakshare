@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useRef, useState } from "react";
 import type { Api, Contact } from "./api";
 import { contactName } from "./contacts";
 import { t } from "./i18n";
@@ -22,9 +22,6 @@ export function RemoveContactDialog({
   const keep = useRef<HTMLButtonElement>(null);
   const name = contactName(contact) ?? fingerprint(contact.id);
 
-  // The safe answer starts focused, so Enter cannot remove a Contact by accident.
-  useEffect(() => keep.current?.focus(), []);
-
   const remove = async () => {
     setError(null);
     setBusy(true);
@@ -40,7 +37,14 @@ export function RemoveContactDialog({
   };
 
   return (
-    <Sheet role="alertdialog" labelledBy="remove-heading" describedBy="remove-body" onEscape={onClose}>
+    <Sheet
+      role="alertdialog"
+      labelledBy="remove-heading"
+      describedBy="remove-body"
+      onEscape={onClose}
+      // The safe answer starts focused, so Enter cannot remove a Contact by accident.
+      initialFocus={keep}
+    >
       <h2 id="remove-heading">{t("removeContact.heading", { name })}</h2>
       <p id="remove-body">{t("removeContact.body")}</p>
       {error !== null && <p role="alert">{error}</p>}

@@ -22,8 +22,22 @@ function Countdown({ expiresAt }: { expiresAt: number }) {
 
 const reasonOf = (e: unknown) => (e instanceof Error ? e.message : String(e));
 
-/** The Receiver's view of an Offer: who, what, how big and where it will go. */
-export function OfferSheet({
+/**
+ * The Receiver's view of an Offer: who, what, how big and where it will go. It is one sheet for
+ * as long as there are Offers to answer: what is in it is made again for each (so each starts
+ * without an answer, a folder or an error of the last), but the sheet is not, so the focus it
+ * gives back is to where it was before the first Offer, not to the last one's heading, which is
+ * gone by then.
+ */
+export function OfferSheet(props: { api: Api; offer: TransferView; contacts: Contact[] }) {
+  return (
+    <Sheet labelledBy="offer-heading">
+      <Offer key={props.offer.id} {...props} />
+    </Sheet>
+  );
+}
+
+function Offer({
   api,
   offer,
   contacts,
@@ -33,8 +47,8 @@ export function OfferSheet({
   contacts: Contact[];
 }) {
   const [error, setError] = useState<string | null>(null);
-  // The folder chosen for this Offer only; null means the save folder. The sheet is keyed
-  // by Offer, so each Offer starts without one.
+  // The folder chosen for this Offer only; null means the save folder. This is keyed by Offer,
+  // so each Offer starts without one.
   const [folder, setFolder] = useState<string | null>(null);
   const [space, setSpace] = useState<SpaceCheck | null>(null);
   const [folderError, setFolderError] = useState<string | null>(null);
@@ -82,7 +96,7 @@ export function OfferSheet({
     );
 
   return (
-    <Sheet labelledBy="offer-heading">
+    <>
       <h2 id="offer-heading" tabIndex={-1} ref={heading}>
         {t(isText ? "offer.textHeading" : "offer.heading")}
       </h2>
@@ -158,6 +172,6 @@ export function OfferSheet({
           {t("offer.decline")}
         </button>
       </div>
-    </Sheet>
+    </>
   );
 }

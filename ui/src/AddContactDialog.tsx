@@ -115,7 +115,11 @@ export function AddContactDialog({
   };
 
   return (
-    <Sheet labelledBy="add-contact-heading" onEscape={onClose}>
+    <Sheet
+      labelledBy="add-contact-heading"
+      onEscape={onClose}
+      initialFocus={checking ? shownFingerprint : idInput}
+    >
       <h2 id="add-contact-heading">
         {checking ? t("addContact.checkHeading") : t("addContact.heading")}
       </h2>

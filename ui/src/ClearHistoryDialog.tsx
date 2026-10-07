@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useRef, useState } from "react";
 import type { Api } from "./api";
 import { t } from "./i18n";
 import { Sheet } from "./Sheet";
@@ -20,9 +20,6 @@ export function ClearHistoryDialog({
   const [error, setError] = useState<string | null>(null);
   const keep = useRef<HTMLButtonElement>(null);
 
-  // The safe answer starts focused, so Enter cannot clear History by accident.
-  useEffect(() => keep.current?.focus(), []);
-
   const clear = async () => {
     setError(null);
     setBusy(true);
@@ -43,6 +40,8 @@ export function ClearHistoryDialog({
       labelledBy="clear-history-heading"
       describedBy="clear-history-body"
       onEscape={onClose}
+      // The safe answer starts focused, so Enter cannot clear History by accident.
+      initialFocus={keep}
     >
       <h2 id="clear-history-heading">{t("history.clearHeading")}</h2>
       <p id="clear-history-body">{t("history.clearBody")}</p>

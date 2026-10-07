@@ -302,14 +302,37 @@ describe("keyboard: when the control that has focus goes", () => {
     expect(document.activeElement).toBe(screen.getByRole("heading", { name: "Contacts" }));
   });
 
-  it("leaves focus alone when the user clicked away from the page's controls", async () => {
+  it("leaves focus alone when the control was clicked with the mouse and then goes", async () => {
     const { user, device } = await start();
     await row(device, 1, "sender", { kind: "offered" });
-    await tabTo(user, await screen.findByRole("button", { name: "Cancel photo.jpg" }));
-    await user.pointer({ target: document.body, keys: "[MouseLeft]" });
-    (document.activeElement as HTMLElement).blur();
+    const cancel = await screen.findByRole("button", { name: "Cancel photo.jpg" });
+    await user.click(cancel);
+    expect(device.api.cancelTransfer).toHaveBeenCalled();
     await row(device, 1, "sender", { kind: "cancelled", by: "sender" });
+    expect(cancel.isConnected).toBe(false);
     expect(document.activeElement).toBe(document.body);
+  });
+
+  it("does the same for a Delete in History that was clicked", async () => {
+    const device = fakeApi({}, contacts());
+    device.setHistory([{ kind: "transfer", transfer: { record: record(), saved_present: null } }]);
+    const { user } = await start(device);
+    await user.click(button("History"));
+    const remove = await screen.findByRole("button", { name: /^Delete .* from History$/ });
+    device.setHistory([]);
+    await user.click(remove);
+    await waitFor(() => expect(remove.isConnected).toBe(false));
+    expect(document.activeElement).toBe(document.body);
+  });
+
+  it("still catches focus when the keyboard is used after a click", async () => {
+    const { user, device } = await start();
+    await row(device, 1, "sender", { kind: "offered" });
+    await user.click(screen.getByRole("heading", { name: "Transfers" }));
+    await tabTo(user, await screen.findByRole("button", { name: "Cancel photo.jpg" }));
+    await user.keyboard("{Enter}");
+    await row(device, 1, "sender", { kind: "cancelled", by: "sender" });
+    expect(document.activeElement).toBe(screen.getByRole("heading", { name: "Transfers" }));
   });
 });
 
@@ -403,6 +426,80 @@ describe("keyboard: dialogs", () => {
     const offer = await screen.findByRole("dialog", { name: "Incoming files" });
     await expectTrapped(user, offer);
     expect(send.contains(document.activeElement)).toBe(false);
+  });
+});
+
+describe("keyboard: a sheet's first focus", () => {
+  /** What took focus, in order, while `open` runs, among what is inside `inside`. */
+  async function focusedWhile(open: () => unknown, inside: string) {
+    const seen: string[] = [];
+    const record = (e: FocusEvent) => {
+      const el = e.target as HTMLElement;
+      if (el.closest(inside)) seen.push(el.textContent || el.id || el.tagName);
+    };
+    document.addEventListener("focusin", record);
+    try {
+      await open();
+    } finally {
+      document.removeEventListener("focusin", record);
+    }
+    return seen;
+  }
+
+  it("lands on the safe answer of Remove Contact, never passing the destructive one", async () => {
+    const { user } = await start();
+    await user.click(button("Contacts"));
+    const remove = await screen.findByRole("button", { name: "Remove Mum from Contacts" });
+    const seen = await focusedWhile(() => user.click(remove), "[role=alertdialog]");
+    expect(seen).toEqual(["Keep"]);
+  });
+
+  it("lands on the safe answer of Clear History and of Quit, the same way", async () => {
+    const { user, device } = await start();
+    await user.click(button("History"));
+    const clear = await screen.findByRole("button", { name: "Clear History…" });
+    expect(await focusedWhile(() => user.click(clear), "[role=alertdialog]")).toEqual(["Keep"]);
+    await user.keyboard("{Escape}");
+    await user.click(button("Home"));
+    const seen = await focusedWhile(() => device.shell({ type: "confirm_quit", active: 1 }), "[role=dialog]");
+    expect(seen).toEqual(["Keep running"]);
+  });
+
+  it("lands on the Device ID field of Send, and on the first field of Export and Add Contact", async () => {
+    const { user } = await start();
+    expect(await focusedWhile(() => user.click(button("Send to ID…")), "[role=dialog]")).toEqual(["send-to"]);
+    await user.keyboard("{Escape}");
+    await user.click(button("Contacts"));
+    const add = await screen.findByRole("button", { name: "Add Contact…" });
+    expect(await focusedWhile(() => user.click(add), "[role=dialog]")).toEqual(["add-contact-id"]);
+  });
+});
+
+describe("keyboard: Offers waiting in a queue", () => {
+  it("gives focus back to where it was before the first, once the last has been answered", async () => {
+    const { user, device } = await start();
+    const opener = button("Contacts");
+    await tabTo(user, opener);
+
+    await row(device, 1, "receiver", { kind: "offered" });
+    await row(device, 2, "receiver", { kind: "offered" }, { name: "b.txt", items: ["b.txt"] });
+    const heading = () => screen.getByRole("heading", { name: "Incoming files" });
+    expect(document.activeElement).toBe(heading());
+
+    // The first is answered; the second takes its place on the same sheet, heading first.
+    await tabTo(user, button("Accept"));
+    await user.keyboard("{Enter}");
+    expect(device.api.acceptOffer).toHaveBeenLastCalledWith("1".repeat(32), null);
+    await row(device, 1, "receiver", { kind: "accepted" });
+    expect(screen.getByRole("dialog", { name: "Incoming files" })).toBeTruthy();
+    expect(document.activeElement).toBe(heading());
+
+    await tabTo(user, button("Decline"));
+    await user.keyboard("{Enter}");
+    expect(device.api.declineOffer).toHaveBeenCalled();
+    await row(device, 2, "receiver", { kind: "declined" });
+    expect(screen.queryByRole("dialog")).toBeNull();
+    expect(document.activeElement).toBe(opener);
   });
 });
 

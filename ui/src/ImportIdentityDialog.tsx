@@ -79,6 +79,7 @@ export function ImportIdentityDialog({
       labelledBy="import-identity-heading"
       describedBy={confirming ? "import-identity-body" : undefined}
       onEscape={restarting ? undefined : onClose}
+      initialFocus={passwordInput}
     >
       <h2 id="import-identity-heading">
         {confirming ? t("identity.replaceHeading") : t("identity.importHeading")}

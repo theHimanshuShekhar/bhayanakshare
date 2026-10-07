@@ -89,9 +89,7 @@ describe("the announcer", () => {
     expect(document.activeElement).toBe(screen.getByRole("heading", { name: "Incoming files" }));
   });
 
-  it("announces an Offer that arrives while another sheet is up, since the Offer sheet is not what has focus then", async () => {
-    // Send to ID is open when the Offer comes: the Offer sheet goes over it and takes focus, so
-    // it reads itself. What is said is only about what is not on screen with focus.
+  it("leaves an Offer that arrives over an open dialog to its sheet too: the sheet goes over it and takes focus", async () => {
     const device = await start();
     fireEvent.click(screen.getByRole("button", { name: "Send to ID…" }));
     await device.transfer("receiver", { kind: "offered" });

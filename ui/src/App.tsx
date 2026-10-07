@@ -514,7 +514,6 @@ function Screens({ api }: { api: Api }) {
       </div>
       {offer && (
         <OfferSheet
-          key={offer.id}
           api={api}
           offer={offer}
           contacts={contacts}

@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useRef, useState } from "react";
 import type { Api } from "./api";
 import { t } from "./i18n";
 import { Sheet } from "./Sheet";
@@ -26,8 +26,6 @@ export function QuitDialog({
   const [error, setError] = useState<string | null>(null);
   const keep = useRef<HTMLButtonElement>(null);
 
-  useEffect(() => keep.current?.focus(), []);
-
   const quit = () => {
     setError(null);
     onSaving(true);
@@ -38,7 +36,7 @@ export function QuitDialog({
   };
 
   return (
-    <Sheet labelledBy="quit-heading" onEscape={saving ? undefined : onCancel}>
+    <Sheet labelledBy="quit-heading" onEscape={saving ? undefined : onCancel} initialFocus={keep}>
       <h2 id="quit-heading">{saving ? t("quit.saving") : t("quit.heading")}</h2>
       {saving ? (
         <p role="status">{t("quit.savingHint")}</p>

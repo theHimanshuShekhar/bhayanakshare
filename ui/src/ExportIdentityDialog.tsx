@@ -57,7 +57,12 @@ export function ExportIdentityDialog({
   };
 
   return (
-    <Sheet labelledBy="export-identity-heading" describedBy="export-identity-body" onEscape={onClose}>
+    <Sheet
+      labelledBy="export-identity-heading"
+      describedBy="export-identity-body"
+      onEscape={onClose}
+      initialFocus={first}
+    >
       <h2 id="export-identity-heading">{t("identity.exportHeading")}</h2>
       <p id="export-identity-body">{t("identity.exportBody")}</p>
       {savedTo !== null ? (

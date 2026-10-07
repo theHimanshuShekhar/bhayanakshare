@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useRef, useState } from "react";
 import type { Api } from "./api";
 import { t } from "./i18n";
 import { Sheet } from "./Sheet";
@@ -42,8 +42,6 @@ export function SendDialog({
   const input = useRef<HTMLInputElement>(null);
   const writeText = useFocusWhenLeft(composing);
 
-  useEffect(() => input.current?.focus(), []);
-
   /** Sends what `pick` asks the user for, or the files already chosen if there are some. */
   const send = async (pick?: () => Promise<string[] | null>) => {
     setError(null);
@@ -69,7 +67,7 @@ export function SendDialog({
   };
 
   return (
-    <Sheet labelledBy="send-heading" onEscape={onClose}>
+    <Sheet labelledBy="send-heading" onEscape={onClose} initialFocus={input}>
       <h2 id="send-heading">
         {contactName === null ? t("send.heading") : t("send.contactHeading", { name: contactName })}
       </h2>
