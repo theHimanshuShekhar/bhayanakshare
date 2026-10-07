@@ -20,6 +20,8 @@ const en = {
   "home.firewallHint":
     "No Devices found on this network yet. If you expect some, a firewall may be blocking local discovery.",
   "home.firewallDocs": "How to allow local discovery",
+  "home.hiddenHint": "You're Hidden, so Nearby Devices aren't shown.",
+  "home.hiddenChange": "Change Visibility",
   "version.thisOlder":
     "This Device is running an older BhayanakShare than {name}. Update it to send and receive with them.",
   "version.peerOlder": "{name} is running an older BhayanakShare. Ask them to update.",
@@ -120,7 +122,7 @@ const en = {
     "Only Devices that already have your Device ID can see it and its name.",
   "visibility.hidden": "Hidden",
   "visibility.hiddenHint":
-    "No one sees this Device on your network. People with your ID can still send to it.",
+    "You won't see or be seen Nearby. People with your ID can still send to you.",
   "visibility.loadFailed": "Could not read who can see this Device.",
   "visibility.failed": "Could not change who can see this Device. {reason}",
 

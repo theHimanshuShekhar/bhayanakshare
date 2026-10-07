@@ -1,27 +1,39 @@
 //! How a Hidden Device is found on the LAN, by the Devices that hold its Device ID and by nobody
 //! else (spec section 3).
 //!
-//! A Hidden Device announces nothing. While it is Hidden, a [`Responder`] listens on the mDNS
-//! port for one kind of query and ignores everything else: a TXT query whose name is
-//! `<label>._bhayanakshare._udp.local.`, where the label is this Device's own blinded label of
-//! [`crate::beacon`] for the previous, current or next epoch. Only a Device that holds the ID can
-//! work that label out, and on the wire it is no more than a beacon's label is: random-looking,
-//! and different every epoch.
+//! A Hidden Device sends nothing of its own accord: no announcement, and not even the browse
+//! queries of discovery, which is not running (see [`crate::discovery`]). While it is Hidden, a
+//! [`Responder`] listens on the mDNS port for one kind of query and ignores everything else: a
+//! TXT query whose name is `<label>._bhayanakshare._udp.local.`, where the label is this
+//! Device's own blinded label of [`crate::beacon`] for the previous, current or next epoch. Only
+//! a Device that holds the ID can work that label out, and on the wire it is no more than a
+//! beacon's label is: random-looking, and different every epoch.
 //!
-//! The answer goes back to the asker alone (a unicast reply to the query's source, as RFC 6762
-//! section 6.7 has it for a querier that is not an mDNS responder), never to the group. It is a
-//! TXT record holding the beacon's sealed value, so it opens only with the ID and the epoch, and
-//! it is the same size whatever is in it. The seal carries the ports; the asker takes the
-//! address from where the answer came from, which is also the address that can reach it. The
-//! Device Name is left out: nothing here needs it, and `Hello` carries it once connected.
+//! The answer goes to the mDNS group, as a multicast response does (RFC 6762 section 6), out of
+//! each interface discovery uses: not to the asker, since a reply from port 5353 to the asker's
+//! own port does not match the query the asker's firewall saw go out, and is dropped by a
+//! stateful one, where one that lets mDNS in lets this through. The answer is a TXT record
+//! holding the beacon's sealed value, so it opens only with the ID and the epoch, and it is the
+//! same size whatever it holds. The seal carries the ports; the asker takes the address from
+//! where the answer came from, which is also the address that can reach it. The Device Name is
+//! left out: nothing here needs it, and `Hello` carries it once connected. Whoever else hears
+//! the answer learns that a host answered the label, and its address.
 //!
 //! [`LanLookup`] is the asking side: an iroh address lookup service that, when iroh dials an ID
-//! it has no address for, sends that query and gives iroh what is answered.
+//! it has no address for, sends that query to the group and gives iroh what is answered, taking
+//! the answers for the label it asked for and no others.
 //!
-//! Little use as an amplifier: a packet is answered only if it is byte for byte the query of a label this
-//! Device could have, which needs its ID or a copy of a query heard on the LAN this epoch; the
-//! answer is under five times the query, and goes out at most [`MAX_ANSWERS_PER_SECOND`] times
-//! a second, whoever asks. IPv4 only, like the interfaces discovery lists.
+//! What a listener can do with a query it copied: replay it for as long as the label is one the
+//! Responder accepts, which is up to about 30 minutes (the epoch it was made for, and one on each
+//! side), and learn that way that the Device is there, and its address. Holding the ID shows as
+//! much, by dialling. Nothing is aimed at anyone: the answer goes to the group whatever the
+//! query's source address says, so a spoofed query cannot reflect it at a victim, and at most
+//! [`MAX_ANSWERS_PER_SECOND`] go out in a second, to anyone. A packet is answered only if it is
+//! byte for byte the query for one of the labels, which is why the packets are written and
+//! matched by hand here and not with a DNS library: a parser that accepts compression, extra
+//! records and the like would answer more than that.
+//!
+//! IPv4 only, like the interfaces discovery lists: a Hidden Device cannot be found over IPv6.
 
 use std::{
     io,
@@ -56,15 +68,14 @@ const MAX_PACKET: usize = 512;
 /// The most answers a Responder sends in one second, to anyone.
 const MAX_ANSWERS_PER_SECOND: u32 = 10;
 
-/// How long [`LanLookup`] waits for an answer before it asks again, and how often it asks.
+/// How long [`LanLookup`] waits for an answer before it asks again, and how many times it asks.
 const RETRY: Duration = Duration::from_millis(700);
 const ASKS: u32 = 3;
 
 /// The length of a beacon label, which is the first part of the name asked for.
 const LABEL_LEN: usize = 32;
 
-/// How long an asker may keep an answer, in seconds. An answer to a querier that is not an mDNS
-/// responder is to carry no more than 10 (RFC 6762 section 6.7), and none is kept anyway.
+/// How long an asker may keep an answer, in seconds. None is kept.
 const TTL: u32 = 10;
 
 const TYPE_TXT: [u8; 2] = [0, 16];
@@ -96,9 +107,9 @@ fn query(label: &str) -> Vec<u8> {
     [&QUERY_HEADER[..], &question(label)].concat()
 }
 
-/// The epoch of the label `packet` asks for, if the packet is the query of one of the labels
-/// `index` holds, and nothing else.
-fn asked(packet: &[u8], index: &Index) -> Option<(String, Epoch)> {
+/// The own label (and its epoch) that `packet` asks for, if the packet is the query of one of
+/// the labels `index` holds, and nothing else.
+fn own_label_in(packet: &[u8], index: &Index) -> Option<(String, Epoch)> {
     let label = std::str::from_utf8(packet.get(13..13 + LABEL_LEN)?).ok()?;
     let (_, epoch) = index.recognise(label)?;
     (packet == query(label)).then(|| (label.to_owned(), epoch))
@@ -138,7 +149,7 @@ fn read_answer<'a>(packet: &'a [u8], label: &str) -> Option<&'a str> {
 /// What a packet from `from` tells about `id`, whose query for `epoch` it should be the answer
 /// to: the addresses it can be dialled on. The ports are in the seal and the address is the
 /// one the answer came from.
-fn read(
+fn addrs_in_answer(
     packet: &[u8],
     from: SocketAddr,
     id: &DeviceId,
@@ -175,9 +186,25 @@ impl Limit {
     }
 }
 
-/// A Hidden Device's answers to lookups. Runs until dropped.
+/// The labels a Responder answers: those of its own ID around an epoch, made again when the
+/// epoch moves.
+struct Labels {
+    epoch: Option<Epoch>,
+    index: Index,
+}
+
+impl Labels {
+    fn at(&mut self, own: DeviceId, epoch: Epoch) -> &Index {
+        if self.epoch != Some(epoch) {
+            *self = Self { epoch: Some(epoch), index: Index::new([own], epoch) };
+        }
+        &self.index
+    }
+}
+
+/// A Hidden Device's answers to lookups. Runs until dropped, or until its socket fails.
 pub(crate) struct Responder {
-    _task: AbortOnDropHandle<()>,
+    task: AbortOnDropHandle<()>,
 }
 
 impl Responder {
@@ -190,9 +217,15 @@ impl Responder {
         interfaces: &[Ipv4Addr],
         loopback_ok: bool,
     ) -> io::Result<Self> {
-        let socket = bind_responder(interfaces)?;
-        let task = tokio::spawn(respond(own, endpoint, clock, socket, loopback_ok));
-        Ok(Self { _task: AbortOnDropHandle::new(task) })
+        let socket = bind_mdns(interfaces)?;
+        let interfaces = or_default(interfaces).to_vec();
+        let task = tokio::spawn(respond(own, endpoint, clock, socket, interfaces, loopback_ok));
+        Ok(Self { task: AbortOnDropHandle::new(task) })
+    }
+
+    /// Whether it has stopped, because its socket failed: nothing is answered any more.
+    pub(crate) fn is_finished(&self) -> bool {
+        self.task.is_finished()
     }
 }
 
@@ -201,30 +234,27 @@ async fn respond(
     endpoint: Endpoint,
     clock: Arc<dyn Clock>,
     socket: UdpSocket,
+    interfaces: Vec<Ipv4Addr>,
     loopback_ok: bool,
 ) {
     let mut buf = [0u8; MAX_PACKET];
-    // The labels to answer for, made again when the epoch moves.
-    let mut labels = (None, Index::default());
+    let mut labels = Labels { epoch: None, index: Index::default() };
     let mut limit = Limit::new(Instant::now());
     loop {
-        let (len, from) = match socket.recv_from(&mut buf).await {
-            Ok(received) => received,
+        let len = match socket.recv_from(&mut buf).await {
+            Ok((len, _)) => len,
             // Windows reports an earlier send that nobody received as an error here.
             Err(e) if e.kind() == io::ErrorKind::ConnectionReset => continue,
             Err(e) => {
-                tracing::warn!("this Device stopped answering lookups: {e}");
+                tracing::error!("this Device stopped answering lookups: {e}");
                 return;
             }
         };
         if len == buf.len() {
             continue;
         }
-        let now = beacon::epoch_of(clock.now());
-        if labels.0 != Some(now) {
-            labels = (Some(now), Index::new([own], now));
-        }
-        let Some((label, epoch)) = asked(&buf[..len], &labels.1) else { continue };
+        let index = labels.at(own, beacon::epoch_of(clock.now()));
+        let Some((label, epoch)) = own_label_in(&buf[..len], index) else { continue };
         if !limit.allow(Instant::now()) {
             continue;
         }
@@ -237,20 +267,20 @@ async fn respond(
             port_of(&addrs, SocketAddr::is_ipv4),
             port_of(&addrs, SocketAddr::is_ipv6),
         );
-        if let Err(e) = socket.send_to(&answer(&label, &sealed), from).await {
-            tracing::debug!("could not answer a lookup: {e}");
-        }
+        send_to_group(&socket, &answer(&label, &sealed), &interfaces).await;
     }
 }
 
 /// Port 5353, shared with every other mDNS listener on the machine, joined to the group on each
-/// of `interfaces`.
-fn bind_responder(interfaces: &[Ipv4Addr]) -> io::Result<UdpSocket> {
+/// of `interfaces`, and hearing what this socket sends too (a Device on this machine is on the
+/// LAN as well).
+fn bind_mdns(interfaces: &[Ipv4Addr]) -> io::Result<UdpSocket> {
     let socket = Socket::new(Domain::IPV4, Type::DGRAM, Some(Protocol::UDP))?;
     socket.set_reuse_address(true)?;
     #[cfg(unix)]
     socket.set_reuse_port(true)?;
     socket.bind(&SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, PORT).into())?;
+    socket.set_multicast_loop_v4(true)?;
     let mut joined = Err(io::Error::other("no interface to listen on"));
     for interface in or_default(interfaces) {
         match socket.join_multicast_v4(&GROUP, interface) {
@@ -262,6 +292,20 @@ fn bind_responder(interfaces: &[Ipv4Addr]) -> io::Result<UdpSocket> {
     joined?;
     socket.set_nonblocking(true)?;
     UdpSocket::from_std(socket.into())
+}
+
+/// Sends `packet` to the mDNS group out of each of `interfaces`. An interface that cannot be
+/// sent on is skipped.
+async fn send_to_group(socket: &UdpSocket, packet: &[u8], interfaces: &[Ipv4Addr]) {
+    for interface in interfaces {
+        let sent = match SockRef::from(socket).set_multicast_if_v4(interface) {
+            Ok(()) => socket.send_to(packet, (GROUP, PORT)).await.map(|_| ()),
+            Err(e) => Err(e),
+        };
+        if let Err(e) = sent {
+            tracing::debug!("could not send to the mDNS group on {interface}: {e}");
+        }
+    }
 }
 
 /// `interfaces`, or the system's choice if there are none.
@@ -304,8 +348,8 @@ impl AddressLookup for LanLookup {
 }
 
 /// Asks the LAN for `id` and returns the addresses its answer gives. Asks [`ASKS`] times, on each
-/// of `interfaces`, and gives up with an error if nobody answers: no Hidden Device with this ID
-/// is on the LAN.
+/// of `interfaces`, listening on the group in between, and gives up with an error if nobody
+/// answers: no Hidden Device with this ID is on the LAN.
 async fn ask(
     interfaces: &[Ipv4Addr],
     id: &DeviceId,
@@ -313,40 +357,22 @@ async fn ask(
     loopback_ok: bool,
 ) -> io::Result<Vec<SocketAddr>> {
     let query = query(&beacon::label(id, epoch));
-    let socket = bind_asker()?;
+    // Bound before the first ask, so the answer to it is not missed.
+    let socket = bind_mdns(interfaces)?;
     let mut buf = [0u8; MAX_PACKET];
     for _ in 0..ASKS {
-        for &interface in or_default(interfaces) {
-            let sent = SockRef::from(&socket).set_multicast_if_v4(&interface);
-            let sent = match sent {
-                Ok(()) => socket.send_to(&query, (GROUP, PORT)).await.map(|_| ()),
-                Err(e) => Err(e),
-            };
-            if let Err(e) = sent {
-                tracing::debug!("could not ask on {interface}: {e}");
-            }
-        }
+        send_to_group(&socket, &query, or_default(interfaces)).await;
         let until = Instant::now() + RETRY;
         while let Ok(received) = tokio::time::timeout_at(until, socket.recv_from(&mut buf)).await {
             let (len, from) = received?;
             if len < buf.len() {
-                if let Some(addrs) = read(&buf[..len], from, id, epoch, loopback_ok) {
+                if let Some(addrs) = addrs_in_answer(&buf[..len], from, id, epoch, loopback_ok) {
                     return Ok(addrs);
                 }
             }
         }
     }
     Err(io::Error::new(io::ErrorKind::TimedOut, "no Hidden Device with this ID answered"))
-}
-
-/// A socket of its own for one lookup: the answer comes back to it, not to port 5353.
-fn bind_asker() -> io::Result<UdpSocket> {
-    let socket = Socket::new(Domain::IPV4, Type::DGRAM, Some(Protocol::UDP))?;
-    socket.bind(&SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, 0).into())?;
-    // So that a Device on this machine hears it, as one on the LAN does.
-    socket.set_multicast_loop_v4(true)?;
-    socket.set_nonblocking(true)?;
-    UdpSocket::from_std(socket.into())
 }
 
 #[cfg(test)]
@@ -382,26 +408,26 @@ mod tests {
         let index = Index::new([id(1)], 10);
         for e in [9, 10, 11] {
             let label = beacon::label(&id(1), e);
-            assert_eq!(asked(&query(&label), &index), Some((label, e)), "epoch {e}");
+            assert_eq!(own_label_in(&query(&label), &index), Some((label, e)), "epoch {e}");
         }
         for e in [8, 12] {
-            assert_eq!(asked(&query(&beacon::label(&id(1), e)), &index), None, "epoch {e}");
+            assert_eq!(own_label_in(&query(&beacon::label(&id(1), e)), &index), None, "epoch {e}");
         }
     }
 
     #[test]
     fn a_query_for_another_devices_label_or_anything_but_a_label_is_not_answered() {
         let index = Index::new([id(1)], 10);
-        assert_eq!(asked(&query(&beacon::label(&id(2), 10)), &index), None, "another Device's");
+        assert_eq!(own_label_in(&query(&beacon::label(&id(2), 10)), &index), None, "another Device's");
         // What an onlooker could try instead: the ID itself, in a name of the right length.
-        assert_eq!(asked(&query(&"a".repeat(LABEL_LEN)), &index), None);
-        assert_eq!(asked(&query(&id(1).to_string().to_lowercase()), &index), None);
-        assert_eq!(asked(&[], &index), None);
-        assert_eq!(asked(&[0; 200], &index), None);
+        assert_eq!(own_label_in(&query(&"a".repeat(LABEL_LEN)), &index), None);
+        assert_eq!(own_label_in(&query(&id(1).to_string().to_lowercase()), &index), None);
+        assert_eq!(own_label_in(&[], &index), None);
+        assert_eq!(own_label_in(&[0; 200], &index), None);
         // A browser's query for the service, as swarm-discovery sends it.
         let mut browse = QUERY_HEADER.to_vec();
         browse.extend_from_slice(b"\x0e_bhayanakshare\x04_udp\x05local\x00\x00\x0c\x00\x01");
-        assert_eq!(asked(&browse, &index), None);
+        assert_eq!(own_label_in(&browse, &index), None);
     }
 
     #[test]
@@ -409,22 +435,22 @@ mod tests {
         let label = beacon::label(&id(1), 10);
         let index = Index::new([id(1)], 10);
         let good = query(&label);
-        assert!(asked(&good, &index).is_some());
+        assert!(own_label_in(&good, &index).is_some());
         // Every byte that is not the label matters, and so does what comes after.
         for i in (0..good.len()).filter(|i| !(13..13 + LABEL_LEN).contains(i)) {
             let mut bad = good.clone();
             bad[i] ^= 1;
-            assert_eq!(asked(&bad, &index), None, "byte {i}");
+            assert_eq!(own_label_in(&bad, &index), None, "byte {i}");
         }
         for len in 0..good.len() {
-            assert_eq!(asked(&good[..len], &index), None, "cut at {len}");
+            assert_eq!(own_label_in(&good[..len], &index), None, "cut at {len}");
         }
         let mut longer = good.clone();
         longer.push(0);
-        assert_eq!(asked(&longer, &index), None, "trailing byte");
+        assert_eq!(own_label_in(&longer, &index), None, "trailing byte");
         // A response is not a query, even one that repeats the question.
         let (_, value) = sealed(1, 10, 4000);
-        assert_eq!(asked(&answer(&label, &value), &index), None);
+        assert_eq!(own_label_in(&answer(&label, &value), &index), None);
     }
 
     #[test]
@@ -463,7 +489,7 @@ mod tests {
     fn the_asker_learns_the_address_from_where_the_answer_came_and_the_port_from_the_seal() {
         let (label, value) = sealed(1, 10, 4000);
         let packet = answer(&label, &value);
-        let addrs = read(&packet, LAN, &id(1), 10, false);
+        let addrs = addrs_in_answer(&packet, LAN, &id(1), 10, false);
         assert_eq!(addrs, Some(vec!["192.168.1.7:4000".parse().unwrap()]));
     }
 
@@ -471,17 +497,17 @@ mod tests {
     fn an_answer_that_does_not_open_for_the_id_and_epoch_asked_is_ignored() {
         let (label, value) = sealed(1, 10, 4000);
         let packet = answer(&label, &value);
-        assert_eq!(read(&packet, LAN, &id(2), 10, false), None, "another ID");
-        assert_eq!(read(&packet, LAN, &id(1), 11, false), None, "another epoch");
+        assert_eq!(addrs_in_answer(&packet, LAN, &id(2), 10, false), None, "another ID");
+        assert_eq!(addrs_in_answer(&packet, LAN, &id(1), 11, false), None, "another epoch");
         // A Device that answers for a label it was not asked for.
         let (other, value) = sealed(2, 10, 4000);
-        assert_eq!(read(&answer(&other, &value), LAN, &id(1), 10, false), None);
+        assert_eq!(addrs_in_answer(&answer(&other, &value), LAN, &id(1), 10, false), None);
         // Nothing to dial: no port in the seal, or an address nobody could dial.
         let (label, none) = sealed(1, 10, 0);
-        assert_eq!(read(&answer(&label, &none), LAN, &id(1), 10, false), None);
+        assert_eq!(addrs_in_answer(&answer(&label, &none), LAN, &id(1), 10, false), None);
         let loopback = SocketAddr::from((Ipv4Addr::LOCALHOST, PORT));
-        assert_eq!(read(&packet, loopback, &id(1), 10, false), None);
-        assert!(read(&packet, loopback, &id(1), 10, true).is_some(), "the test network is loopback");
+        assert_eq!(addrs_in_answer(&packet, loopback, &id(1), 10, false), None);
+        assert!(addrs_in_answer(&packet, loopback, &id(1), 10, true).is_some(), "the test network is loopback");
     }
 
     #[test]
@@ -492,5 +518,20 @@ mod tests {
         assert_eq!(granted, MAX_ANSWERS_PER_SECOND as usize);
         assert!(!limit.allow(start + Duration::from_millis(999)));
         assert!(limit.allow(start + Duration::from_secs(1)), "a new second, a new allowance");
+    }
+
+    #[tokio::test]
+    async fn a_responder_whose_task_has_ended_says_so() {
+        let ended = Responder { task: AbortOnDropHandle::new(tokio::spawn(async {})) };
+        let running = Responder { task: AbortOnDropHandle::new(tokio::spawn(std::future::pending())) };
+        tokio::task::yield_now().await;
+        for _ in 0..50 {
+            if ended.is_finished() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        assert!(ended.is_finished());
+        assert!(!running.is_finished());
     }
 }

@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useReducer, useRef, useState } from "react";
 import { AddContactDialog } from "./AddContactDialog";
-import { tauriApi, type Api, type Contact, type TransferId } from "./api";
+import { tauriApi, type Api, type Contact, type TransferId, type Visibility } from "./api";
 import { ClearHistoryDialog } from "./ClearHistoryDialog";
 import { ContactsScreen } from "./ContactsScreen";
 import { HistoryScreen } from "./HistoryScreen";
@@ -68,6 +68,8 @@ export function App({ api = tauriApi }: AppProps) {
   const [versionNotices, dispatchVersion] = useReducer(applyVersionNotices, []);
   // Set once Home has waited long enough for a Nearby Device to show up.
   const [waited, setWaited] = useState(false);
+  // A Hidden Device lists nobody Nearby, so an empty list there is no sign of a firewall.
+  const [visibility, setVisibility] = useState<Visibility | null>(null);
   const [saveFolder, setSaveFolder] = useState<string | null>(null);
   // Files waiting for the user to say whom to send them to (from a second launch or the tray).
   const [queued, setQueued] = useState<string[]>([]);
@@ -163,6 +165,23 @@ export function App({ api = tauriApi }: AppProps) {
     const timer = setTimeout(() => setWaited(true), NEARBY_WAIT_MS);
     return () => clearTimeout(timer);
   }, []);
+
+  // The setting is changed in Settings or the tray, so look again whenever a tab is opened and
+  // when the window is back in front.
+  useEffect(() => {
+    let live = true;
+    const load = () =>
+      api.visibility().then(
+        (v) => live && setVisibility(v),
+        () => {},
+      );
+    load();
+    window.addEventListener("focus", load);
+    return () => {
+      live = false;
+      window.removeEventListener("focus", load);
+    };
+  }, [api, tab]);
 
   // A connection can refresh a Contact's Device Name or address behind the UI's back, so look
   // again whenever a tab is opened, a Transfer begins or learns the other Device's name, or the
@@ -277,7 +296,15 @@ export function App({ api = tauriApi }: AppProps) {
                   onFilesSent={() => setQueued([])}
                 />
               )}
-              {waited && nearby.length === 0 && (
+              {visibility === "hidden" && nearby.length === 0 && (
+                <p role="status" className="hint">
+                  {t("home.hiddenHint")}{" "}
+                  <button type="button" onClick={() => setTab("settings")}>
+                    {t("home.hiddenChange")}
+                  </button>
+                </p>
+              )}
+              {visibility !== "hidden" && waited && nearby.length === 0 && (
                 <p role="status" className="hint">
                   {t("home.firewallHint")}{" "}
                   <a

@@ -37,7 +37,7 @@ A human-readable label the owner gives their Device, shown to others in place of
 _Avoid_: Username, display name, hostname
 
 **Visibility**:
-A Device's setting for who can see it as a Nearby Device: Everyone; ID holders (shown as "People who have my ID"), meaning only Devices that already hold its Device ID; or Hidden. It governs discovery only. A Device can still receive a Transfer from anyone who has its Device ID, and a Hidden Device still answers LAN lookups from ID holders. The Device Name is visible to the same audience.
+A Device's setting for who can see it as a Nearby Device: Everyone; ID holders (shown as "People who have my ID"), meaning only Devices that already hold its Device ID; or Hidden. It governs discovery only. A Device can still receive a Transfer from anyone who has its Device ID, and a Hidden Device still answers LAN lookups from ID holders, though it neither sees nor is seen Nearby itself. The Device Name is visible to the same audience.
 _Avoid_: Discoverable, privacy mode, Contacts only
 
 **Nickname**:

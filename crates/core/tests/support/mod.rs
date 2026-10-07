@@ -5,6 +5,8 @@
 
 #![allow(dead_code)] // each test binary uses a different subset
 
+pub mod multicast;
+
 use std::{
     path::{Path, PathBuf},
     sync::Arc,

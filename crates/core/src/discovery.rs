@@ -2,22 +2,25 @@
 //! `swarm-discovery` under our own service name (never iroh's `irohv1`, so other iroh apps on
 //! the network neither show up here nor see us).
 //!
-//! One `Discoverer` runs at a time. It always listens; what it announces follows the
-//! [`Visibility`] setting and is changed while it runs:
+//! One `Discoverer` runs at a time, except while Hidden. It listens and announces as the
+//! [`Visibility`] setting says, and is changed while it runs:
 //!
 //! - **Everyone**: a plain announcement whose instance label is the Device ID and whose TXT
 //!   carries the Device Name.
 //! - **People who have my ID**: the blinded beacon of [`crate::beacon`], whose label and sealed
 //!   TXT only a Device holding this Device's ID can recognise and open.
-//! - **Hidden**: no announcement at all. Instead the [`Responder`] answers a query that carries
-//!   this Device's own blinded label, which only a Device holding its ID can ask, and
-//!   [`LanLookup`] is how a Device asks: iroh consults it when dialling an ID.
+//! - **Hidden**: no `Discoverer` at all, because `swarm-discovery` cannot listen without also
+//!   multicasting a query for the service every second or so, and a Hidden Device sends
+//!   nothing. So it lists no Nearby Devices either. Instead the [`Responder`] answers a query
+//!   that carries this Device's own blinded label, which only a Device holding its ID can ask,
+//!   and [`LanLookup`] is how a Device asks: iroh consults it when dialling an ID, so it only
+//!   sends when the user sends to an ID.
 //!
 //! [`announcement`] is where a setting chooses what to say and [`hear`] is where a heard label
 //! becomes a Device. swarm-discovery fixes the label when it starts, so a different label (a
-//! new beacon epoch, or a change between plain and beacon) means a new `Discoverer`. Hidden
-//! only adds the responder: the `Discoverer` still listens, and its anonymous queries for the
-//! service are all this Device says, so its own Nearby list works.
+//! new beacon epoch, or a change between plain and beacon) means a new `Discoverer`.
+//! swarm-discovery says no goodbye when a Device stops announcing or is dropped: the others
+//! drop it from their lists when they have not heard it for three of its turns, a few seconds.
 //!
 //! What is heard is kept as a table of Nearby Devices, reported on the event stream whenever it
 //! changes, and its addresses are handed to iroh, so dialling a Nearby Device by its ID alone
@@ -82,7 +85,8 @@ pub enum Visibility {
     /// Only Devices that hold this Device's ID: a blinded beacon only they can recognise.
     #[default]
     IdHolders,
-    /// Nobody: announces nothing, and only answers a Device that asks for it by its ID.
+    /// Nobody: announces nothing and looks for nobody, and only answers a Device that asks for
+    /// it by its ID.
     Hidden,
 }
 
@@ -340,7 +344,10 @@ struct Running {
     label: String,
     tx: mpsc::UnboundedSender<Instance>,
     interfaces: Vec<Ipv4Addr>,
-    /// Answers lookups, while the Visibility is Hidden and only then.
+    /// Whether the Visibility is Hidden: no `Discoverer`, and a responder instead.
+    hidden: bool,
+    /// Answers lookups, while the Visibility is Hidden and only then. Stopped or failed ones are
+    /// started again by [`Discovery::revive_responder`].
     responder: Option<Responder>,
 }
 
@@ -353,6 +360,9 @@ pub(crate) struct Discovery {
     table: Mutex<Table>,
     /// Where Nearby Devices' addresses go, for iroh to dial with.
     lookup: MemoryLookup,
+    /// Whether a `Discoverer` is running, so heard instances mean something: it is not while
+    /// Hidden, and what it said before then must not fill the list again.
+    listening: AtomicBool,
     /// Set when Contacts are added or removed: the beacons to recognise are those of the
     /// Devices whose IDs this Device holds.
     contacts_changed: AtomicBool,
@@ -372,6 +382,7 @@ impl Discovery {
             running: tokio::sync::Mutex::new(None),
             table: Mutex::default(),
             lookup,
+            listening: AtomicBool::new(false),
             contacts_changed: AtomicBool::new(false),
         }
     }
@@ -383,17 +394,30 @@ impl Discovery {
         let (tx, rx) = mpsc::unbounded_channel();
         let interfaces: Vec<Ipv4Addr> = self.interfaces().await.into_iter().collect();
         // How this Device asks for a Hidden one when dialling an ID.
-        let loopback_ok = self.network == Network::LocalhostLan;
         match sh.endpoint.address_lookup() {
-            Ok(services) => services.add(LanLookup::new(interfaces.clone(), sh.clock.clone(), loopback_ok)),
+            Ok(services) => {
+                services.add(LanLookup::new(interfaces.clone(), sh.clock.clone(), self.loopback_ok()))
+            }
             Err(e) => tracing::warn!("LAN lookups cannot hand addresses to iroh: {e}"),
         }
-        *self.running.lock().await =
-            Some(Running { guard: None, label: String::new(), tx, interfaces, responder: None });
+        *self.running.lock().await = Some(Running {
+            guard: None,
+            label: String::new(),
+            tx,
+            interfaces,
+            hidden: false,
+            responder: None,
+        });
         self.refresh(sh).await;
         sh.tasks.spawn(ingest(sh.clone(), rx));
         sh.tasks.spawn(follow_addresses(sh.clone()));
         sh.tasks.spawn(rotate_beacon(sh.clone()));
+        sh.tasks.spawn(keep_responding(sh.clone()));
+    }
+
+    /// Whether this Device is on the loopback test network, where loopback addresses are real.
+    fn loopback_ok(&self) -> bool {
+        self.network == Network::LocalhostLan
     }
 
     /// The Devices heard so far.
@@ -415,26 +439,27 @@ impl Discovery {
         let addrs = self.announced_addrs(&sh.endpoint);
         let announce = announcement(visibility, sh.id, &name, beacon::epoch_of(sh.now()), &addrs);
 
-        // Hidden is answered for, never announced: the responder runs for as long as it is chosen.
-        if visibility != Visibility::Hidden {
-            running.responder = None;
-        } else if running.responder.is_none() {
-            let loopback_ok = self.network == Network::LocalhostLan;
-            let (endpoint, clock) = (sh.endpoint.clone(), sh.clock.clone());
-            match Responder::start(sh.id, endpoint, clock, &running.interfaces, loopback_ok) {
-                Ok(responder) => running.responder = Some(responder),
-                Err(e) => tracing::warn!("this Device cannot answer lookups while Hidden: {e}"),
-            }
+        running.hidden = visibility == Visibility::Hidden;
+        if running.hidden {
+            // Nothing is sent, so no `Discoverer`: it would query for the service all the time.
+            // What it had heard goes with it.
+            self.listening.store(false, Ordering::Release);
+            running.guard = None;
+            running.label.clear();
+            self.forget_all(sh);
+            self.start_responder(sh, running);
+            return;
         }
+        running.responder = None;
 
-        // A different label (a new epoch, or beacon for plain) needs a new Discoverer. A silent
-        // Device keeps its own: its queries carry no label.
+        // A different label (a new epoch, or beacon for plain) needs a new Discoverer.
         let wanted = announce.as_ref().map(|a| a.label.as_str());
         if running.guard.is_none() || wanted.is_some_and(|label| label != running.label) {
             let label = wanted.map_or_else(|| plain_label(sh.id), str::to_owned);
             running.guard = None;
             running.guard = self.spawn(sh.id, &label, &running.tx, &running.interfaces);
             running.label = label;
+            self.listening.store(running.guard.is_some(), Ordering::Release);
         }
         let Some(guard) = &running.guard else { return };
 
@@ -448,6 +473,31 @@ impl Discovery {
             if let Err(e) = guard.set_txt_attribute(key, Some(value)) {
                 tracing::warn!("could not announce this Device: {e}");
             }
+        }
+    }
+
+    /// Starts the responder if there is none running. A failure is logged and left for
+    /// [`Discovery::revive_responder`] to try again.
+    fn start_responder(&self, sh: &Shared, running: &mut Running) {
+        if running.responder.as_ref().is_some_and(|r| !r.is_finished()) {
+            return;
+        }
+        let (endpoint, clock) = (sh.endpoint.clone(), sh.clock.clone());
+        running.responder =
+            match Responder::start(sh.id, endpoint, clock, &running.interfaces, self.loopback_ok()) {
+                Ok(responder) => Some(responder),
+                Err(e) => {
+                    tracing::error!("this Device cannot answer lookups while Hidden: {e}");
+                    None
+                }
+            };
+    }
+
+    /// Starts the responder again if this Device is Hidden and it has stopped or never started.
+    async fn revive_responder(&self, sh: &Shared) {
+        let mut running = self.running.lock().await;
+        if let Some(running) = running.as_mut().filter(|r| r.hidden) {
+            self.start_responder(sh, running);
         }
     }
 
@@ -489,7 +539,7 @@ impl Discovery {
 
     /// The addresses an announcement lists, IPv4 first.
     fn announced_addrs(&self, endpoint: &Endpoint) -> Vec<SocketAddr> {
-        let loopback_ok = self.network == Network::LocalhostLan;
+        let loopback_ok = self.loopback_ok();
         let mut addrs: Vec<_> =
             direct_addrs(endpoint).into_iter().filter(|a| dialable(a, loopback_ok)).collect();
         addrs.sort_by_key(|a| (a.is_ipv6(), *a));
@@ -549,6 +599,20 @@ impl Discovery {
         }
     }
 
+    /// Empties the list, as when this Device stops listening.
+    fn forget_all(&self, sh: &Shared) {
+        let mut table = self.table.lock().unwrap_or_else(|e| e.into_inner());
+        let ids: Vec<DeviceId> = table.0.keys().copied().collect();
+        table.0.clear();
+        for id in &ids {
+            self.lookup.remove_endpoint_info(id.endpoint_id());
+        }
+        drop(table);
+        if !ids.is_empty() {
+            sh.events.emit(sh.now(), EventKind::Nearby(NearbyEvent { devices: Vec::new() }));
+        }
+    }
+
     /// Drops the Devices that are Nearby only because their beacon was recognised, but whose ID
     /// is no longer held: their beacons are not recognised any more, so they would never expire.
     fn forget_unheld(&self, sh: &Shared, held: &HashSet<DeviceId>) {
@@ -570,7 +634,7 @@ impl Discovery {
 /// Applies what the `Discoverer` hears, in the order heard.
 async fn ingest(sh: Arc<Shared>, mut rx: mpsc::UnboundedReceiver<Instance>) {
     let own = sh.id;
-    let loopback_ok = sh.discovery.network == Network::LocalhostLan;
+    let loopback_ok = sh.discovery.loopback_ok();
     // The beacons to recognise: those of the Contacts, around now. Made again when either moves.
     let mut index = Index::default();
     let mut indexed_at = None;
@@ -584,6 +648,10 @@ async fn ingest(sh: Arc<Shared>, mut rx: mpsc::UnboundedReceiver<Instance>) {
                 None => return,
             },
         };
+        // Said before this Device went Hidden, and still on its way.
+        if !sh.discovery.listening.load(Ordering::Acquire) {
+            continue;
+        }
         let epoch = beacon::epoch_of(sh.now());
         let contacts_changed = sh.discovery.contacts_changed.swap(false, Ordering::AcqRel);
         if contacts_changed || indexed_at != Some(epoch) {
@@ -641,6 +709,20 @@ async fn rotate_beacon(sh: Arc<Shared>) {
             () = clock::sleep_until(&*sh.clock, next) => {}
         }
         sh.discovery.refresh(&sh).await;
+    }
+}
+
+/// How often a responder that has stopped is started again.
+const RESPONDER_CHECK: std::time::Duration = std::time::Duration::from_secs(15);
+
+/// Starts the responder of a Hidden Device again if it has stopped or could not start.
+async fn keep_responding(sh: Arc<Shared>) {
+    loop {
+        tokio::select! {
+            () = sh.cancel.cancelled() => return,
+            () = tokio::time::sleep(RESPONDER_CHECK) => {}
+        }
+        sh.discovery.revive_responder(&sh).await;
     }
 }
 
