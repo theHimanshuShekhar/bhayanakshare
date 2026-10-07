@@ -15,8 +15,9 @@ use std::{
 };
 
 use bhayanakshare_core::{
-    BatchId, Contact, Device, DeviceAddr, DeviceConfig, DeviceId, Event, HistoryEntry, HistoryQuery,
-    KeySource, Network, Role, SpaceCheck, SystemClock, SystemFreeSpace, TransferId, Visibility,
+    BatchId, Contact, Device, DeviceAddr, DeviceConfig, DeviceId, Error, Event, HistoryEntry,
+    HistoryQuery, IdentityFileError, KeySource, Network, Role, SpaceCheck, SystemClock,
+    SystemFreeSpace, TransferId, Visibility,
 };
 use serde::Serialize;
 use specta::Type;
@@ -44,6 +45,43 @@ pub struct MyId {
     id: String,
     /// First 8 characters, `XXXX-XXXX`.
     fingerprint: String,
+}
+
+/// What went wrong with an identity export or import, in the terms the UI words differently.
+#[derive(Serialize, Type)]
+pub struct IdentityError {
+    kind: IdentityErrorKind,
+    /// For the kinds the UI has no wording of its own for.
+    message: String,
+}
+
+#[derive(Serialize, Type)]
+#[serde(rename_all = "snake_case")]
+pub enum IdentityErrorKind {
+    /// The password does not open the file (or the file is damaged).
+    WrongPassword,
+    NotAnIdentityFile,
+    /// The OS secret store cannot be used.
+    StoreUnavailable,
+    Other,
+}
+
+impl From<Error> for IdentityError {
+    fn from(e: Error) -> Self {
+        let kind = match &e {
+            Error::IdentityFile(IdentityFileError::WrongPassword) => IdentityErrorKind::WrongPassword,
+            Error::IdentityFile(IdentityFileError::NotAnIdentityFile) => IdentityErrorKind::NotAnIdentityFile,
+            Error::Key(_) => IdentityErrorKind::StoreUnavailable,
+            _ => IdentityErrorKind::Other,
+        };
+        Self { kind, message: e.to_string() }
+    }
+}
+
+impl IdentityError {
+    fn io(what: &str, path: &str, e: std::io::Error) -> Self {
+        Self { kind: IdentityErrorKind::Other, message: format!("{what} {path}: {e}") }
+    }
 }
 
 /// The folder accepted files are saved to (shown on the Offer sheet).
@@ -356,6 +394,56 @@ async fn clear_history(device: State<'_, Device>) -> Result<u64, String> {
     device.clear_history().await.map_err(|e| e.to_string())
 }
 
+/// Writes this Device's identity, protected by `password`, to the file at `path`.
+#[tauri::command]
+#[specta::specta]
+async fn export_identity(
+    device: State<'_, Device>,
+    path: String,
+    password: String,
+) -> Result<(), IdentityError> {
+    let file = device.export_identity(&password).await?;
+    std::fs::write(&path, file).map_err(|e| IdentityError::io("writing", &path, e))
+}
+
+/// Whose identity the file at `path` holds, if `password` opens it. Changes nothing.
+#[tauri::command]
+#[specta::specta]
+async fn check_identity_import(path: String, password: String) -> Result<MyId, IdentityError> {
+    let id = Device::identity_file_owner(&read_identity_file(&path)?, &password).await?;
+    Ok(MyId { id: id.to_string(), fingerprint: id.fingerprint() })
+}
+
+/// Replaces this Device's identity with the one in the file at `path`, and restarts the app to
+/// take it up. Importing the Device's own identity changes nothing and does not restart.
+#[tauri::command]
+#[specta::specta]
+async fn import_identity<R: Runtime>(
+    app: AppHandle<R>,
+    device: State<'_, Device>,
+    path: String,
+    password: String,
+) -> Result<(), IdentityError> {
+    let file = read_identity_file(&path)?;
+    let current = device.device_id();
+    if device.import_identity(&file, &password).await? != current {
+        // Exits through the same path as quitting, which lets the Device save its Transfers'
+        // progress, and starts the app again.
+        app.request_restart();
+    }
+    Ok(())
+}
+
+/// An identity file is under a hundred bytes; anything much bigger is not one, and is not read.
+fn read_identity_file(path: &str) -> Result<Vec<u8>, IdentityError> {
+    const MOST: u64 = 4096;
+    let io = |e| IdentityError::io("reading", path, e);
+    if std::fs::metadata(path).map_err(io)?.len() > MOST {
+        return Err(Error::IdentityFile(IdentityFileError::NotAnIdentityFile).into());
+    }
+    std::fs::read(path).map_err(io)
+}
+
 /// Not a Device command: the UI calls it once it is listening for `DeviceEvent`s, and
 /// receives everything the Device emitted before that, in order.
 #[tauri::command]
@@ -397,6 +485,9 @@ pub fn specta_builder<R: Runtime>() -> Builder<R> {
             delete_history_transfer,
             delete_history_batch,
             clear_history,
+            export_identity,
+            check_identity_import,
+            import_identity::<tauri::Wry>,
             events_ready
         ])
         .events(collect_events![DeviceEvent, background::ShellEvent])
@@ -445,8 +536,16 @@ fn default_config<R: Runtime>(app: &impl Manager<R>) -> Result<DeviceConfig, tau
         Some(dir) => PathBuf::from(dir),
         None => app.path().download_dir()?.join("BhayanakShare"),
     };
+    // The OS secret store has one entry for the user, which every install on the machine would
+    // share: an instance with a data folder of its own (see the README) keeps its key there.
+    let secret_key = data_dir.join("secret.key");
+    let key_source = if std::env::var_os(DATA_DIR_VAR).is_some() {
+        KeySource::File(secret_key)
+    } else {
+        KeySource::OsStore { fallback: secret_key }
+    };
     Ok(DeviceConfig {
-        key_source: KeySource::File(data_dir.join("secret.key")),
+        key_source,
         data_dir,
         save_dir,
         clock: Arc::new(SystemClock),
