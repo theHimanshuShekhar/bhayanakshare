@@ -41,6 +41,10 @@
     "category": "Utility",
     "shortDescription": "Send files directly from one device to another.",
     "longDescription": "BhayanakShare sends files and text directly from one device to another over a peer-to-peer connection, AirDrop-style, with no account and no server holding your files.",
+    "linux": {
+      "deb": { "desktopTemplate": "linux/bhayanakshare.desktop" },
+      "rpm": { "desktopTemplate": "linux/bhayanakshare.desktop" }
+    },
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",

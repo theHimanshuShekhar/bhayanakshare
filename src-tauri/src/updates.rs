@@ -259,6 +259,13 @@ mod tests {
         assert_eq!(conf["bundle"]["createUpdaterArtifacts"], true);
         // The deep-link plugin takes the desktop file's scheme handler from here.
         assert_eq!(conf["plugins"]["deep-link"]["desktop"]["schemes"], serde_json::json!(["bhayanakshare"]));
+        // The packaged desktop file hands the link over (`%u`); the scheme itself is filled in by
+        // the bundler from the config above.
+        let desktop = include_str!("../linux/bhayanakshare.desktop");
+        assert!(desktop.contains("Exec={{exec}} %u") && desktop.contains("MimeType={{mime_type}}"));
+        for kind in ["deb", "rpm"] {
+            assert_eq!(conf["bundle"]["linux"][kind]["desktopTemplate"], "linux/bhayanakshare.desktop");
+        }
         // Packages never change the firewall: no install or removal scripts at all.
         for kind in ["deb", "rpm"] {
             let package = &conf["bundle"]["linux"][kind];

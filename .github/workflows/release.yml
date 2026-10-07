@@ -1,0 +1,64 @@
+name: release
+
+# Cutting a release (see "Install and update" in the README): bump the version in
+# src-tauri/tauri.conf.json and Cargo.toml, commit, tag it `vX.Y.Z` and push the tag. This builds
+# the AppImage, deb and rpm, and puts them, their signatures and `latest.json` in a draft
+# GitHub Release. Publishing the draft is what makes the AppImage updater see the release.
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Check that the tag is the app's version
+        run: |
+          tauri_version=$(jq -r .version src-tauri/tauri.conf.json)
+          cargo_version=$(sed -n '/^\[workspace.package\]/,/^\[/{s/^version = "\(.*\)"/\1/p}' Cargo.toml)
+          if [ "v$tauri_version" != "$GITHUB_REF_NAME" ] || [ "v$cargo_version" != "$GITHUB_REF_NAME" ]; then
+            echo "::error::Tag $GITHUB_REF_NAME, but tauri.conf.json says $tauri_version and Cargo.toml says $cargo_version"
+            exit 1
+          fi
+
+      # What building the Tauri shell and its bundles needs
+      # (https://v2.tauri.app/start/prerequisites/#linux and the GitHub pipeline guide).
+      - name: Install system libraries
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev build-essential curl wget file libxdo-dev \
+            libssl-dev libayatana-appindicator3-dev librsvg2-dev patchelf xdg-utils
+
+      # The pnpm version comes from "packageManager" in package.json.
+      - uses: pnpm/action-setup@v6
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - run: pnpm install --frozen-lockfile
+
+      - uses: tauri-apps/tauri-action@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # The update-signing key lives only here, as repository secrets.
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        with:
+          tagName: ${{ github.ref_name }}
+          releaseName: BhayanakShare ${{ github.ref_name }}
+          releaseBody: See the assets to download this version and install it.
+          releaseDraft: true
+          prerelease: false

@@ -9,19 +9,30 @@ Two things must be allowed:
 1. **mDNS, inbound**: UDP port 5353, so Devices hear each other.
 2. **The app itself, inbound**: BhayanakShare listens on a UDP port it picks at random each time it starts, so allow the program rather than a port number. Without this, a Transfer between two Devices on one network falls back to the internet relay, or fails offline.
 
-BhayanakShare never changes firewall rules itself.
+BhayanakShare never changes firewall rules itself, and neither do its packages: the AppImage, deb and rpm run no install, update or removal scripts, so installing, updating or removing it leaves your firewall as it was. Allowing the two things above is always something you do yourself.
 
 The steps below come from each system's documentation. The project tests on Linux only, and they have not been run on every system listed.
 
 ## Linux
 
-**firewalld** (Fedora, RHEL, openSUSE): the `public` zone does not allow mDNS; the `home` zone does. Either put the network in the `home` zone, or allow the service in the zone it is in:
+**firewalld** (Fedora, RHEL, openSUSE): the `public` zone does not allow mDNS; the `home` zone does. See which zone your network is in, then either put it in the `home` zone, or allow the `mdns` service (UDP port 5353, `224.0.0.251` and `ff02::fb`) in the zone it is in:
 
 ```sh
+sudo firewall-cmd --get-active-zones   # which zone each network interface is in
+
+# Either: move the network to the home zone (with NetworkManager; "Wired connection 1" is
+# the connection's name, see `nmcli connection show`)
+sudo nmcli connection modify "Wired connection 1" connection.zone home
+sudo nmcli connection up "Wired connection 1"
+
+# Or: allow mDNS in the zone it is already in (here public)
 sudo firewall-cmd --zone=public --add-service=mdns             # until the next reload
 sudo firewall-cmd --permanent --zone=public --add-service=mdns # and keep it
 sudo firewall-cmd --reload
+sudo firewall-cmd --zone=public --list-services                # mdns should be in the list
 ```
+
+Without `--zone`, `firewall-cmd` changes the default zone, which is not always the one your network is in. The same command works for any zone, such as `--zone=FedoraWorkstation` on Fedora.
 
 firewalld has no per-program rules, and the app's UDP port changes on each start. If Devices see each other but Transfers go through the relay or fail offline, allow traffic from your local network as a whole, for example (change the range to yours):
 
