@@ -48,7 +48,7 @@ The packages register the `bhayanakshare://` scheme (the desktop file, `src-taur
 
 Updates are signed. The **private** key lives only as the repository secrets `TAURI_SIGNING_PRIVATE_KEY` and `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`, which only the release workflow reads. It is never committed or logged. The **public** key is `plugins.updater.pubkey` in `src-tauri/tauri.conf.json`, and every installed AppImage carries it.
 
-**The repository holds the placeholder `REPLACE_WITH_UPDATER_PUBKEY` there, and it has to be replaced with the real public key before the first release** (`pnpm tauri signer generate`, then the private key into the two secrets and the public key into the config). With the placeholder, an update check can still run, but an install is refused by the signature check, and the error is logged.
+The key pair was made with `pnpm tauri signer generate`. An update whose signature does not match the public key is refused, and the error is logged.
 
 Losing the private key means no release can be signed for the AppImages already installed: their users must install a new AppImage by hand, signed with a new key, which then carries the new public key. Keep a copy somewhere safe.
 

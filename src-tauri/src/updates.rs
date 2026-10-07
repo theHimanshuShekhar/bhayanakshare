@@ -277,9 +277,11 @@ mod tests {
 
     #[test]
     fn an_update_key_that_is_not_a_key_does_not_stop_the_updater_from_starting() {
-        // The config in the repository holds a placeholder until the real key is put there.
+        // A build whose config has a broken key must still start, and only fail to install.
+        let mut updater = tauri_conf()["plugins"]["updater"].clone();
+        updater["pubkey"] = "not a key".into();
         let mut context = mock_context(noop_assets());
-        context.config_mut().plugins.0.insert("updater".into(), tauri_conf()["plugins"]["updater"].clone());
+        context.config_mut().plugins.0.insert("updater".into(), updater);
         let app = mock_builder()
             .plugin(tauri_plugin_updater::Builder::new().build())
             .build(context)
