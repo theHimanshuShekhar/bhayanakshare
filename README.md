@@ -26,9 +26,9 @@ Releases are on the [releases page](https://github.com/theHimanshuShekhar/bhayan
 | deb (`BhayanakShare_X.Y.Z_amd64.deb`; Debian, Ubuntu) | `sudo apt install ./BhayanakShare_X.Y.Z_amd64.deb` | Not itself: a notice with a link to the release page |
 | rpm (`BhayanakShare-X.Y.Z-1.x86_64.rpm`; Fedora, openSUSE) | `sudo dnf install ./BhayanakShare-X.Y.Z-1.x86_64.rpm` | Not itself: a notice with a link to the release page |
 
-The app looks for a newer release when it starts and every 24 hours after, by fetching `latest.json` from the latest release on GitHub: a plain GET, with no Device ID and no user data. There is no telemetry. When a newer release exists the app shows "Update available (version X)":
+The app looks for a newer release when it starts, and again once 24 hours of clock time have passed since the last successful look (it wakes hourly to check, so a machine that was asleep looks soon after waking, and one that was offline at start tries again within the hour), by fetching `latest.json` from the latest release on GitHub: a plain GET, with no Device ID and no user data. There is no telemetry. When a newer release exists the app shows "Update available (version X)":
 
-- **AppImage** (the `APPIMAGE` variable is set, `src-tauri/src/updates.rs`): the notice has "Install and restart". Nothing is installed before the user presses it. The new AppImage is downloaded, its signature is checked against the key in the app, the file is replaced, and the app restarts the way Quit does, so Transfers save their progress and resume.
+- **AppImage** (the `APPIMAGE` variable is set, `src-tauri/src/updates.rs`): the notice has "Install and restart". Nothing is installed before the user presses it, and what is installed is the version the notice showed (if a newer one has been found since, the install is refused and the user checks again). With Transfers in progress the user is asked first, as they stop for the restart. The new AppImage is downloaded, its signature is checked against the key in the app, the file is replaced, and the app restarts the way Quit does, so Transfers save their progress and resume.
 - **deb and rpm** (anything that is not an AppImage): the notice links to the release page; the package is updated by hand.
 
 When a Transfer is refused because this Device's version is older, the notice also has "Update now": it looks for the update and, on an AppImage, installs it and restarts (pressing it is the agreement; the version being installed is shown), and on a package opens the release page. If no update is found, or the check cannot be made (offline), it says so. A failed check or install is logged and otherwise ignored, never a crash.
@@ -41,6 +41,8 @@ The packages register the `bhayanakshare://` scheme (the desktop file, `src-taur
 2. Tag it `vX.Y.Z` and push the tag.
 3. `.github/workflows/release.yml` builds on Ubuntu 22.04 and uploads the AppImage, deb, rpm, their updater signatures and `latest.json` to a **draft** GitHub Release.
 4. Publish the draft. The updater reads the latest *published* release, so installed AppImages see the new version only then.
+
+The release workflow is the one that sees the signing key, so its actions are pinned to commits (the tag is in a comment beside each), it caches nothing, and only its job has write permission. Update the pins by hand, checking the new tag.
 
 `.github/workflows/ci.yml` runs `pnpm typecheck` and `pnpm test` on every push and pull request (without `BHAYANAKSHARE_REQUIRE_MULTICAST`, as multicast may not work on a runner).
 

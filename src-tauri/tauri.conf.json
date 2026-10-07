@@ -37,6 +37,7 @@
     "publisher": "Himanshu Shekhar",
     "copyright": "Copyright (c) 2026 Himanshu Shekhar",
     "license": "MIT",
+    "licenseFile": "../LICENSE",
     "homepage": "https://github.com/theHimanshuShekhar/bhayanakshare",
     "category": "Utility",
     "shortDescription": "Send files directly from one device to another.",

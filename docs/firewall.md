@@ -34,10 +34,11 @@ sudo firewall-cmd --zone=public --list-services                # mdns should be 
 
 Without `--zone`, `firewall-cmd` changes the default zone, which is not always the one your network is in. The same command works for any zone, such as `--zone=FedoraWorkstation` on Fedora.
 
-firewalld has no per-program rules, and the app's UDP port changes on each start. If Devices see each other but Transfers go through the relay or fail offline, allow traffic from your local network as a whole, for example (change the range to yours):
+firewalld has no per-program rules, and the app's UDP port changes on each start. If Devices see each other but Transfers go through the relay or fail offline, allow traffic from your local network as a whole, in the zone your network is in (`<your zone>`, as `--get-active-zones` showed). Change the IPv4 range to yours, and add the IPv6 rules too if your network has IPv6, as Devices may use either (`fe80::/10` is the link-local range every IPv6 network has; use your network's own prefix as well, shown by `ip -6 addr`, if it has one):
 
 ```sh
-sudo firewall-cmd --permanent --zone=public --add-rich-rule='rule family="ipv4" source address="192.168.1.0/24" accept'
+sudo firewall-cmd --permanent --zone=<your zone> --add-rich-rule='rule family="ipv4" source address="192.168.1.0/24" accept'
+sudo firewall-cmd --permanent --zone=<your zone> --add-rich-rule='rule family="ipv6" source address="fe80::/10" accept'
 sudo firewall-cmd --reload
 ```
 
@@ -48,6 +49,7 @@ This lets every Device on that network reach every port on this one, so use it o
 ```sh
 sudo ufw allow in proto udp to 224.0.0.251 port 5353
 sudo ufw allow in proto udp from 192.168.1.0/24
+sudo ufw allow in proto udp from fe80::/10
 ```
 
 If you run Avahi, nothing needs changing for BhayanakShare: both share port 5353.

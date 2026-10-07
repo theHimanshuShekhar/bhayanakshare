@@ -448,6 +448,9 @@ mod tests {
         );
         assert!(updater["pubkey"].as_str().is_some_and(|key| !key.is_empty()));
         assert_eq!(conf["bundle"]["createUpdaterArtifacts"], true);
+        // The licence the packages ship, relative to this folder, is there.
+        let license = conf["bundle"]["licenseFile"].as_str().unwrap();
+        assert!(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(license).is_file());
         // The deep-link plugin takes the desktop file's scheme handler from here.
         assert_eq!(conf["plugins"]["deep-link"]["desktop"]["schemes"], serde_json::json!(["bhayanakshare"]));
         // The packaged desktop file hands the link over (`%u`); the scheme itself is filled in by
