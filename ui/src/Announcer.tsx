@@ -65,8 +65,12 @@ export function TransferAnnouncements({ transfers, contacts }: { transfers: Tran
 
   useEffect(() => {
     if (previous.current === transfers) return;
-    const result = announcements(previous.current, transfers, memory.current, (view) =>
-      peerName(view.peer, contacts, view.peerName),
+    const result = announcements(
+      previous.current,
+      transfers,
+      memory.current,
+      (view) => peerName(view.peer, contacts, view.peerName),
+      Date.now(),
     );
     previous.current = transfers;
     memory.current = result.memory;

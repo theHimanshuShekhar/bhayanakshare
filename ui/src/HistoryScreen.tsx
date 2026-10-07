@@ -12,8 +12,8 @@ import {
   type KnownDevices,
 } from "./history";
 import { t } from "./i18n";
-import { CopyableText, errorText, statusText } from "./TransferList";
-import { adjustedNamesText, batchStatus, formatSize, isOver, transferName } from "./transfers";
+import { CopyableText, errorText } from "./TransferList";
+import { adjustedNamesText, batchStatus, formatSize, isOver, statusText, transferName } from "./transfers";
 
 /**
  * The History tab: every Transfer this Device has sent or received, newest first, that can be

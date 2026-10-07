@@ -2480,7 +2480,8 @@ describe("Batches", () => {
 
     // The new Offer replaces the Failed row; the Failed Transfer is no longer shown.
     await member(device, 3, MUM, { kind: "offered" });
-    expect(screen.queryByText(/The other Device went away/)).toBeNull();
+    const list = screen.getByRole("region", { name: "Transfers" });
+    expect(within(list).queryByText(/The other Device went away/)).toBeNull();
     expect(screen.getByText("Waiting for Mum…")).toBeTruthy();
     expect(screen.getByText("0 of 2 delivered, 1 declined, 1 in progress")).toBeTruthy();
   });

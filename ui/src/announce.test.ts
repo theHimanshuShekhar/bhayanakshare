@@ -57,7 +57,7 @@ function play(events: DeviceEvent[], start: Transfers = noTransfers, memory: Pro
   const said: string[][] = [];
   for (const event of events) {
     const next = applyEvent(state, event);
-    const result = announcements(state, next, remembered, peerOf);
+    const result = announcements(state, next, remembered, peerOf, event.at);
     said.push(result.messages);
     remembered = result.memory;
     state = next;
@@ -68,12 +68,35 @@ function play(events: DeviceEvent[], start: Transfers = noTransfers, memory: Pro
 describe("announcements: what a state change says", () => {
   it("says nothing when nothing changed", () => {
     const state = applyEvent(noTransfers, transfer({ kind: "offered" }));
-    expect(announcements(state, state, {}, peerOf).messages).toEqual([]);
+    expect(announcements(state, state, {}, peerOf, 0).messages).toEqual([]);
   });
 
-  it("says an Offer was received, with who it is from and what it is", () => {
+  it("says nothing of the Offer that the Offer sheet opens for: the sheet takes focus and reads itself", () => {
     const { said } = play([transfer({ kind: "offered" })]);
-    expect(said).toEqual([["photo.jpg from Mum: Waiting for your answer."]]);
+    expect(said).toEqual([[]]);
+  });
+
+  it("says an Offer that arrives while another is being answered, with who it is from and what", () => {
+    const first = applyEvent(noTransfers, transfer({ kind: "offered" }));
+    const { said } = play([transfer({ kind: "offered" }, { id: "cd".repeat(16), peer: OTHER })], first);
+    expect(said).toEqual([["photo.jpg from Dad: Waiting for your answer."]]);
+  });
+
+  it("says the second of two Offers that arrive together, as the first is the one the sheet opens for", () => {
+    const next = [
+      transfer({ kind: "offered" }),
+      transfer({ kind: "offered" }, { id: "cd".repeat(16), peer: OTHER }),
+    ].reduce(applyEvent, noTransfers);
+    expect(announcements(noTransfers, next, {}, peerOf, 0).messages).toEqual([
+      "photo.jpg from Dad: Waiting for your answer.",
+    ]);
+  });
+
+  it("says a queued Offer is waiting only once, not again when it comes to be answered", () => {
+    const first = applyEvent(noTransfers, transfer({ kind: "offered" }));
+    const both = applyEvent(first, transfer({ kind: "offered" }, { id: "cd".repeat(16), peer: OTHER }));
+    const answered = applyEvent(both, transfer({ kind: "accepted" }));
+    expect(announcements(both, answered, {}, peerOf, 0).messages).toEqual(["photo.jpg from Mum: Accepted. Starting…"]);
   });
 
   it("says a Transfer started when this Device sent it", () => {
@@ -90,7 +113,7 @@ describe("announcements: what a state change says", () => {
       transfer({ kind: "completed", saved_to: "/x/photo.jpg" }),
     ]);
     expect(said.map((m) => m.join())).toEqual([
-      "photo.jpg from Mum: Waiting for your answer.",
+      "",
       "photo.jpg from Mum: Accepted. Starting…",
       "",
       "photo.jpg from Mum: Receiving…",
@@ -134,8 +157,8 @@ describe("announcements: what a state change says", () => {
   });
 
   it("names a text by the word Text", () => {
-    const { said } = play([transfer({ kind: "offered" }, { kind: "text" })]);
-    expect(said[0]).toEqual(["Text from Mum: Waiting for your answer."]);
+    const { said } = play([transfer({ kind: "offered" }, { kind: "text", role: "sender" })]);
+    expect(said[0]).toEqual(["Text to Mum: Waiting for Mum…"]);
   });
 
   it("says what happened to several Transfers at once, in the order they began", () => {
@@ -145,7 +168,7 @@ describe("announcements: what a state change says", () => {
       transfer({ kind: "failed", reason: "No." }, { id: "11".repeat(16) }),
       transfer({ kind: "completed", saved_to: null }, { id: "22".repeat(16), peer: OTHER }),
     ].reduce(applyEvent, both);
-    expect(announcements(both, next, {}, peerOf).messages).toEqual([
+    expect(announcements(both, next, {}, peerOf, 0).messages).toEqual([
       "photo.jpg from Mum: Could not receive. No.",
       "photo.jpg from Dad: Received.",
     ]);
@@ -219,24 +242,57 @@ describe("announcements: progress", () => {
     const memory: ProgressMemory = {};
     const before = applyEvent(noTransfers, transfer({ kind: "transferring" }));
     const after = applyEvent(before, progress(300, 20_000));
-    const result = announcements(before, after, memory, peerOf);
+    const result = announcements(before, after, memory, peerOf, 0);
     expect(memory).toEqual({});
     expect(result.memory[ID]).toEqual({ bucket: 1, at: 20_000 });
   });
 });
 
 describe("announcements: a Batch", () => {
-  const member = (n: number, peer: string, state: TransferState) =>
-    transfer(state, { id: String(n).repeat(32), role: "sender", peer, batch: BATCH });
+  const member = (n: number, peer: string, state: TransferState, at?: number): DeviceEvent => {
+    const event = transfer(state, { id: String(n).repeat(32), role: "sender", peer, batch: BATCH });
+    return at === undefined ? event : { ...event, at };
+  };
+  const START = "photo.jpg to 1 Devices: 0 of 1 delivered, 1 in progress";
 
-  it("is not announced Receiver by Receiver", () => {
+  it("says it has started, once, however many Receivers follow within ten seconds", () => {
     const { said } = play([
       member(1, PEER, { kind: "offered" }),
       member(2, OTHER, { kind: "offered" }),
       member(1, PEER, { kind: "transferring" }),
-      member(1, PEER, { kind: "completed", saved_to: null }),
     ]);
-    expect(said).toEqual([[], [], [], []]);
+    expect(said).toEqual([[START], [], []]);
+  });
+
+  it("says how it stands when that has changed and ten seconds have passed since it last spoke", () => {
+    const { said } = play([
+      member(1, PEER, { kind: "offered" }),
+      member(2, OTHER, { kind: "offered" }),
+      member(1, PEER, { kind: "completed", saved_to: null }, 20_000),
+    ]);
+    expect(said[2]).toEqual(["photo.jpg to 2 Devices: 1 of 2 delivered, 1 in progress"]);
+  });
+
+  it("holds back how it stands when that changes too soon, and says it after the ten seconds", () => {
+    const { said } = play([
+      member(1, PEER, { kind: "offered" }, 1_000),
+      member(2, OTHER, { kind: "offered" }, 1_001),
+      member(3, "Z".repeat(52), { kind: "offered" }, 1_002),
+      member(1, PEER, { kind: "completed", saved_to: null }, 1_000 + PROGRESS_MIN_GAP_MS - 1),
+      member(2, OTHER, { kind: "completed", saved_to: null }, 1_000 + PROGRESS_MIN_GAP_MS),
+    ]);
+    // Too soon to say how it stands, so what has arrived of the whole is what is said.
+    expect(said[3]).toEqual(["photo.jpg to 3 Devices: 33% of 2.9 KiB"]);
+    expect(said[4]).toEqual(["photo.jpg to 3 Devices: 2 of 3 delivered, 1 in progress"]);
+  });
+
+  it("says at once when a Receiver's Transfer fails, with its reason, as that can be retried", () => {
+    const { said } = play([
+      member(1, PEER, { kind: "offered" }),
+      member(2, OTHER, { kind: "offered" }),
+      member(2, OTHER, { kind: "failed", reason: "Gone." }),
+    ]);
+    expect(said[2]).toEqual(["photo.jpg to Dad: Could not send. Gone."]);
   });
 
   it("says how it ended, once every Receiver is done", () => {
@@ -246,11 +302,12 @@ describe("announcements: a Batch", () => {
       member(1, PEER, { kind: "completed", saved_to: null }),
       member(2, OTHER, { kind: "declined" }),
     ]);
-    expect(said[2]).toEqual([]);
+    // Not how it stands, too soon after it started; the half that has arrived is.
+    expect(said[2]).toEqual(["photo.jpg to 2 Devices: 50% of 2 KiB"]);
     expect(said[3]).toEqual(["photo.jpg to 2 Devices: 1 of 2 delivered, 1 declined"]);
   });
 
-  it("says so again when a retry ends", () => {
+  it("says a failure and then how it ended, and again when a retry ends it", () => {
     const { said } = play([
       member(1, PEER, { kind: "offered" }),
       member(1, PEER, { kind: "failed", reason: "No." }),
@@ -258,8 +315,41 @@ describe("announcements: a Batch", () => {
       member(3, PEER, { kind: "offered" }),
       member(3, PEER, { kind: "completed", saved_to: null }),
     ]);
-    expect(said[1]).toEqual(["photo.jpg to 1 Devices: 0 of 1 delivered, 1 failed"]);
+    expect(said[1]).toEqual([
+      "photo.jpg to Mum: Could not send. No.",
+      "photo.jpg to 1 Devices: 0 of 1 delivered, 1 failed",
+    ]);
     expect(said[2]).toEqual([]);
     expect(said[3]).toEqual(["photo.jpg to 1 Devices: 1 of 1 delivered"]);
+  });
+
+  it("says its progress as a whole at the same quarters and gap, from all its Receivers", () => {
+    const first = play([
+      member(1, PEER, { kind: "transferring" }),
+      member(2, OTHER, { kind: "transferring" }),
+    ]).state;
+    // 2 Transfers of 1000 bytes: 600 received is 30% of the whole.
+    const { said } = play(
+      [
+        progress(600, 20_000, "1".repeat(32)),
+        progress(700, 21_000, "1".repeat(32)),
+        progress(1100, 22_000, "1".repeat(32)),
+        progress(1200, 20_000 + PROGRESS_MIN_GAP_MS, "1".repeat(32)),
+      ],
+      first,
+    );
+    expect(said.map((m) => m.join())).toEqual([
+      "photo.jpg to 2 Devices: 30% of 2 KiB",
+      "",
+      "",
+      "photo.jpg to 2 Devices: 60% of 2 KiB",
+    ]);
+  });
+
+  it("does not say the progress and the new standing in one breath", () => {
+    const first = play([member(1, PEER, { kind: "offered" }), member(2, OTHER, { kind: "offered" })]).state;
+    const { said } = play([member(1, PEER, { kind: "completed", saved_to: null }, 30_000)], first);
+    // 1000 of 2000 bytes: a quarter was passed, and the standing changed.
+    expect(said[0]).toEqual(["photo.jpg to 2 Devices: 1 of 2 delivered, 1 in progress"]);
   });
 });

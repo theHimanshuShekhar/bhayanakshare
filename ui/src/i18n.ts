@@ -385,7 +385,6 @@ const en = {
 
   "announce.line": "{title}: {text}",
   "announce.copied": "Copied to the clipboard.",
-  "announce.copyFailed": "Copy failed. Select the text and copy it by hand.",
 
   "selection.select": "Select",
   "selection.selected": "Selected",

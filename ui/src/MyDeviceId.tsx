@@ -1,11 +1,9 @@
 import { useEffect, useState } from "react";
 import type { Api, MyId } from "./api";
-import { useAnnounce } from "./Announcer";
 import { t } from "./i18n";
 import { QrCode } from "./QrCode";
 import { shareLink } from "./shareLink";
-
-type Copy = "idle" | "copied" | "failed";
+import { useCopy } from "./useCopy";
 
 /**
  * "My ID": this Device's Fingerprint, Device ID, and the share link and its QR code, with
@@ -15,8 +13,7 @@ type Copy = "idle" | "copied" | "failed";
 export function MyDeviceId({ api, nested = false }: { api: Api; nested?: boolean }) {
   const Heading = nested ? "h4" : "h2";
   const [state, setState] = useState<"loading" | "error" | { myId: MyId; link: string }>("loading");
-  const [copy, setCopy] = useState<Copy>("idle");
-  const announce = useAnnounce();
+  const { outcome, copy } = useCopy(api);
 
   useEffect(() => {
     let live = true;
@@ -34,17 +31,6 @@ export function MyDeviceId({ api, nested = false }: { api: Api; nested?: boolean
   if (state === "error") return <p role="alert">{t("home.error")}</p>;
 
   const { myId, link } = state;
-  const copyText = (text: string) =>
-    api.copyText(text).then(
-      () => {
-        setCopy("copied");
-        announce(t("announce.copied"));
-      },
-      () => {
-        setCopy("failed");
-        announce(t("announce.copyFailed"));
-      },
-    );
 
   return (
     <section aria-labelledby="my-id-heading">
@@ -62,16 +48,18 @@ export function MyDeviceId({ api, nested = false }: { api: Api; nested?: boolean
       </p>
       <QrCode text={link} label={t("myId.qr")} />
       <p>
-        <button type="button" onClick={() => copyText(myId.id)}>
+        <button type="button" onClick={() => copy(myId.id)}>
           {t("myId.copy")}
         </button>{" "}
-        <button type="button" onClick={() => copyText(link)}>
+        <button type="button" onClick={() => copy(link)}>
           {t("myId.copyLink")}
         </button>
-        <span className="note">
-          {copy === "copied" && t("myId.copied")}
-          {copy === "failed" && t("myId.copyFailed")}
-        </span>
+        <span className="note">{outcome === "copied" && t("myId.copied")}</span>
+        {outcome === "failed" && (
+          <span role="alert" className="note">
+            {t("myId.copyFailed")}
+          </span>
+        )}
       </p>
     </section>
   );

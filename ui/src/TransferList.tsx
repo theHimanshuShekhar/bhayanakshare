@@ -1,9 +1,9 @@
 import { useState } from "react";
-import { useAnnounce } from "./Announcer";
 import type { Api, Contact } from "./api";
 import { peerName } from "./contacts";
-import { t, type MessageKey } from "./i18n";
+import { t } from "./i18n";
 import { PlainText } from "./PlainText";
+import { useCopy } from "./useCopy";
 import {
   adjustedNamesText,
   batchStatus,
@@ -13,25 +13,12 @@ import {
   formatSize,
   isPreparing,
   percent,
+  statusText,
   transferName,
   type BatchView,
   type ListItem,
   type TransferView,
 } from "./transfers";
-
-/** Sentence for a Transfer's current state, e.g. "Waiting for Mum…" (or a Fingerprint). */
-export function statusText(x: Pick<TransferView, "role" | "state">, peer: string, preparing = false): string {
-  const side = x.role === "sender" ? "sending" : "receiving";
-  const params = {
-    peer,
-    reason: x.state.kind === "failed" ? x.state.reason : "",
-  };
-  if (x.state.kind === "cancelled") {
-    return t(x.state.by === x.role ? "transfer.cancelledByYou" : "transfer.cancelledByPeer", params);
-  }
-  const state = preparing ? "preparing" : x.state.kind;
-  return t(`transfer.${side}.${state}` as MessageKey, params);
-}
 
 export function errorText(e: unknown): string {
   return e instanceof Error ? e.message : String(e);
@@ -110,33 +97,19 @@ function BatchRow({ api, contacts, batch }: { api: Api; contacts: Contact[]; bat
 
 /** A text, shown as plain text, with a button to copy it. `label` says which text, for the button. */
 export function CopyableText({ api, text, label }: { api: Api; text: string; label: string }) {
-  const [copy, setCopy] = useState<"idle" | "copied" | "failed">("idle");
-  const announce = useAnnounce();
+  const { outcome, copy } = useCopy(api);
   return (
     <>
       <PlainText text={text} />
-      <button
-        type="button"
-        aria-label={label}
-        onClick={() =>
-          api.copyText(text).then(
-            () => {
-              setCopy("copied");
-              announce(t("announce.copied"));
-            },
-            () => {
-              setCopy("failed");
-              announce(t("announce.copyFailed"));
-            },
-          )
-        }
-      >
+      <button type="button" aria-label={label} onClick={() => copy(text)}>
         {t("transfer.copy")}
       </button>
-      <span className="note">
-        {copy === "copied" && t("transfer.copied")}
-        {copy === "failed" && t("transfer.copyFailed")}
-      </span>
+      <span className="note">{outcome === "copied" && t("transfer.copied")}</span>
+      {outcome === "failed" && (
+        <span role="alert" className="note">
+          {t("transfer.copyFailed")}
+        </span>
+      )}
     </>
   );
 }
