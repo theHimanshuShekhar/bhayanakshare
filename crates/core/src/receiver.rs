@@ -735,7 +735,13 @@ async fn try_resume(sh: &Shared, info: &TransferInfo) -> Resumed {
         Some(Ok(Message::Unknown)) => Resumed::Refused(FORGOTTEN.into()),
         Some(Ok(Message::Failed { reason })) => Resumed::Refused(reason),
         other => {
-            tracing::debug!(transfer = %info.id, "no usable answer to Resume: {other:?}");
+            // Not `{other:?}`: a message can hold names or text.
+            let said = match &other {
+                Some(Ok(_)) => "an unexpected message".to_owned(),
+                Some(Err(e)) => e.to_string(),
+                None => "nothing".to_owned(),
+            };
+            tracing::debug!(transfer = %info.id, "no usable answer to Resume: {said}");
             Resumed::Unreachable
         }
     }

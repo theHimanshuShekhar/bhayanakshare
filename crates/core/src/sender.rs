@@ -759,7 +759,9 @@ async fn check_sources(sh: &Shared, info: &TransferInfo) -> Result<Vec<Source>, 
 
 /// Why a Transfer fails when a file `name` (as the Offer called it) is not as it was.
 fn changed(name: &str) -> Failure {
-    Failure::with(&format!("A file changed on the sending Device: {name}"), "source check failed")
+    // The user is told which file; the log is not (a `Failure::with` would log the reason).
+    tracing::warn!("Transfer failed: a file changed on the sending Device (source check failed)");
+    Failure(format!("A file changed on the sending Device: {name}"))
 }
 
 fn is_unchanged(source: &Source) -> bool {

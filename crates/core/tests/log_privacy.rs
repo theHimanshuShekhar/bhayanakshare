@@ -37,6 +37,7 @@ const INNER_FOLDER_NAME: &str = "inner-folder-MNBVC";
 const INNER_FILE_NAME: &str = "inner-file-LKJHG.bin";
 const LOCKED_FOLDER_NAME: &str = "locked-folder-ASDFG";
 const LOCKED_FILE_NAME: &str = "locked-file-HJKLP.txt";
+const CHANGING_FILE_NAME: &str = "changing-file-BNMVC.txt";
 const READONLY_FOLDER_NAME: &str = "readonly-save-folder-POIUY";
 const READONLY_FILE_NAME: &str = "readonly-file-TGBNH.txt";
 const HOSTILE_FILE_NAME: &str = "hostile-file-ZXCVB.txt";
@@ -130,6 +131,16 @@ async fn a_transfers_logs_hold_no_full_device_id_file_name_folder_name_or_text()
         }
     }
 
+    // A file that changes on Alice's side after it was offered: the Sender tells the user which
+    // one, and the log must not.
+    let changing = src.path().join(CHANGING_FILE_NAME);
+    std::fs::write(&changing, b"as offered").unwrap();
+    let id = alice.device.send_file(bob.addr(), &changing).await.unwrap();
+    bob.wait_offer().await;
+    std::fs::write(&changing, b"no longer as offered").unwrap();
+    bob.device.accept(id).await.unwrap();
+    alice.wait_state(id, "failed").await;
+
     // A folder Bob cannot write to, chosen to save into: whatever Bob logs about the failure
     // must not hold its path, which is under a folder the user named.
     #[cfg(unix)]
@@ -217,6 +228,7 @@ async fn a_transfers_logs_hold_no_full_device_id_file_name_folder_name_or_text()
             LOCKED_FILE_NAME,
             READONLY_FOLDER_NAME,
             READONLY_FILE_NAME,
+            CHANGING_FILE_NAME,
             HOSTILE_FILE_NAME,
         ]
         .map(String::from),
