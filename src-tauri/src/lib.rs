@@ -6,6 +6,7 @@
 //! (`pnpm bindings`; a test fails when the file is stale).
 
 mod background;
+pub mod logging;
 mod notice;
 
 use std::{
@@ -23,6 +24,7 @@ use bhayanakshare_core::{
     HistoryQuery, IdentityFileError, KeyError, KeySource, Network, Role, SpaceCheck, SystemClock,
     SystemFreeSpace, TransferId, Visibility,
 };
+use logging::Logging;
 use serde::Serialize;
 use specta::Type;
 use tauri::{AppHandle, Manager, Runtime, State};
@@ -43,6 +45,9 @@ const START_FAILED_TITLE: &str = "BhayanakShare can't start";
 /// Set when the app is leaving to start again, as after an identity import.
 #[derive(Default)]
 struct Relaunch(AtomicBool);
+
+/// The folder of the log files, in the data folder.
+const LOGS_DIR: &str = "logs";
 
 /// How long quitting waits for the Device to save its Transfers' progress.
 pub(crate) const QUIT_DEADLINE: Duration = Duration::from_secs(30);
@@ -310,6 +315,43 @@ async fn set_visibility<R: Runtime>(
     Ok(())
 }
 
+/// Whether debug logging is on: a bigger log, for finding what went wrong.
+#[tauri::command]
+#[specta::specta]
+fn debug_logging(device: State<'_, Device>) -> bool {
+    device.debug_logging()
+}
+
+/// Turns debug logging on or off; it takes effect at once and is kept across restarts.
+#[tauri::command]
+#[specta::specta]
+async fn set_debug_logging(
+    device: State<'_, Device>,
+    logging: State<'_, Logging>,
+    on: bool,
+) -> Result<(), String> {
+    device.set_debug_logging(on).await.map_err(|e| e.to_string())?;
+    logging.set_debug(on);
+    Ok(())
+}
+
+/// Writes the log files and an `about.txt` as a zip to `path`. Nothing is sent anywhere.
+#[tauri::command]
+#[specta::specta]
+async fn export_diagnostics(
+    device: State<'_, Device>,
+    logging: State<'_, Logging>,
+    path: String,
+) -> Result<(), String> {
+    // So the zip has every line logged so far.
+    logging.flush();
+    let logs = logging.files().map(|files| files.dir().to_owned()).unwrap_or_default();
+    device
+        .export_diagnostics(&logs, std::path::Path::new(&path), env!("CARGO_PKG_VERSION"))
+        .await
+        .map_err(|e| e.to_string())
+}
+
 /// Whether this Device starts when the user logs in.
 #[tauri::command]
 #[specta::specta]
@@ -520,6 +562,9 @@ pub fn specta_builder<R: Runtime>() -> Builder<R> {
             set_visibility::<tauri::Wry>,
             autostart_enabled,
             set_autostart,
+            debug_logging,
+            set_debug_logging,
+            export_diagnostics,
             quit_app::<tauri::Wry>,
             contacts,
             add_contact,
@@ -676,15 +721,22 @@ pub fn run() {
             app.manage(background::Quitting::default());
             app.manage(notice::Notifier::default());
             app.manage(Relaunch::default());
-            let started = default_config(app)
-                .map_err(Into::into)
-                .and_then(|config| start_device(app, config));
+            let config = default_config(app);
+            // Before anything else that could have something to say: the log is in the data
+            // folder, which is the Device's to say where.
+            match &config {
+                Ok(config) => app.manage(Logging::install(&config.data_dir.join(LOGS_DIR))),
+                Err(_) => app.manage(Logging::new(None, |_| {})),
+            };
+            let started = config.map_err(Into::into).and_then(|config| start_device(app, config));
             if let Err(e) = started {
                 // Not a panic: the window is not shown yet, so the user would see nothing.
                 fail_to_start(app.handle(), &e.to_string());
                 return Ok(());
             }
 
+            // The setting is kept by the Device, which opened after the log did.
+            app.state::<Logging>().set_debug(app.state::<Device>().debug_logging());
             let handle = app.handle();
             let visibility = tauri::async_runtime::block_on(app.state::<Device>().visibility());
             if let Err(e) = background::build_tray(handle, visibility) {
@@ -713,6 +765,9 @@ pub fn run() {
             if let tauri::RunEvent::Exit = event {
                 if let Some(device) = app.try_state::<Device>() {
                     tauri::async_runtime::block_on(device.shutdown(QUIT_DEADLINE));
+                }
+                if let Some(logging) = app.try_state::<Logging>() {
+                    logging.flush();
                 }
                 // The Device is closed and the single instance plugin has let go of its lock
                 // (it does so before this), so the new start is neither held up by the data
@@ -789,6 +844,51 @@ mod tests {
         let err = start_device(&app, config).unwrap_err();
         assert!(err.to_string().contains("not 32 bytes"), "{err}");
         assert!(app.try_state::<Device>().is_none());
+    }
+
+    #[test]
+    fn debug_logging_is_kept_by_the_device_and_applied_to_the_log_and_the_export_is_a_zip() {
+        use std::io::{Read as _, Write as _};
+
+        let tmp = tempfile::tempdir().unwrap();
+        let data_dir = tmp.path().join("data");
+        let config = DeviceConfig {
+            key_source: KeySource::File(data_dir.join("secret.key")),
+            data_dir: data_dir.clone(),
+            save_dir: tmp.path().join("save"),
+            clock: Arc::new(SystemClock),
+            network: Network::Localhost,
+            free_space: Arc::new(SystemFreeSpace),
+        };
+        let app = tauri::test::mock_app();
+        start_device(&app, config).unwrap();
+        let files = Arc::new(bhayanakshare_core::LogFiles::open(&data_dir.join(LOGS_DIR)).unwrap());
+        let applied = Arc::new(Mutex::new(Vec::new()));
+        app.manage(Logging::new(Some(files.clone()), {
+            let applied = applied.clone();
+            move |on| applied.lock().unwrap().push(on)
+        }));
+
+        assert!(!debug_logging(app.state()));
+        tauri::async_runtime::block_on(set_debug_logging(app.state(), app.state(), true)).unwrap();
+        assert!(debug_logging(app.state()));
+        assert!(app.state::<Device>().debug_logging());
+        assert_eq!(*applied.lock().unwrap(), [true]);
+
+        (&*files).write_all(b"a line of the log\n").unwrap();
+        let dest = tmp.path().join("diagnostics.zip");
+        let path = dest.to_string_lossy().into_owned();
+        tauri::async_runtime::block_on(export_diagnostics(app.state(), app.state(), path)).unwrap();
+
+        let mut zip = zip::ZipArchive::new(std::fs::File::open(&dest).unwrap()).unwrap();
+        let mut about = String::new();
+        zip.by_name("about.txt").unwrap().read_to_string(&mut about).unwrap();
+        assert!(about.contains(&format!("App version: {}", env!("CARGO_PKG_VERSION"))), "{about}");
+        assert!(about.contains("Debug logging: on"), "{about}");
+        let log = zip.file_names().find(|name| name.starts_with("logs/")).unwrap().to_owned();
+        let mut line = String::new();
+        zip.by_name(&log).unwrap().read_to_string(&mut line).unwrap();
+        assert_eq!(line, "a line of the log\n");
     }
 
     fn generate(to: &Path) {

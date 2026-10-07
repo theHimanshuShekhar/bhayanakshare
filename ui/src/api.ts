@@ -74,6 +74,14 @@ export interface Api {
   /** Whether this Device starts when the user logs in. */
   autostartEnabled(): Promise<boolean>;
   setAutostart(on: boolean): Promise<unknown>;
+  /** Whether debug logging is on. */
+  debugLogging(): Promise<boolean>;
+  /** Turns debug logging on or off; it takes effect at once and is kept. */
+  setDebugLogging(on: boolean): Promise<unknown>;
+  /** Writes the log files and the app version, as a zip, to the file at `path`. */
+  exportDiagnostics(path: string): Promise<unknown>;
+  /** Asks the user where to save the diagnostics zip, suggesting `name`; null if they cancel. */
+  pickDiagnosticsSavePath(name: string): Promise<string | null>;
   /** The user confirmed quitting: the Device saves its progress, then the app exits. */
   quitApp(): Promise<unknown>;
   /** Every Contact, in the order they were added. */
@@ -171,6 +179,11 @@ export const tauriApi: Api = {
   setVisibility: commands.setVisibility,
   autostartEnabled: commands.autostartEnabled,
   setAutostart: commands.setAutostart,
+  debugLogging: commands.debugLogging,
+  setDebugLogging: commands.setDebugLogging,
+  exportDiagnostics: commands.exportDiagnostics,
+  pickDiagnosticsSavePath: (name) =>
+    save({ defaultPath: name, filters: [{ name: t("diagnostics.fileType"), extensions: ["zip"] }] }),
   quitApp: commands.quitApp,
   contacts: commands.contacts,
   addContact: commands.addContact,

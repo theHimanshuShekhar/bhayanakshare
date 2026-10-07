@@ -15,6 +15,8 @@ use std::{
 
 use tracing_appender::rolling::{RollingFileAppender, Rotation};
 
+use crate::db::Db;
+
 /// The log files are named `<LOG_PREFIX>.<YYYY-MM-DD>.<LOG_SUFFIX>`, one a day.
 const LOG_PREFIX: &str = "bhayanakshare";
 const LOG_SUFFIX: &str = "log";
@@ -31,6 +33,20 @@ const CHECK_EVERY_BYTES: u64 = 1 << 20;
 /// While the log is full (today's file alone is over the cap), how long to wait between looks at
 /// whether it has room again.
 const FULL_RECHECK: Duration = Duration::from_secs(60);
+
+/// The setting that holds whether debug logging is on: `"1"` or `"0"`. Off when unset.
+pub(crate) const DEBUG_SETTING: &str = "debug_logging";
+
+/// Whether debug logging is on, as stored.
+pub(crate) async fn load_debug_setting(db: &Db) -> bool {
+    match db.setting(DEBUG_SETTING).await {
+        Ok(value) => value.as_deref() == Some("1"),
+        Err(e) => {
+            tracing::warn!("could not read the debug logging setting: {e}");
+            false
+        }
+    }
+}
 
 /// The filter directive for the log: this app's own crates at info, or at debug while the
 /// "Debug logging" setting is on, and every dependency at warn, or info while it is on.

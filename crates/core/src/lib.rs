@@ -45,7 +45,7 @@ pub use history::{HistoryEntry, HistoryQuery, HistoryTransfer};
 pub use identity::{DEVICE_ID_LEN, DeviceId, DeviceIdError, KeySource};
 pub use identity_file::IdentityFileError;
 pub use keystore::KeyError;
-pub use logs::log_filter;
+pub use logs::{LogFiles, MAX_LOG_BYTES, log_filter};
 pub use names::{NameError, validate_file_name};
 pub use receiver::INCOMING_DIR;
 pub use space::{FreeSpace, SpaceCheck, SystemFreeSpace};

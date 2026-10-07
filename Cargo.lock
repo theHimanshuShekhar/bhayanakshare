@@ -535,7 +535,9 @@ dependencies = [
  "tauri-specta",
  "tempfile",
  "tracing",
+ "tracing-subscriber",
  "webkit2gtk",
+ "zip",
 ]
 
 [[package]]

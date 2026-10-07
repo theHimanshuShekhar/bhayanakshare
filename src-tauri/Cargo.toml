@@ -26,6 +26,8 @@ tauri-plugin-opener = "2"
 tauri-plugin-single-instance = { version = "2", features = ["deep-link"] }
 tauri-specta = { version = "=2.0.0-rc.25", features = ["derive", "typescript"] }
 tracing = "0.1"
+# The log subscriber (logging.rs); the files and the filter come from the core.
+tracing-subscriber = { version = "0.3", default-features = false, features = ["env-filter", "fmt", "std"] }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 # Desktop notifications. The Tauri plugin cannot report a click on a notification on the
@@ -38,5 +40,6 @@ webkit2gtk = { version = "2", features = ["v2_40"] }
 tauri-plugin-notification = "2"
 
 [dev-dependencies]
+zip = { version = "8", default-features = false, features = ["deflate"] }
 tauri = { version = "2", features = ["test"] }
 tempfile = "3"
