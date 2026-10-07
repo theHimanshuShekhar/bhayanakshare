@@ -12,12 +12,16 @@ use std::{
 };
 
 use iroh::{
-    Endpoint, EndpointAddr, RelayMode, TransportAddr, address_lookup::MemoryLookup,
+    Endpoint, EndpointAddr, RelayMode, SecretKey, TransportAddr, address_lookup::MemoryLookup,
     endpoint::presets, protocol::Router,
 };
 use iroh_blobs::BlobsProtocol;
-use tokio::sync::{Semaphore, oneshot};
+use tokio::{
+    sync::{Semaphore, oneshot},
+    task::spawn_blocking,
+};
 use tokio_util::{sync::CancellationToken, task::TaskTracker};
+use zeroize::Zeroizing;
 
 use crate::{
     clock::{Clock, UnixMillis},
@@ -31,13 +35,21 @@ use crate::{
     gate::Gate,
     history::{self, HistoryEntry, HistoryQuery},
     identity::{DeviceId, KeySource},
-    protocol, receiver,
+    identity_file, protocol, receiver,
     sender::{self, Outgoing, Payload},
     session::RESTARTED,
     space::{FreeSpace, SpaceCheck},
     store,
     transfer::{BatchId, OFFER_TTL_MS, Role, TransferId, TransferKind, TransferState},
 };
+
+/// Runs `work` where it may block (Argon2, the OS secret store) without holding up the runtime.
+async fn blocking<T: Send + 'static>(
+    what: &'static str,
+    work: impl FnOnce() -> T + Send + 'static,
+) -> Result<T, Error> {
+    spawn_blocking(work).await.map_err(|e| Error::io(what, std::io::Error::other(e)))
+}
 
 /// Which network a Device lives on.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -194,6 +206,10 @@ impl TransferInfo {
 /// State shared by the Device handle and the tasks it spawns.
 pub(crate) struct Shared {
     pub id: DeviceId,
+    /// What the running endpoint is bound to, for exporting it, and where it is kept, for
+    /// replacing it. An import changes the stored key; this one stays until the next start.
+    pub secret: Zeroizing<[u8; 32]>,
+    pub key_source: KeySource,
     pub endpoint: Endpoint,
     pub blobs: iroh_blobs::api::Store,
     /// Decides who the blobs provider serves.
@@ -515,9 +531,11 @@ impl Device {
         let save_dir = std::path::absolute(&save_dir).map_err(io("resolving", &save_dir))?;
         let data_dir = std::path::absolute(&data_dir).map_err(io("resolving", &data_dir))?;
 
-        let secret = key_source
-            .load_or_create()
-            .map_err(|e| Error::io("loading the secret key", e))?;
+        // The OS secret store may ask the user to unlock it, which can take a while.
+        let secret = {
+            let key_source = key_source.clone();
+            blocking("loading the secret key", move || key_source.load_or_create()).await??
+        };
         let db = Db::open(&data_dir.join("bhayanakshare.db")).await?;
         let store = store::open(&data_dir.join("blobs")).await?;
         let blobs: iroh_blobs::api::Store = (**store).clone();
@@ -530,6 +548,7 @@ impl Device {
             }
         }
         let public_dht = PublicDht::new(secret.clone(), dht::load(&db).await);
+        let secret_bytes = Zeroizing::new(secret.to_bytes());
         let mut builder = match network {
             // The preset brings n0 DNS; the DHT is added below.
             Network::Internet => Endpoint::builder(presets::N0),
@@ -560,6 +579,8 @@ impl Device {
         let gate = Arc::new(Gate::default());
         let shared = Arc::new(Shared {
             id: DeviceId::from_endpoint_id(endpoint.id()),
+            secret: secret_bytes,
+            key_source,
             endpoint: endpoint.clone(),
             blobs: blobs.clone(),
             gate: gate.clone(),
@@ -598,6 +619,41 @@ impl Device {
 
     pub fn device_id(&self) -> DeviceId {
         self.inner.shared.id
+    }
+
+    /// This Device's identity, and nothing else, sealed under `password` (Argon2id, then
+    /// AES-256-GCM): the contents of an identity file for [`Device::import_identity`]. The
+    /// password cannot be empty.
+    pub async fn export_identity(&self, password: &str) -> Result<Vec<u8>, Error> {
+        let secret = self.inner.shared.secret.clone();
+        let password = Zeroizing::new(password.to_owned());
+        Ok(blocking("sealing the identity", move || identity_file::seal(&secret, &password)).await??)
+    }
+
+    /// Whose identity `file` holds, if `password` opens it. Changes nothing; this is how an
+    /// import is checked before the user is asked to confirm it.
+    pub async fn identity_file_owner(file: &[u8], password: &str) -> Result<DeviceId, Error> {
+        let (file, password) = (file.to_vec(), Zeroizing::new(password.to_owned()));
+        let secret = blocking("opening the identity file", move || identity_file::open(&file, &password)).await??;
+        Ok(DeviceId::from_endpoint_id(SecretKey::from_bytes(&secret).public()))
+    }
+
+    /// Makes the identity in `file` this Device's, to be taken up at the next start: the
+    /// running Device keeps its old Device ID until then, so the caller restarts it. Contacts
+    /// and History stay. A file that does not open, or a secret store that will not take the
+    /// key, changes nothing; so does a file with this Device's own identity. Returns the Device
+    /// ID the Device will have.
+    pub async fn import_identity(&self, file: &[u8], password: &str) -> Result<DeviceId, Error> {
+        let (file, password) = (file.to_vec(), Zeroizing::new(password.to_owned()));
+        let secret = blocking("opening the identity file", move || identity_file::open(&file, &password)).await??;
+        let key = SecretKey::from_bytes(&secret);
+        let id = DeviceId::from_endpoint_id(key.public());
+        if id == self.device_id() {
+            return Ok(id);
+        }
+        let key_source = self.inner.shared.key_source.clone();
+        blocking("storing the secret key", move || key_source.replace(&key)).await??;
+        Ok(id)
     }
     /// This Device's ID plus the direct addresses it is listening on.
     pub fn addr(&self) -> DeviceAddr {

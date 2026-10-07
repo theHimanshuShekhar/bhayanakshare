@@ -11,6 +11,8 @@ use data_encoding::BASE32_NOPAD;
 use iroh::{EndpointId, SecretKey};
 use serde::{Serialize, Serializer};
 
+use crate::keystore::{self, KeyError, OsSecretStore};
+
 /// Length of a Device ID in characters (32 bytes as unpadded base32).
 pub const DEVICE_ID_LEN: usize = 52;
 
@@ -89,37 +91,81 @@ impl Serialize for DeviceId {
 pub enum KeySource {
     /// A file holding the 32 raw key bytes, created with mode 0600 if missing.
     File(PathBuf),
+    /// The OS secret store (Secret Service on Linux, Keychain on macOS, Credential Manager on
+    /// Windows), or this file where there is none. See [`crate::keystore`] for how the two are
+    /// kept from ever giving a Device two identities.
+    OsStore { fallback: PathBuf },
 }
 
 impl KeySource {
-    pub(crate) fn load_or_create(&self) -> io::Result<SecretKey> {
+    pub(crate) fn load_or_create(&self) -> Result<SecretKey, KeyError> {
         match self {
             Self::File(path) => load_or_create_key_file(path),
+            Self::OsStore { fallback } => keystore::load_or_create(&OsSecretStore, fallback),
+        }
+    }
+
+    /// Makes `key` the key the next start loads, where the current one is kept.
+    pub(crate) fn replace(&self, key: &SecretKey) -> Result<(), KeyError> {
+        match self {
+            Self::File(path) => Ok(write_replacing(path, &key.to_bytes())?),
+            Self::OsStore { fallback } => keystore::replace(&OsSecretStore, fallback, key),
         }
     }
 }
 
-fn load_or_create_key_file(path: &Path) -> io::Result<SecretKey> {
+fn load_or_create_key_file(path: &Path) -> Result<SecretKey, KeyError> {
+    match read_key_file(path)? {
+        Some(key) => Ok(key),
+        None => {
+            let key = SecretKey::generate();
+            write_new_key_file(path, &key.to_bytes())?;
+            Ok(key)
+        }
+    }
+}
+
+/// `None` if there is no file; an error if it is not a key.
+pub(crate) fn read_key_file(path: &Path) -> io::Result<Option<SecretKey>> {
     match std::fs::read(path) {
         Ok(bytes) => {
             let key = SecretKey::try_from(bytes.as_slice()).map_err(|_| {
                 io::Error::new(io::ErrorKind::InvalidData, "secret key file is not 32 bytes")
             })?;
             restrict_permissions(path)?;
-            Ok(key)
+            Ok(Some(key))
         }
-        Err(e) if e.kind() == io::ErrorKind::NotFound => {
-            let key = SecretKey::generate();
-            write_new_key_file(path, &key.to_bytes())?;
-            Ok(key)
-        }
+        Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(None),
         Err(e) => Err(e),
+    }
+}
+
+pub(crate) fn remove_key_file(path: &Path) {
+    if let Err(e) = std::fs::remove_file(path) {
+        tracing::warn!("could not remove {}: {e}", path.display());
     }
 }
 
 /// Writes through a private temp file and links it into place, so the key file is never
 /// visible half-written or with wider permissions, and an existing key is never replaced.
-fn write_new_key_file(path: &Path, bytes: &[u8; 32]) -> io::Result<()> {
+pub(crate) fn write_new_key_file(path: &Path, bytes: &[u8; 32]) -> io::Result<()> {
+    let tmp = write_private_temp(path, bytes)?;
+    let linked = std::fs::hard_link(&tmp, path);
+    std::fs::remove_file(&tmp)?;
+    linked
+}
+
+/// Like [`write_new_key_file`], but replaces whatever is there, atomically: a reader sees the
+/// old contents or the new, never half of either.
+pub(crate) fn write_replacing(path: &Path, bytes: &[u8]) -> io::Result<()> {
+    let tmp = write_private_temp(path, bytes)?;
+    std::fs::rename(&tmp, path).inspect_err(|_| {
+        let _ = std::fs::remove_file(&tmp);
+    })
+}
+
+/// Writes `bytes` to a new 0600 file next to `path` and returns where.
+fn write_private_temp(path: &Path, bytes: &[u8]) -> io::Result<PathBuf> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
     }
@@ -132,9 +178,7 @@ fn write_new_key_file(path: &Path, bytes: &[u8; 32]) -> io::Result<()> {
     let mut file = opts.open(&tmp)?;
     file.write_all(bytes)?;
     file.sync_all()?;
-    let linked = std::fs::hard_link(&tmp, path);
-    std::fs::remove_file(&tmp)?;
-    linked
+    Ok(tmp)
 }
 
 #[cfg(unix)]
@@ -224,6 +268,6 @@ mod tests {
         let path = dir.path().join("secret.key");
         std::fs::write(&path, b"short").unwrap();
         let err = KeySource::File(path).load_or_create().unwrap_err();
-        assert_eq!(err.kind(), io::ErrorKind::InvalidData);
+        assert!(matches!(err, KeyError::Io(e) if e.kind() == io::ErrorKind::InvalidData));
     }
 }

@@ -17,6 +17,8 @@ required-features = ["relay-tests"]
 [dependencies]
 # Already in the tree through iroh; the beacon (beacon.rs) uses them directly.
 aes-gcm = { version = "0.10", default-features = false, features = ["aes", "alloc"] }
+# Derives the key that protects an identity export (identity_file.rs).
+argon2 = { version = "0.6", default-features = false, features = ["alloc", "zeroize"] }
 blake3 = "1"
 data-encoding = "2"
 iroh = "1.3"
@@ -24,6 +26,9 @@ iroh = "1.3"
 iroh-blobs = { version = "=0.103.0", features = ["fs-store"] }
 # The Mainline DHT as an address lookup service (spec section 3).
 iroh-mainline-address-lookup = "0.6"
+# The OS secret store (keystore.rs). The default `v1` feature picks Secret Service over pure-Rust
+# zbus on Linux (no libdbus), Keychain on macOS and Credential Manager on Windows.
+keyring = "4"
 # Only for the on-demand relay test (feature `relay-tests`): a relay server to run it against.
 iroh-relay = { version = "1.3", optional = true, features = ["server"] }
 n0-future = "0.3"
@@ -41,6 +46,8 @@ thiserror = "2"
 tokio = { version = "1", features = ["fs", "io-util", "macros", "net", "rt-multi-thread", "sync", "time"] }
 tokio-util = { version = "0.7", features = ["rt"] }
 tracing = "0.1"
+# Wipes secret key material when it is dropped.
+zeroize = "1"
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
