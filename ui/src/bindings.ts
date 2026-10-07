@@ -424,7 +424,10 @@ export type Visibility =
 "everyone" | 
 /**  Only Devices that hold this Device's ID: a blinded beacon only they can recognise. */
 "id_holders" | 
-/**  Nobody. Announces nothing until the responder exists. */
+/**
+ *  Nobody: announces nothing and looks for nobody, and only answers a Device that asks for
+ *  it by its ID.
+ */
 "hidden";
 
 /* Tauri Specta runtime */

@@ -1416,6 +1416,61 @@ describe("the firewall hint", () => {
   });
 });
 
+describe("the Hidden hint", () => {
+  const FIREWALL = /No Devices found on this network yet/;
+  const HIDDEN = "You're Hidden, so Nearby Devices aren't shown.";
+
+  /** Lets the 30-second wait run out at once, as the firewall hint's tests do. */
+  function skipTheWait() {
+    const real = globalThis.setTimeout;
+    vi.spyOn(globalThis, "setTimeout").mockImplementation(((
+      fn: () => void,
+      ms?: number,
+      ...args: unknown[]
+    ) => real(fn, ms === NEARBY_WAIT_MS ? 0 : ms, ...args)) as unknown as typeof setTimeout);
+  }
+
+  afterEach(() => vi.restoreAllMocks());
+
+  it("replaces the firewall hint on a Hidden Device, which never lists anyone", async () => {
+    skipTheWait();
+    const device = fakeApi();
+    await device.api.setVisibility("hidden");
+    await start(device);
+    expect(await screen.findByText(HIDDEN)).toBeTruthy();
+    await new Promise((r) => setTimeout(r, 20));
+    expect(screen.queryByText(FIREWALL)).toBeNull();
+  });
+
+  it("is not shown at the other settings, which keep the firewall hint", async () => {
+    skipTheWait();
+    await start();
+    expect(await screen.findByText(FIREWALL)).toBeTruthy();
+    expect(screen.queryByText(HIDDEN)).toBeNull();
+  });
+
+  it("follows the setting when it is changed, and leads to it", async () => {
+    skipTheWait();
+    const device = await start();
+    expect(await screen.findByText(FIREWALL)).toBeTruthy();
+
+    fireEvent.click(screen.getByRole("button", { name: "Settings" }));
+    fireEvent.click(await screen.findByRole("radio", { name: "Hidden" }));
+    await waitFor(() => expect(device.api.setVisibility).toHaveBeenCalledWith("hidden"));
+    fireEvent.click(screen.getByRole("button", { name: "Home" }));
+    expect(await screen.findByText(HIDDEN)).toBeTruthy();
+    expect(screen.queryByText(FIREWALL)).toBeNull();
+
+    // The button goes to the setting.
+    fireEvent.click(screen.getByRole("button", { name: "Change Visibility" }));
+    fireEvent.click(await screen.findByRole("radio", { name: "Everyone" }));
+    await waitFor(() => expect(device.api.setVisibility).toHaveBeenCalledWith("everyone"));
+    fireEvent.click(screen.getByRole("button", { name: "Home" }));
+    expect(await screen.findByText(FIREWALL)).toBeTruthy();
+    expect(screen.queryByText(HIDDEN)).toBeNull();
+  });
+});
+
 describe("Visibility", () => {
   const open = async (device = fakeApi()) => {
     await start(device);
@@ -1445,7 +1500,7 @@ describe("Visibility", () => {
     expect(described).toEqual([
       "Anyone on your network can see this Device and its name.",
       "Only Devices that already have your Device ID can see it and its name.",
-      "No one sees this Device on your network. People with your ID can still send to it.",
+      "You won't see or be seen Nearby. People with your ID can still send to you.",
     ]);
   });
 

@@ -8,20 +8,19 @@
 //! Multicast is not available everywhere (a sandbox without it, port 5353 held exclusively).
 //! When a probe finds it missing, each test says so on stderr and returns without testing
 //! anything, so run with `--nocapture` to see that. Set `BHAYANAKSHARE_REQUIRE_MULTICAST=1`
-//! (as CI should) to make a missing multicast a failure instead.
+//! (as CI should) to make a missing multicast a failure instead. The probe and the raw mDNS
+//! helpers are in `support::multicast`; what a Hidden Device does is in `hidden.rs`.
 
 mod support;
 
 use std::{
-    mem::MaybeUninit,
-    net::{IpAddr, Ipv4Addr, SocketAddrV4},
-    sync::{Arc, Mutex, OnceLock},
+    net::{IpAddr, Ipv4Addr},
+    sync::{Arc, Mutex},
     time::Duration,
 };
 
 use bhayanakshare_core::{DeviceId, NearbyDevice, Visibility};
-use socket2::{Domain, Protocol, Socket, Type};
-use support::TestDevice;
+use support::{TestDevice, multicast::multicast_available};
 use swarm_discovery::{Discoverer, DropGuard};
 
 /// How long to wait to be sure a Device is not heard. The announcements come about every second.
@@ -29,53 +28,6 @@ const SILENCE: Duration = Duration::from_secs(4);
 
 /// How long a beacon label lasts (`beacon::EPOCH_MS`), which is part of the design.
 const EPOCH_MS: i64 = 10 * 60 * 1000;
-
-/// Why multicast on the loopback interface cannot be used here, or `None` if it can. Does what
-/// swarm-discovery does: binds port 5353 shared, joins the mDNS group on 127.0.0.1, and sends to
-/// it from the loopback interface.
-fn multicast_problem() -> Option<String> {
-    let probe = || -> std::io::Result<()> {
-        let group = Ipv4Addr::new(224, 0, 0, 251);
-        let udp = || Socket::new(Domain::IPV4, Type::DGRAM, Some(Protocol::UDP));
-
-        let mdns_port = udp()?;
-        mdns_port.set_reuse_address(true)?;
-        mdns_port.set_reuse_port(true)?;
-        mdns_port.bind(&SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, 5353).into())?;
-
-        let rx = udp()?;
-        rx.set_reuse_address(true)?;
-        rx.bind(&SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, 0).into())?;
-        rx.join_multicast_v4(&group, &Ipv4Addr::LOCALHOST)?;
-        rx.set_read_timeout(Some(Duration::from_secs(2)))?;
-        let port = rx.local_addr()?.as_socket().expect("an IP socket").port();
-
-        let tx = udp()?;
-        tx.set_multicast_if_v4(&Ipv4Addr::LOCALHOST)?;
-        tx.set_multicast_loop_v4(true)?;
-        tx.send_to(b"probe", &SocketAddrV4::new(group, port).into())?;
-        let mut buf = [MaybeUninit::uninit(); 16];
-        rx.recv(&mut buf).map(|_| ())
-    };
-    probe().err().map(|e| e.to_string())
-}
-
-/// `true` if multicast works; otherwise says why the test is not running, or fails if multicast
-/// was required.
-fn multicast_available() -> bool {
-    static PROBLEM: OnceLock<Option<String>> = OnceLock::new();
-    let problem = PROBLEM.get_or_init(multicast_problem);
-    let Some(problem) = problem else { return true };
-    assert!(
-        std::env::var_os("BHAYANAKSHARE_REQUIRE_MULTICAST").is_none(),
-        "multicast over the loopback interface is required but not available: {problem}"
-    );
-    eprintln!(
-        "SKIPPED: this test needs multicast over the loopback interface, which is not \
-         available here ({problem}). LAN discovery was NOT tested."
-    );
-    false
-}
 
 fn is(id: DeviceId, name: Option<&str>) -> impl Fn(&[NearbyDevice]) -> bool {
     move |list| list.iter().any(|d| d.id == id && name.is_none_or(|n| d.name.as_deref() == Some(n)))
