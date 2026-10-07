@@ -265,6 +265,54 @@ describe("keyboard: focus is never dropped on the page", () => {
   });
 });
 
+describe("keyboard: when the control that has focus goes", () => {
+  it("lands on the heading of its section after Cancel on a Transfer, which is then gone", async () => {
+    const { user, device } = await start();
+    await row(device, 1, "sender", { kind: "offered" });
+    const cancel = await screen.findByRole("button", { name: "Cancel photo.jpg" });
+    await tabTo(user, cancel);
+    await user.keyboard("{Enter}");
+    expect(device.api.cancelTransfer).toHaveBeenCalled();
+    await row(device, 1, "sender", { kind: "cancelled", by: "sender" });
+    expect(screen.queryByRole("button", { name: "Cancel photo.jpg" })).toBeNull();
+    expect(document.activeElement).toBe(screen.getByRole("heading", { name: "Transfers" }));
+  });
+
+  it("lands on the History heading after a Transfer is deleted from it", async () => {
+    const device = fakeApi({}, contacts());
+    const entries: HistoryEntry[] = [{ kind: "transfer", transfer: { record: record(), saved_present: null } }];
+    device.setHistory(entries);
+    const { user } = await start(device);
+    await user.click(button("History"));
+    await tabTo(user, await screen.findByRole("button", { name: /^Delete .* from History$/ }));
+    device.setHistory([]);
+    await user.keyboard("{Enter}");
+    await waitFor(() => expect(screen.queryByRole("button", { name: /^Delete .* from History$/ })).toBeNull());
+    expect(document.activeElement).toBe(screen.getByRole("heading", { name: "History" }));
+  });
+
+  it("lands on the Contacts heading after a Contact is removed through its dialog", async () => {
+    const { user } = await start();
+    await user.click(button("Contacts"));
+    await tabTo(user, await screen.findByRole("button", { name: "Remove Mum from Contacts" }));
+    await user.keyboard("{Enter}");
+    await tabTo(user, button("Remove"));
+    await user.keyboard("{Enter}");
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    expect(document.activeElement).toBe(screen.getByRole("heading", { name: "Contacts" }));
+  });
+
+  it("leaves focus alone when the user clicked away from the page's controls", async () => {
+    const { user, device } = await start();
+    await row(device, 1, "sender", { kind: "offered" });
+    await tabTo(user, await screen.findByRole("button", { name: "Cancel photo.jpg" }));
+    await user.pointer({ target: document.body, keys: "[MouseLeft]" });
+    (document.activeElement as HTMLElement).blur();
+    await row(device, 1, "sender", { kind: "cancelled", by: "sender" });
+    expect(document.activeElement).toBe(document.body);
+  });
+});
+
 describe("keyboard: dialogs", () => {
   it("opens with focus inside, closes with Escape and gives focus back to the opener", async () => {
     const { user } = await start();

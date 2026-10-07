@@ -5,6 +5,7 @@ import { tauriApi, type Api, type Contact, type TransferId, type UpdateAction, t
 import { ClearHistoryDialog } from "./ClearHistoryDialog";
 import { ContactsScreen } from "./ContactsScreen";
 import { FirstRunScreen } from "./FirstRunScreen";
+import { useFocusRescue } from "./focusRescue";
 import { HistoryScreen } from "./HistoryScreen";
 import { MyDeviceId } from "./MyDeviceId";
 import { OfferSheet } from "./OfferSheet";
@@ -57,6 +58,7 @@ export function App({ api = tauriApi }: AppProps) {
 }
 
 function Screens({ api }: { api: Api }) {
+  useFocusRescue();
   const [tab, setTab] = useState<TabId>("home");
   // Sending to a pasted ID (`to` empty) or to a Contact, whose ID is filled in.
   const [sending, setSending] = useState<{ to: string; name: string | null } | null>(null);
