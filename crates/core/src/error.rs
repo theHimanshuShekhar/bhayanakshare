@@ -8,6 +8,7 @@ use crate::{
     identity::DeviceId,
     identity_file::IdentityFileError,
     keystore::KeyError,
+    save_folder::SaveFolderProblem,
     store::StoreError,
     transfer::{BatchId, TransferId},
 };
@@ -53,6 +54,9 @@ pub enum Error {
     InvalidContactName(&'static str),
     #[error("A Device Name cannot be empty.")]
     EmptyDeviceName,
+    /// A folder that cannot be the save folder.
+    #[error("{0}")]
+    SaveFolder(#[from] SaveFolderProblem),
     #[error("the Device is shutting down")]
     ShuttingDown,
     /// Reading or storing the secret key.

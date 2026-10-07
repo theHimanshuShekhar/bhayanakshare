@@ -22,7 +22,8 @@ use std::{
 
 use bhayanakshare_core::{
     BatchId, Contact, Device, DeviceAddr, DeviceConfig, DeviceId, Error, Event, HistoryEntry,
-    HistoryQuery, IdentityFileError, KeyError, KeySource, Network, Role, SpaceCheck, SystemClock,
+    HistoryQuery, IdentityFileError, KeyError, KeySource, Network, Role, SaveFolderProblem, SpaceCheck,
+    SystemClock,
     SystemFreeSpace, TransferId, Visibility,
 };
 use logging::Logging;
@@ -107,6 +108,44 @@ impl IdentityError {
     }
 }
 
+/// Why a folder could not be made the save folder, in the terms the UI words differently.
+#[derive(Debug, Serialize, Type)]
+pub struct SaveFolderError {
+    kind: SaveFolderErrorKind,
+    /// For the kinds the UI has no wording of its own for.
+    message: String,
+}
+
+#[derive(Debug, PartialEq, Eq, Serialize, Type)]
+#[serde(rename_all = "snake_case")]
+pub enum SaveFolderErrorKind {
+    /// Not an absolute path.
+    NotAbsolute,
+    /// Something that is not a folder is there.
+    NotAFolder,
+    /// It is missing and could not be made.
+    CannotCreate,
+    /// Files cannot be written in it.
+    NotWritable,
+    /// The path is not text.
+    NotText,
+    Other,
+}
+
+impl From<Error> for SaveFolderError {
+    fn from(e: Error) -> Self {
+        let kind = match &e {
+            Error::SaveFolder(SaveFolderProblem::NotAbsolute) => SaveFolderErrorKind::NotAbsolute,
+            Error::SaveFolder(SaveFolderProblem::NotAFolder) => SaveFolderErrorKind::NotAFolder,
+            Error::SaveFolder(SaveFolderProblem::CannotCreate) => SaveFolderErrorKind::CannotCreate,
+            Error::SaveFolder(SaveFolderProblem::NotWritable) => SaveFolderErrorKind::NotWritable,
+            Error::SaveFolder(SaveFolderProblem::NotText) => SaveFolderErrorKind::NotText,
+            _ => SaveFolderErrorKind::Other,
+        };
+        Self { kind, message: e.to_string() }
+    }
+}
+
 /// Whose identity a file holds: a Device ID and its Fingerprint, as for [`MyId`], but not this
 /// Device's.
 #[derive(Serialize, Type)]
@@ -116,9 +155,6 @@ pub struct IdentityOwner {
     /// First 8 characters, `XXXX-XXXX`.
     fingerprint: String,
 }
-
-/// The folder accepted files are saved to (shown on the Offer sheet).
-struct SaveFolder(PathBuf);
 
 /// Holds the Device's events back until the UI is listening, so an Offer that arrives while
 /// the window is still loading is not lost; after that it passes events straight through.
@@ -161,10 +197,36 @@ fn my_id(device: State<'_, Device>) -> MyId {
     MyId { id: id.to_string(), fingerprint: id.fingerprint() }
 }
 
+/// The folder accepted files are saved to unless an Offer names another (shown on the Offer
+/// sheet and in Settings).
 #[tauri::command]
 #[specta::specta]
-fn save_folder(folder: State<'_, SaveFolder>) -> String {
-    folder.0.to_string_lossy().into_owned()
+async fn save_folder(device: State<'_, Device>) -> Result<String, String> {
+    let folder = device.save_folder().await.map_err(|e| e.to_string())?;
+    Ok(folder.to_string_lossy().into_owned())
+}
+
+/// Makes `path`, an absolute path, the save folder (made if missing, and it must be writable)
+/// from the next Offer on; resolves to the folder as kept.
+#[tauri::command]
+#[specta::specta]
+async fn set_save_folder(device: State<'_, Device>, path: String) -> Result<String, SaveFolderError> {
+    let folder = device.set_save_folder(std::path::Path::new(&path)).await?;
+    Ok(folder.to_string_lossy().into_owned())
+}
+
+/// Whether first run is still to be done: the UI shows its screen instead of the tabs.
+#[tauri::command]
+#[specta::specta]
+async fn needs_first_run(device: State<'_, Device>) -> Result<bool, String> {
+    device.needs_first_run().await.map_err(|e| e.to_string())
+}
+
+/// Records that the user has been through first run.
+#[tauri::command]
+#[specta::specta]
+async fn finish_first_run(device: State<'_, Device>) -> Result<(), String> {
+    device.finish_first_run().await.map_err(|e| e.to_string())
 }
 
 /// Offers the files and folders at `paths` to the Device with the pasted Device ID `to`, as
@@ -316,6 +378,21 @@ async fn set_visibility<R: Runtime>(
     Ok(())
 }
 
+/// Whether this Device uses the public Mainline DHT, besides n0 DNS, to publish its address and
+/// find its Contacts'.
+#[tauri::command]
+#[specta::specta]
+fn public_dht(device: State<'_, Device>) -> bool {
+    device.public_dht()
+}
+
+/// Turns the public DHT on or off; it takes effect at once and is kept across restarts.
+#[tauri::command]
+#[specta::specta]
+async fn set_public_dht(device: State<'_, Device>, on: bool) -> Result<(), String> {
+    device.set_public_dht(on).await.map_err(|e| e.to_string())
+}
+
 /// Whether debug logging is on: a bigger log, for finding what went wrong.
 #[tauri::command]
 #[specta::specta]
@@ -365,10 +442,34 @@ fn autostart_enabled(autostart: State<'_, AutoLaunchManager>) -> Result<bool, St
     autostart.is_enabled().map_err(|e| e.to_string())
 }
 
+/// Starts this Device at login, or no longer does. The choice is the user's, so the one-time
+/// default (`background::default_autostart`) has nothing left to do: it is marked done, and
+/// cannot undo a choice made before it ran.
 #[tauri::command]
 #[specta::specta]
-fn set_autostart(autostart: State<'_, AutoLaunchManager>, on: bool) -> Result<(), String> {
-    if on { autostart.enable() } else { autostart.disable() }.map_err(|e| e.to_string())
+async fn set_autostart(
+    autostart: State<'_, AutoLaunchManager>,
+    device: State<'_, Device>,
+    on: bool,
+) -> Result<(), String> {
+    autostart_allowed(on, std::env::var_os(DATA_DIR_VAR).is_some())?;
+    if on { autostart.enable() } else { autostart.disable() }.map_err(|e| e.to_string())?;
+    if let Err(e) = device.set_setting(background::AUTOSTART_SETTING, "1").await {
+        tracing::warn!("could not record the start at login choice: {e}");
+    }
+    Ok(())
+}
+
+/// Whether start at login may be switched on: not for an instance with a data folder of its own,
+/// which is made to run beside another install (see the README) and would start that install's
+/// binary, without its folders, at login. Switching it off is always allowed.
+fn autostart_allowed(on: bool, separate_instance: bool) -> Result<(), String> {
+    if on && separate_instance {
+        return Err(format!(
+            "An instance run with {DATA_DIR_VAR} does not start at login, as it is made to run beside another."
+        ));
+    }
+    Ok(())
 }
 
 /// The user confirmed quitting while Transfers are in progress: save their progress and exit.
@@ -551,6 +652,9 @@ pub fn specta_builder<R: Runtime>() -> Builder<R> {
         .commands(collect_commands![
             my_id,
             save_folder,
+            set_save_folder,
+            needs_first_run,
+            finish_first_run,
             send_files,
             send_batch,
             send_text,
@@ -566,6 +670,8 @@ pub fn specta_builder<R: Runtime>() -> Builder<R> {
             set_device_name,
             visibility,
             set_visibility::<tauri::Wry>,
+            public_dht,
+            set_public_dht,
             autostart_enabled,
             set_autostart,
             debug_logging,
@@ -603,8 +709,6 @@ pub fn start_device<R: Runtime>(
     app: &impl Manager<R>,
     config: DeviceConfig,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    // Shown to the user as the Device resolves it.
-    app.manage(SaveFolder(std::path::absolute(&config.save_dir)?));
     let (device, mut events) = tauri::async_runtime::block_on(Device::start(config))?;
     app.manage(device);
 
@@ -917,6 +1021,64 @@ mod tests {
         let mut line = String::new();
         zip.by_name(&log).unwrap().read_to_string(&mut line).unwrap();
         assert_eq!(line, "a line of the log\n");
+    }
+
+    #[test]
+    fn start_at_login_is_not_switched_on_for_an_instance_run_beside_another() {
+        assert!(autostart_allowed(true, false).is_ok());
+        assert!(autostart_allowed(false, false).is_ok());
+        assert!(autostart_allowed(false, true).is_ok());
+        let refused = autostart_allowed(true, true).unwrap_err();
+        assert!(refused.contains(DATA_DIR_VAR), "{refused}");
+    }
+
+    #[test]
+    fn the_settings_commands_read_and_change_what_the_device_keeps() {
+        use tauri::async_runtime::block_on;
+
+        let tmp = tempfile::tempdir().unwrap();
+        let save_dir = tmp.path().join("save");
+        let config = DeviceConfig {
+            key_source: KeySource::File(tmp.path().join("data").join("secret.key")),
+            data_dir: tmp.path().join("data"),
+            save_dir: save_dir.clone(),
+            clock: Arc::new(SystemClock),
+            network: Network::Localhost,
+            free_space: Arc::new(SystemFreeSpace),
+        };
+        let app = tauri::test::mock_app();
+        start_device(&app, config).unwrap();
+
+        // The save folder is the Device's: the configured one, then the one set.
+        assert_eq!(block_on(save_folder(app.state())).unwrap(), save_dir.to_string_lossy());
+        let chosen = tmp.path().join("chosen");
+        let kept = block_on(set_save_folder(app.state(), chosen.to_string_lossy().into_owned())).unwrap();
+        assert_eq!(kept, chosen.to_string_lossy());
+        assert!(chosen.is_dir());
+        assert_eq!(block_on(save_folder(app.state())).unwrap(), chosen.to_string_lossy());
+        assert_eq!(block_on(app.state::<Device>().save_folder()).unwrap(), chosen);
+        // A folder that cannot be used is a rejected command that says why; nothing changes.
+        let file = tmp.path().join("a-file");
+        std::fs::write(&file, b"x").unwrap();
+        let err = block_on(set_save_folder(app.state(), file.to_string_lossy().into_owned())).unwrap_err();
+        assert_eq!(err.kind, SaveFolderErrorKind::NotAFolder);
+        let err = block_on(set_save_folder(app.state(), "relative/folder".into())).unwrap_err();
+        assert_eq!(err.kind, SaveFolderErrorKind::NotAbsolute);
+        assert!(!Path::new("relative").exists());
+        assert_eq!(block_on(save_folder(app.state())).unwrap(), chosen.to_string_lossy());
+
+        // The public DHT is on until switched off, and the Device has the setting.
+        assert!(public_dht(app.state()));
+        block_on(set_public_dht(app.state(), false)).unwrap();
+        assert!(!public_dht(app.state()));
+        assert!(!app.state::<Device>().public_dht());
+        block_on(set_public_dht(app.state(), true)).unwrap();
+        assert!(public_dht(app.state()));
+
+        // First run is needed until it is finished.
+        assert!(block_on(needs_first_run(app.state())).unwrap());
+        block_on(finish_first_run(app.state())).unwrap();
+        assert!(!block_on(needs_first_run(app.state())).unwrap());
     }
 
     fn generate(to: &Path) {

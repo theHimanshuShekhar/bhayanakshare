@@ -26,12 +26,10 @@ export function OfferSheet({
   api,
   offer,
   contacts,
-  saveFolder,
 }: {
   api: Api;
   offer: TransferView;
   contacts: Contact[];
-  saveFolder: string | null;
 }) {
   const [error, setError] = useState<string | null>(null);
   // The folder chosen for this Offer only; null means the save folder. The sheet is keyed
@@ -129,7 +127,7 @@ export function OfferSheet({
               <dd>{formatSize(offer.size)}</dd>
               <dt>{t("offer.saveTo")}</dt>
               <dd>
-                <code>{folder ?? saveFolder ?? ""}</code>{" "}
+                <code>{folder ?? space?.folder ?? ""}</code>{" "}
                 <button type="button" aria-label={t("offer.changeFolderLabel")} onClick={changeFolder}>
                   {t("offer.changeFolder")}
                 </button>

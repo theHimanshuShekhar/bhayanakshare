@@ -3,7 +3,10 @@
 //! The probe is a seam on [`crate::DeviceConfig`], so a test can make an Offer too large
 //! without filling a real disk. The default asks the operating system.
 
-use std::{io, path::Path};
+use std::{
+    io,
+    path::{Path, PathBuf},
+};
 
 use serde::Serialize;
 
@@ -54,8 +57,10 @@ impl FreeSpace for SystemFreeSpace {
 }
 
 /// What an Offer needs, against what its save folder has.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, specta::Type)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, specta::Type)]
 pub struct SpaceCheck {
+    /// The folder checked, as an absolute path: where the Offer would be saved.
+    pub folder: PathBuf,
     /// The Offer's total size in bytes.
     pub needed: u64,
     /// Bytes free in the save folder; `None` when the platform cannot say.
@@ -83,7 +88,7 @@ mod tests {
 
     #[test]
     fn an_offer_fits_when_it_is_no_bigger_than_the_free_space() {
-        let check = |needed, free| SpaceCheck { needed, free, paths_too_long: false };
+        let check = |needed, free| SpaceCheck { folder: "/save".into(), needed, free, paths_too_long: false };
         assert!(check(10, Some(10)).fits());
         assert!(!check(11, Some(10)).fits());
         assert!(check(u64::MAX, None).fits());
@@ -91,12 +96,12 @@ mod tests {
 
     #[test]
     fn long_paths_fail_the_checks_whatever_the_space() {
-        let roomy = SpaceCheck { needed: 1, free: Some(100), paths_too_long: false };
+        let roomy = SpaceCheck { folder: "/save".into(), needed: 1, free: Some(100), paths_too_long: false };
         assert!(roomy.passes());
-        let long = SpaceCheck { paths_too_long: true, ..roomy };
+        let long = SpaceCheck { paths_too_long: true, ..roomy.clone() };
         assert!(long.fits());
         assert!(!long.passes());
-        assert!(!SpaceCheck { needed: 2, free: Some(1), paths_too_long: false }.passes());
+        assert!(!SpaceCheck { needed: 2, free: Some(1), ..roomy }.passes());
     }
 
     #[test]

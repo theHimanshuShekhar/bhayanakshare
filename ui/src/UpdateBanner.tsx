@@ -12,6 +12,8 @@ export function UpdateStatus({ updater }: { updater: Updater }) {
       return <p role="status">{t("update.checking")}</p>;
     case "installing":
       return <p role="status">{t("update.installing", { version: progress.version })}</p>;
+    case "up_to_date":
+      return <p role="status">{t("update.none")}</p>;
     case "failed":
       return <p role="alert">{progress.message}</p>;
     case "confirm":
@@ -31,7 +33,8 @@ export function UpdateStatus({ updater }: { updater: Updater }) {
 
 /**
  * A newer release exists. An AppImage offers to install it and restart; a package, which never
- * updates itself, links to the release page.
+ * updates itself, links to the release page. The banner can be dismissed; the same notice in
+ * Settings, which is not given a way to, is what a check there found.
  */
 export function UpdateBanner({
   api,
@@ -46,7 +49,8 @@ export function UpdateBanner({
   busy: boolean;
   /** The user chose to install `version`, the one shown. */
   onInstall: (version: string) => void;
-  onDismiss: () => void;
+  /** Without it there is nothing to dismiss: the notice is not a banner but an answer. */
+  onDismiss?: () => void;
 }) {
   const version = offeredVersion(update);
   if (version === null) return null;
@@ -68,10 +72,15 @@ export function UpdateBanner({
         >
           {t("update.releasePage")}
         </a>
-      )}{" "}
-      <button type="button" disabled={busy} onClick={onDismiss}>
-        {t("update.dismiss")}
-      </button>
+      )}
+      {onDismiss && (
+        <>
+          {" "}
+          <button type="button" disabled={busy} onClick={onDismiss}>
+            {t("update.dismiss")}
+          </button>
+        </>
+      )}
     </p>
   );
 }

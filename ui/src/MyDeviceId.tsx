@@ -8,9 +8,11 @@ type Copy = "idle" | "copied" | "failed";
 
 /**
  * "My ID": this Device's Fingerprint, Device ID, and the share link and its QR code, with
- * buttons to copy the ID and the link.
+ * buttons to copy the ID and the link. Its heading is an h2 where it is a page of its own, and
+ * an h4 where it sits in a section of Settings.
  */
-export function MyDeviceId({ api }: { api: Api }) {
+export function MyDeviceId({ api, nested = false }: { api: Api; nested?: boolean }) {
+  const Heading = nested ? "h4" : "h2";
   const [state, setState] = useState<"loading" | "error" | { myId: MyId; link: string }>("loading");
   const [copy, setCopy] = useState<Copy>("idle");
 
@@ -38,7 +40,7 @@ export function MyDeviceId({ api }: { api: Api }) {
 
   return (
     <section aria-labelledby="my-id-heading">
-      <h2 id="my-id-heading">{t("myId.heading")}</h2>
+      <Heading id="my-id-heading">{t("myId.heading")}</Heading>
       <p>
         {t("myId.fingerprint")}: <strong>{myId.fingerprint}</strong>
       </p>

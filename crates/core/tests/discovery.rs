@@ -147,6 +147,13 @@ async fn changing_the_visibility_takes_effect_at_once() {
     bob.shutdown().await;
 }
 
+/// How long a rename may take to show on another Device, in all (Settings → Device Name takes
+/// effect without a restart, which is all that is required; this only keeps a lost update from
+/// hanging the test). Generous because the tests of this binary run in parallel and share one
+/// multicast group, so swarm-discovery's response rate limiting can hold an update back for a
+/// while: the same bound as `wait_nearby`'s wait for one event, now for the whole wait.
+const RENAME_WITHIN: Duration = Duration::from_secs(30);
+
 #[tokio::test]
 async fn a_new_device_name_is_announced_at_once() {
     if !multicast_available() {
@@ -157,8 +164,23 @@ async fn a_new_device_name_is_announced_at_once() {
     let alice_id = alice.device.device_id();
     bob.wait_nearby("the first name", is(alice_id, Some("Alice's laptop"))).await;
 
+    // Everyone: in the clear.
     alice.device.set_device_name("Alice's desktop").await.unwrap();
-    bob.wait_nearby("the new name", is(alice_id, Some("Alice's desktop"))).await;
+    tokio::time::timeout(RENAME_WITHIN, bob.wait_nearby("the new name", is(alice_id, Some("Alice's desktop"))))
+        .await
+        .expect("the new name did not arrive in time");
+
+    // People who have my ID (the default): in the beacon, for a Device that holds the ID.
+    alice.device.set_visibility(Visibility::IdHolders).await.unwrap();
+    bob.device.add_contact(alice_id, None).await.unwrap();
+    assert_eq!(alice.device.set_device_name("  Alice's tablet ").await.unwrap(), "Alice's tablet");
+    let seen = tokio::time::timeout(
+        RENAME_WITHIN,
+        bob.wait_nearby("the new name in the beacon", is(alice_id, Some("Alice's tablet"))),
+    )
+    .await
+    .expect("the new name did not arrive in time");
+    assert!(!is(alice_id, Some("Alice's desktop"))(&seen), "{seen:?}");
 
     alice.shutdown().await;
     bob.shutdown().await;

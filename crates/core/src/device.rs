@@ -35,11 +35,13 @@ use crate::{
     discovery::{Discovery, NearbyDevice, Visibility},
     error::Error,
     event::{EventKind, EventSink, EventStream, PreparingEvent, ProgressEvent, TransferEvent},
+    first_run,
     gate::Gate,
     history::{self, HistoryEntry, HistoryQuery},
     identity::{DeviceId, KeySource},
     identity_file, logs, protocol, receiver,
     sender::{self, Outgoing, Payload},
+    save_folder,
     session::RESTARTED,
     space::{FreeSpace, SpaceCheck},
     store,
@@ -231,7 +233,8 @@ pub(crate) struct Shared {
     pub clock: Arc<dyn Clock>,
     /// Where settings, Transfer records and the Sender's store live.
     pub data_dir: PathBuf,
-    /// The folder an Offer is saved to unless the Receiver picks another.
+    /// The save folder as the Device was configured with it: the one in use until the user sets
+    /// another. Read the folder in use with [`Shared::save_folder`].
     pub save_dir: PathBuf,
     pub free_space: Arc<dyn FreeSpace>,
     pub events: EventSink,
@@ -321,7 +324,12 @@ impl Shared {
         })
         .await
         .map_err(|e| Error::io("checking free space", std::io::Error::other(e)))??;
-        Ok(SpaceCheck { needed, free, paths_too_long: !receiver::paths_fit(folder, id, longest_path) })
+        Ok(SpaceCheck {
+            folder: folder.to_owned(),
+            needed,
+            free,
+            paths_too_long: !receiver::paths_fit(folder, id, longest_path),
+        })
     }
 
     /// This Device's name as it is announced to others: the stored Device Name, else the
@@ -336,6 +344,16 @@ impl Shared {
             }
         }
         .unwrap_or_else(device_name::default_name)
+    }
+
+    /// The folder an Offer is saved to unless the Receiver picks another: the save folder
+    /// setting, else the folder the Device was configured with. Read each time, so a change
+    /// applies to the next Offer.
+    pub async fn save_folder(&self) -> Result<PathBuf, Error> {
+        Ok(match self.db.setting(save_folder::SETTING).await? {
+            Some(folder) => PathBuf::from(folder),
+            None => self.save_dir.clone(),
+        })
     }
 
     /// Notes how a connection to `peer` is reaching it and what it calls itself, if `peer` is a
@@ -544,7 +562,6 @@ impl Device {
         };
         let save_io = |what: &'static str| move |e| Error::io(format!("{what} the save folder"), e);
         tokio::fs::create_dir_all(&data_dir).await.map_err(io("creating", &data_dir))?;
-        tokio::fs::create_dir_all(&save_dir).await.map_err(save_io("creating"))?;
         let save_dir = std::path::absolute(&save_dir).map_err(save_io("resolving"))?;
         let data_dir = std::path::absolute(&data_dir).map_err(io("resolving", &data_dir))?;
 
@@ -554,6 +571,15 @@ impl Device {
             blocking("loading the secret key", move || key_source.load_or_create()).await??
         };
         let db = Db::open(&data_dir.join("bhayanakshare.db")).await?;
+        match db.setting(save_folder::SETTING).await? {
+            None => tokio::fs::create_dir_all(&save_dir).await.map_err(save_io("creating"))?,
+            // Not made: it may be on a drive that is not there, and making it would put it on
+            // the drive that is. An Offer says so when it is checked, until the folder is back.
+            Some(folder) if !Path::new(&folder).is_dir() => {
+                tracing::warn!("the save folder the user set is missing, so Offers cannot be accepted into it");
+            }
+            Some(_) => {}
+        }
         let store = store::open(&data_dir.join("blobs")).await?;
         let blobs: iroh_blobs::api::Store = (**store).clone();
 
@@ -884,7 +910,8 @@ impl Device {
         Ok(())
     }
 
-    /// Whether a pending Offer fits in `folder` (the save folder when `None`).
+    /// Whether a pending Offer fits in `folder` (the save folder in use when `None`), with the
+    /// folder it checked: where the Offer would be saved.
     pub async fn check_offer(
         &self,
         id: TransferId,
@@ -893,13 +920,13 @@ impl Device {
         self.check_space(id, folder).await.map(|(_, check)| check)
     }
 
-    /// Accepts a pending Offer into the save folder; the content is then fetched and saved.
-    /// Fails, leaving the Offer pending, if it does not fit there.
+    /// Accepts a pending Offer into the save folder as it is now; the content is then fetched
+    /// and saved. Fails, leaving the Offer pending, if it does not fit there.
     pub async fn accept(&self, id: TransferId) -> Result<(), Error> {
         self.accept_into(id, None).await
     }
 
-    /// Accepts a pending Offer into `folder` for this Transfer only (the save folder when
+    /// Accepts a pending Offer into `folder` for this Transfer only (the save folder in use when
     /// `None`). Fails, leaving the Offer pending, if it does not fit there or its paths would
     /// be too long.
     pub async fn accept_into(&self, id: TransferId, folder: Option<&Path>) -> Result<(), Error> {
@@ -929,11 +956,12 @@ impl Device {
             .ok_or(Error::UnknownTransfer(id))?;
         let folder = match folder {
             Some(folder) => std::path::absolute(folder).map_err(|e| Error::io("resolving the folder", e))?,
-            None => sh.save_dir.clone(),
+            None => sh.save_folder().await?,
         };
         if text {
             // Kept in the database, not the folder: there is nothing to run out of room for.
-            return Ok((folder, SpaceCheck { needed: 0, free: None, paths_too_long: false }));
+            let check = SpaceCheck { folder: folder.clone(), needed: 0, free: None, paths_too_long: false };
+            return Ok((folder, check));
         }
         let check = sh.space_check(id, needed, longest_path, &folder).await?;
         Ok((folder, check))
@@ -1079,6 +1107,46 @@ impl Device {
         sh.db.set_setting(dht::SETTING, if on { "1" } else { "0" }).await?;
         sh.public_dht.set_enabled(on);
         Ok(())
+    }
+
+    /// The folder accepted files are saved to unless the Receiver picks another for an Offer: the
+    /// one set with [`Device::set_save_folder`], else the one the Device was configured with.
+    pub async fn save_folder(&self) -> Result<PathBuf, Error> {
+        self.inner.shared.save_folder().await
+    }
+
+    /// Makes `folder` the save folder, from the next Offer accepted on (one waiting for an answer
+    /// goes to it too, unless a folder is named when it is accepted), and keeps the choice across
+    /// restarts. The folder is made if it is missing and must be one files can be written in,
+    /// else this fails with [`Error::SaveFolder`] and the save folder is as it was. Returns the
+    /// folder as kept, an absolute path.
+    pub async fn set_save_folder(&self, folder: &Path) -> Result<PathBuf, Error> {
+        let sh = &self.inner.shared;
+        if sh.cancel.is_cancelled() {
+            return Err(Error::ShuttingDown);
+        }
+        let folder = folder.to_owned();
+        let folder = blocking("checking the save folder", move || save_folder::prepare(&folder)).await??;
+        // `prepare` has checked that the path is text.
+        let text = folder.to_string_lossy();
+        sh.db.set_setting(save_folder::SETTING, &text).await?;
+        Ok(folder)
+    }
+
+    /// Whether first run has not been finished yet: the Device has never been told, with
+    /// [`Device::finish_first_run`], that the user has been through the first-run screen. It is
+    /// the shell's to show that screen while this is true.
+    pub async fn needs_first_run(&self) -> Result<bool, Error> {
+        Ok(self.inner.shared.db.setting(first_run::SETTING).await?.is_none())
+    }
+
+    /// Records that the user has been through first run, for good.
+    pub async fn finish_first_run(&self) -> Result<(), Error> {
+        let sh = &self.inner.shared;
+        if sh.cancel.is_cancelled() {
+            return Err(Error::ShuttingDown);
+        }
+        Ok(sh.db.set_setting(first_run::SETTING, "1").await?)
     }
 
     /// Whether the log is at debug level, which is bigger and for finding what went wrong. Off

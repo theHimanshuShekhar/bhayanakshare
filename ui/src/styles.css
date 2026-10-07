@@ -281,3 +281,11 @@ progress {
   width: 100%;
   font-family: inherit;
 }
+
+/* First run is one column of a form: the name takes the room there is, up to a readable width. */
+#first-run-name {
+  display: block;
+  box-sizing: border-box;
+  width: 100%;
+  max-width: 30rem;
+}

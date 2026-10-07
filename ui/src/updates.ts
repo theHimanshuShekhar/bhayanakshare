@@ -15,6 +15,8 @@ export type UpdateProgress =
   /** Transfers are in progress and stop for the restart: waiting for the user to say go. */
   | { step: "confirm"; version: string; active: number }
   | { step: "installing"; version: string }
+  /** A check in Settings found nothing newer. */
+  | { step: "up_to_date" }
   | { step: "failed"; message: string };
 
 const ERRORS: Record<UpdateError, MessageKey> = {
@@ -45,6 +47,9 @@ export function offeredVersion(action: UpdateAction): string | null {
  * user has pressed a button that says so, that press is the agreement to install, and the
  * version is shown while it goes. Either way, with Transfers in progress the user is asked
  * first (`confirm` or `cancel`), as they stop for the restart.
+ *
+ * `check` only looks, for Settings: what it finds is left for the user to install (or not), and
+ * is handed back so the app can note it.
  *
  * Used once, by the app, so that everything that can start an update sees whether one is
  * under way.
@@ -103,14 +108,29 @@ export function useUpdater(api: Api) {
     }
   }, [api, install]);
 
+  const check = useCallback(async (): Promise<UpdateAction | null> => {
+    setProgress({ step: "checking" });
+    try {
+      const found = await api.checkForUpdate();
+      setProgress(found.type === "none" ? { step: "up_to_date" } : null);
+      return found;
+    } catch {
+      setProgress({ step: "failed", message: t("update.checkFailed") });
+      return null;
+    }
+  }, [api]);
+
+  /** Drops the answer of a check (nothing newer), which means nothing once Settings is closed. */
+  const forget = useCallback(() => setProgress((p) => (p?.step === "up_to_date" ? null : p)), []);
+
   const confirm = useCallback(async () => {
     if (progress?.step === "confirm") await run(progress.version);
   }, [progress, run]);
   const cancel = useCallback(() => setProgress(null), []);
 
   /** Something is under way, or waiting for an answer: nothing else may start. */
-  const busy = progress !== null && progress.step !== "failed";
-  return { progress, busy, install, updateNow, confirm, cancel };
+  const busy = progress !== null && progress.step !== "failed" && progress.step !== "up_to_date";
+  return { progress, busy, install, updateNow, check, forget, confirm, cancel };
 }
 
 export type Updater = ReturnType<typeof useUpdater>;

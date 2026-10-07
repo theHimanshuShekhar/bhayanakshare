@@ -3,6 +3,7 @@ import { AddContactDialog } from "./AddContactDialog";
 import { tauriApi, type Api, type Contact, type TransferId, type UpdateAction, type Visibility } from "./api";
 import { ClearHistoryDialog } from "./ClearHistoryDialog";
 import { ContactsScreen } from "./ContactsScreen";
+import { FirstRunScreen } from "./FirstRunScreen";
 import { HistoryScreen } from "./HistoryScreen";
 import { MyDeviceId } from "./MyDeviceId";
 import { OfferSheet } from "./OfferSheet";
@@ -77,7 +78,9 @@ export function App({ api = tauriApi }: AppProps) {
   const [waited, setWaited] = useState(false);
   // A Hidden Device lists nobody Nearby, so an empty list there is no sign of a firewall.
   const [visibility, setVisibility] = useState<Visibility | null>(null);
-  const [saveFolder, setSaveFolder] = useState<string | null>(null);
+  // Whether first run is still to be done; null until the Device has said. Until it is done its
+  // screen is all there is.
+  const [firstRunNeeded, setFirstRunNeeded] = useState<boolean | null>(null);
   // Files waiting for the user to say whom to send them to (from a second launch or the tray).
   const [queued, setQueued] = useState<string[]>([]);
   // The Offer a notification was clicked for; it is shown ahead of older ones.
@@ -86,10 +89,20 @@ export function App({ api = tauriApi }: AppProps) {
   const [quit, setQuit] = useState<{ active: number; saving: boolean } | null>(null);
   const current = TABS.find((x) => x.id === tab) ?? TABS[0];
   const offer = pendingOffer(transfers, preferred);
+  // The tab on show (none while first run is, or may be, still to do), which the tab bar and the
+  // tab's own content follow.
+  const shownTab = firstRunNeeded === false ? tab : null;
   // Add Contact (and Save as Contact) give way to a link; these do not.
   const busy = sending !== null || removing !== null || clearing || offer !== undefined || quit !== null;
   // While a sheet is open the page behind it can be neither clicked nor tabbed to.
   const inert = busy || adding || saving !== null || linked !== null;
+
+  // A check made in Settings: what it finds is noted, so the banner offers it too.
+  const { check } = updater;
+  const checkForUpdates = useCallback(async () => {
+    const found = await check();
+    if (found !== null) setUpdate(found);
+  }, [check]);
 
   const loadContacts = useCallback(() => api.contacts().then(setContacts, () => {}), [api]);
 
@@ -110,10 +123,21 @@ export function App({ api = tauriApi }: AppProps) {
         dispatchVersion(event);
       })
       .then((stop) => (live ? (unlisten = stop) : stop()));
-    api.saveFolder().then((folder) => live && setSaveFolder(folder), () => {});
     return () => {
       live = false;
       unlisten?.();
+    };
+  }, [api]);
+
+  useEffect(() => {
+    let live = true;
+    // If the Device cannot say, the user is not held up by a screen about settings.
+    api.needsFirstRun().then(
+      (needed) => live && setFirstRunNeeded(needed),
+      () => live && setFirstRunNeeded(false),
+    );
+    return () => {
+      live = false;
     };
   }, [api]);
 
@@ -178,8 +202,8 @@ export function App({ api = tauriApi }: AppProps) {
     return () => clearTimeout(timer);
   }, []);
 
-  // The setting is changed in Settings or the tray, so look again whenever a tab is opened and
-  // when the window is back in front.
+  // The setting is changed in Settings, the tray or first run, so look again whenever a tab is
+  // opened, first run is done and when the window is back in front.
   useEffect(() => {
     let live = true;
     const load = () =>
@@ -193,7 +217,7 @@ export function App({ api = tauriApi }: AppProps) {
       live = false;
       window.removeEventListener("focus", load);
     };
-  }, [api, tab]);
+  }, [api, tab, firstRunNeeded]);
 
   // A connection can refresh a Contact's Device Name or address behind the UI's back, so look
   // again whenever a tab is opened, a Transfer begins or learns the other Device's name, or the
@@ -207,41 +231,47 @@ export function App({ api = tauriApi }: AppProps) {
     <div className="app">
       <header inert={inert}>
         <h1>{t("app.name")}</h1>
-        <nav aria-label={t("nav.label")}>
-          {TABS.map((x) => (
-            <button
-              key={x.id}
-              type="button"
-              aria-current={x.id === tab ? "page" : undefined}
-              onClick={() => setTab(x.id)}
-            >
-              {t(x.label)}
-            </button>
-          ))}
-        </nav>
-      </header>
-      <div inert={inert}>
-        {offeredVersion(update) !== dismissedUpdate && (
-          <UpdateBanner
-            api={api}
-            update={update}
-            busy={updater.busy}
-            onInstall={updater.install}
-            onDismiss={() => setDismissedUpdate(offeredVersion(update))}
-          />
+        {shownTab !== null && (
+          <nav aria-label={t("nav.label")}>
+            {TABS.map((x) => (
+              <button
+                key={x.id}
+                type="button"
+                aria-current={x.id === tab ? "page" : undefined}
+                onClick={() => setTab(x.id)}
+              >
+                {t(x.label)}
+              </button>
+            ))}
+          </nav>
         )}
-        <VersionNotices
-          contacts={contacts}
-          notices={versionNotices}
-          updating={updater.busy}
-          onUpdateNow={updater.updateNow}
-          onDismiss={(peer) => dispatchVersion({ type: "dismiss_version_notice", peer })}
-        />
-        <UpdateStatus updater={updater} />
-      </div>
+      </header>
+      {shownTab !== null && (
+        <div inert={inert}>
+          {/* Settings has the banner's place in its Updates section: one notice, one status. */}
+          {shownTab !== "settings" && offeredVersion(update) !== dismissedUpdate && (
+            <UpdateBanner
+              api={api}
+              update={update}
+              busy={updater.busy}
+              onInstall={updater.install}
+              onDismiss={() => setDismissedUpdate(offeredVersion(update))}
+            />
+          )}
+          <VersionNotices
+            contacts={contacts}
+            notices={versionNotices}
+            updating={updater.busy}
+            onUpdateNow={updater.updateNow}
+            onDismiss={(peer) => dispatchVersion({ type: "dismiss_version_notice", peer })}
+          />
+          {shownTab !== "settings" && <UpdateStatus updater={updater} />}
+        </div>
+      )}
       <main inert={inert}>
-        {tab === "home" && <p>{t(current.placeholder)}</p>}
-        {tab === "home" && (
+        {firstRunNeeded === true && <FirstRunScreen api={api} onDone={() => setFirstRunNeeded(false)} />}
+        {shownTab === "home" && <p>{t(current.placeholder)}</p>}
+        {shownTab === "home" && (
           <>
             <MyDeviceId api={api} />
             {queued.length > 0 && (
@@ -353,7 +383,7 @@ export function App({ api = tauriApi }: AppProps) {
             </section>
           </>
         )}
-        {tab === "contacts" && (
+        {shownTab === "contacts" && (
           <ContactsScreen
             api={api}
             contacts={contacts}
@@ -366,7 +396,7 @@ export function App({ api = tauriApi }: AppProps) {
             }}
           />
         )}
-        {tab === "history" && (
+        {shownTab === "history" && (
           <HistoryScreen
             api={api}
             contacts={contacts}
@@ -380,7 +410,14 @@ export function App({ api = tauriApi }: AppProps) {
             onClear={() => setClearing(true)}
           />
         )}
-        {tab === "settings" && <SettingsScreen api={api} />}
+        {shownTab === "settings" && (
+          <SettingsScreen
+            api={api}
+            updater={updater}
+            update={update}
+            onCheckForUpdates={checkForUpdates}
+          />
+        )}
       </main>
       {sending && (
         <SendDialog
@@ -444,7 +481,6 @@ export function App({ api = tauriApi }: AppProps) {
           api={api}
           offer={offer}
           contacts={contacts}
-          saveFolder={saveFolder}
         />
       )}
     </div>

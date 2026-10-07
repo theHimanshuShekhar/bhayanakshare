@@ -56,6 +56,14 @@ Losing the private key means no release can be signed for the AppImages already 
 
 A local `pnpm build` makes updater artifacts too (`createUpdaterArtifacts`), so it needs `TAURI_SIGNING_PRIVATE_KEY` set. To build the installers without them, run `pnpm tauri build --config '{"bundle":{"createUpdaterArtifacts":false}}'`.
 
+## First run and settings
+
+The first time a Device runs, one screen is shown instead of the tabs (`ui/src/FirstRunScreen.tsx`): Device Name (the hostname), Visibility ("People who have my ID"), start at login (on) and the save folder (`~/Downloads/BhayanakShare`). "Get started" keeps them as they are, or as the user changed them, and goes to Home. Start at login is switched on (or off) there by an explicit choice, which also marks the shell's one-time default (`background::default_autostart`, for installs that never see the screen) as done, so the two cannot undo each other; if it cannot be switched on, first run still finishes, with a note. A Visibility that could not be read is not overwritten with the default shown. Whether it was done is the `first_run_done` setting in the Device's database, so an install made before the screen existed sees it once.
+
+Every setting lives in the Settings tab, in sections: This Device (Device Name, My ID), Privacy (Visibility, public DHT), Receiving (the save folder), App (start at login, the version and "Check for updates") and then Identity and Diagnostics. A new Device Name, Visibility or public DHT setting takes effect at once, without a restart.
+
+The save folder is the `save_folder` setting. Until it is set it is the folder the Device was configured with (`BHAYANAKSHARE_SAVE_DIR`, else `~/Downloads/BhayanakShare`); once set it wins over that. Changing it applies to the next Offer accepted (also one waiting for an answer, and Auto-accept), and it must be an absolute path that is made if missing and can be written in, else `Device::set_save_folder` fails with `Error::SaveFolder` (a kind the UI words). Only the default folder is made at start: one the user set that is missing (an unmounted drive, say) is left alone and logged, and each Offer's check says so until it is back. The Offer sheet can still choose another folder for one Offer.
+
 ## Commands
 
 Requirements: a Rust toolchain, Node 22+ and pnpm. Building the Tauri shell on Linux also needs `pkg-config` and the `webkit2gtk-4.1`, `libsoup-3.0` and GTK 3 development packages (see the [Tauri prerequisites](https://v2.tauri.app/start/prerequisites/)).
@@ -88,7 +96,7 @@ BHAYANAKSHARE_DATA_DIR=/tmp/bhs-b/data BHAYANAKSHARE_SAVE_DIR=/tmp/bhs-b/save ta
 
 An instance given `BHAYANAKSHARE_DATA_DIR` is treated as a separate install made to run beside another: it skips the single-instance check and does not register itself to start at login or as the handler of `bhayanakshare://` links. (Without the variable, a second launch focuses the running window instead and hands it any files named on the command line.)
 
-Copy the Device ID from one instance's "My ID", choose "Send to ID…" in the other, and paste it. Without the variables the data lives in the platform's app data folder and files are saved to `~/Downloads/BhayanakShare`.
+Copy the Device ID from one instance's "My ID", choose "Send to ID…" in the other, and paste it. Without the variables the data lives in the platform's app data folder and files are saved to `~/Downloads/BhayanakShare` (or the folder chosen in Settings, which takes the place of `BHAYANAKSHARE_SAVE_DIR` once set).
 
 ### Where the secret key lives
 
@@ -115,6 +123,8 @@ The shell registers the scheme with the `deep-link` plugin (`tauri.conf.json`), 
 Integration tests drive Devices through the Device API only. `crates/core/tests/support` starts 2 or 3 Devices in one process on localhost, with relays and address lookup off; a test hands one Device another's address (`TestDevice::addr`) and reads each Device's event stream. Every Device gets its own temp folders and a `ManualClock`. Start new integration tests from that harness.
 
 LAN discovery is its own seam, `crates/core/tests/discovery.rs`: Devices started with `TestDevice::start_discovering` use real mDNS multicast on the loopback interface (UDP port 5353, shared with anything else on the machine, so a test looks for one specific Device and never expects an exact list). Hidden Visibility is `crates/core/tests/hidden.rs`, a binary of its own that runs one test at a time: to show that a Hidden Device sends nothing it listens for a few seconds and hears nothing, which means nothing while other tests announce. It uses the same harness and the raw mDNS helpers of `tests/support/multicast.rs` (a sniffer on the group, and queries from a Device that holds no ID; the blinded label is spelled out there, so a change to the design fails the tests). Each test first probes whether multicast works here; if not it says so on stderr (`--nocapture`) and returns without testing anything. Set `BHAYANAKSHARE_REQUIRE_MULTICAST=1` to make that a failure instead. When Nearby Devices do not show up on a real network, see [`docs/firewall.md`](docs/firewall.md), which the Home screen links to.
+
+First run and the save folder, as settings of the Device, are `crates/core/tests/settings.rs`; a rename reaching a Nearby Device without a restart is in `tests/discovery.rs`.
 
 Identity export and import is `crates/core/tests/identity.rs`, with `KeySource::File`. Where the key lives (store, file, marker) is unit-tested in `crates/core/src/keystore.rs` against a fake secret store; no test touches the real one, as it would be the developer's own key.
 

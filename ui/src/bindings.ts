@@ -6,7 +6,20 @@ import * as __TAURI_EVENT from "@tauri-apps/api/event";
 /** Commands */
 export const commands = {
 	myId: () => __TAURI_INVOKE<MyId>("my_id"),
+	/**
+	 *  The folder accepted files are saved to unless an Offer names another (shown on the Offer
+	 *  sheet and in Settings).
+	 */
 	saveFolder: () => __TAURI_INVOKE<string>("save_folder"),
+	/**
+	 *  Makes `path`, an absolute path, the save folder (made if missing, and it must be writable)
+	 *  from the next Offer on; resolves to the folder as kept.
+	 */
+	setSaveFolder: (path: string) => __TAURI_INVOKE<string>("set_save_folder", { path }),
+	/**  Whether first run is still to be done: the UI shows its screen instead of the tabs. */
+	needsFirstRun: () => __TAURI_INVOKE<boolean>("needs_first_run"),
+	/**  Records that the user has been through first run. */
+	finishFirstRun: () => __TAURI_INVOKE<null>("finish_first_run"),
 	/**
 	 *  Offers the files and folders at `paths` to the Device with the pasted Device ID `to`, as
 	 *  one Transfer; resolves to the Transfer ID.
@@ -45,8 +58,20 @@ export const commands = {
 	visibility: () => __TAURI_INVOKE<Visibility>("visibility"),
 	/**  Changes who can see this Device as a Nearby Device; it takes effect at once. */
 	setVisibility: (visibility: Visibility) => __TAURI_INVOKE<null>("set_visibility", { visibility }),
+	/**
+	 *  Whether this Device uses the public Mainline DHT, besides n0 DNS, to publish its address and
+	 *  find its Contacts'.
+	 */
+	publicDht: () => __TAURI_INVOKE<boolean>("public_dht"),
+	/**  Turns the public DHT on or off; it takes effect at once and is kept across restarts. */
+	setPublicDht: (on: boolean) => __TAURI_INVOKE<null>("set_public_dht", { on }),
 	/**  Whether this Device starts when the user logs in. */
 	autostartEnabled: () => __TAURI_INVOKE<boolean>("autostart_enabled"),
+	/**
+	 *  Starts this Device at login, or no longer does. The choice is the user's, so the one-time
+	 *  default (`background::default_autostart`) has nothing left to do: it is marked done, and
+	 *  cannot undo a choice made before it ran.
+	 */
 	setAutostart: (on: boolean) => __TAURI_INVOKE<null>("set_autostart", { on }),
 	/**  Whether debug logging is on: a bigger log, for finding what went wrong. */
 	debugLogging: () => __TAURI_INVOKE<boolean>("debug_logging"),
@@ -306,6 +331,25 @@ export type ProgressEvent = {
 /**  Which side of a Transfer a Device plays. */
 export type Role = "sender" | "receiver";
 
+/**  Why a folder could not be made the save folder, in the terms the UI words differently. */
+export type SaveFolderError = {
+	kind: SaveFolderErrorKind,
+	/**  For the kinds the UI has no wording of its own for. */
+	message: string,
+};
+
+export type SaveFolderErrorKind = 
+/**  Not an absolute path. */
+"not_absolute" | 
+/**  Something that is not a folder is there. */
+"not_a_folder" | 
+/**  It is missing and could not be made. */
+"cannot_create" | 
+/**  Files cannot be written in it. */
+"not_writable" | 
+/**  The path is not text. */
+"not_text" | "other";
+
 /**  What the shell tells the UI that is not a Device event. */
 export type ShellEvent = 
 /**
@@ -327,6 +371,8 @@ export type ShellEvent =
 
 /**  What an Offer needs, against what its save folder has. */
 export type SpaceCheck = {
+	/**  The folder checked, as an absolute path: where the Offer would be saved. */
+	folder: string,
 	/**  The Offer's total size in bytes. */
 	needed: number,
 	/**  Bytes free in the save folder; `None` when the platform cannot say. */
