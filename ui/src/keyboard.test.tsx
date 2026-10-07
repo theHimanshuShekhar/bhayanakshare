@@ -4,7 +4,7 @@ import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { App } from "./App";
 import type { Contact } from "./api";
 import type { HistoryEntry, TransferRecord, TransferState } from "./bindings";
-import { BATCH, EXPIRES_AT, PEER_ID, TRANSFER, contact, fakeApi } from "./testApi";
+import { BATCH, EXPIRES_AT, MY_ID, PEER_ID, TRANSFER, contact, fakeApi } from "./testApi";
 
 // The camera is not tested here (QrScanner.test.tsx covers how it is read).
 vi.mock("./QrScanner", () => ({ QrScanner: () => <p>Camera</p> }));
@@ -193,6 +193,75 @@ describe("keyboard: Home", () => {
     await user.tab();
     await user.keyboard(" ");
     expect(device.api.cancelBatch).toHaveBeenCalledWith(BATCH);
+  });
+});
+
+describe("keyboard: focus is never dropped on the page", () => {
+  it("goes to the Transfers heading once a selection is sent, and Devices once it is cleared", async () => {
+    const { user, device } = await start();
+    await tabTo(user, screen.getByRole("checkbox", { name: /Select Mum/ }));
+    await user.keyboard(" ");
+    await tabTo(user, button("Choose files…"));
+    await user.keyboard("{Enter}");
+    await waitFor(() => expect(device.api.sendFiles).toHaveBeenCalled());
+    await waitFor(() => expect(document.activeElement).toBe(screen.getByRole("heading", { name: "Transfers" })));
+
+    await tabTo(user, screen.getByRole("checkbox", { name: /Select Dad/ }));
+    await user.keyboard(" ");
+    await tabTo(user, button("Clear selection"));
+    await user.keyboard("{Enter}");
+    expect(document.activeElement).toBe(screen.getByRole("heading", { name: "Devices" }));
+  });
+
+  it("goes back to Write text… from the text step of the selection bar and of Send", async () => {
+    const { user } = await start();
+    await tabTo(user, screen.getByRole("checkbox", { name: /Select Mum/ }));
+    await user.keyboard(" ");
+    await tabTo(user, button("Write text…"));
+    await user.keyboard("{Enter}");
+    await tabTo(user, button("Back"));
+    await user.keyboard("{Enter}");
+    expect(document.activeElement).toBe(button("Write text…"));
+    await user.click(button("Clear selection"));
+
+    await tabTo(user, button("Send to Dad"));
+    await user.keyboard("{Enter}");
+    const dialog = screen.getByRole("dialog", { name: "Send to Dad" });
+    await user.click(within(dialog).getByRole("button", { name: "Write text…" }));
+    await user.click(within(dialog).getByRole("button", { name: "Back" }));
+    expect(document.activeElement).toBe(within(dialog).getByRole("button", { name: "Write text…" }));
+  });
+
+  it("follows Scan QR code… to Stop scanning and back, with Escape still closing Add Contact", async () => {
+    const { user } = await start();
+    await user.click(button("Contacts"));
+    await tabTo(user, await screen.findByRole("button", { name: "Add Contact…" }));
+    await user.keyboard("{Enter}");
+    await tabTo(user, button("Scan QR code…"));
+    await user.keyboard("{Enter}");
+    expect(document.activeElement).toBe(button("Stop scanning"));
+    await user.keyboard("{Enter}");
+    expect(document.activeElement).toBe(button("Scan QR code…"));
+    await user.keyboard("{Escape}");
+    expect(screen.queryByRole("dialog")).toBeNull();
+  });
+
+  it("starts Import identity's own-identity step on Close, which Escape also leaves", async () => {
+    const same = fakeApi({
+      checkIdentityImport: () => Promise.resolve({ id: MY_ID, fingerprint: "AAAA-AAAA" }),
+    });
+    const { user } = await start(same);
+    await user.click(button("Settings"));
+    const open = await screen.findByRole("button", { name: "Import identity…" });
+    await waitFor(() => expect((open as HTMLButtonElement).disabled).toBe(false));
+    await tabTo(user, open);
+    await user.keyboard("{Enter}");
+    await user.type(await screen.findByLabelText("Password of this file"), "correct horse{Enter}");
+    const dialog = screen.getByRole("dialog", { name: "Import identity" });
+    await waitFor(() => expect(document.activeElement).toBe(within(dialog).getByRole("button", { name: "Close" })));
+    await user.keyboard("{Escape}");
+    expect(screen.queryByRole("dialog")).toBeNull();
+    expect(document.activeElement).toBe(open);
   });
 });
 

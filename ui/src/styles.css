@@ -7,12 +7,23 @@ body {
   margin: 0;
 }
 
+/* Focus is shown wherever the keyboard puts it, on every control, link and field: a ring in the
+ * text colour with a ring in the page colour round it, so that it stands out on any background
+ * and in light and dark alike. Nothing in this file removes it. */
+:focus-visible {
+  outline: 3px solid CanvasText;
+  outline-offset: 2px;
+  box-shadow: 0 0 0 5px Canvas;
+}
+
 .app {
   padding: 1rem 1.5rem;
 }
 
+/* Everything that sits in a row may wrap, so that nothing runs off the page at 200% zoom. */
 header {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   justify-content: space-between;
   gap: 1rem;
@@ -20,6 +31,7 @@ header {
 
 nav {
   display: flex;
+  flex-wrap: wrap;
   gap: 0.5rem;
 }
 
@@ -58,6 +70,22 @@ code {
 
 .tile-group .tile {
   flex: 1;
+}
+
+/* What a tile says besides its name sits in the tile as its own children would. */
+.tile-state {
+  display: contents;
+}
+
+/* A tile that is ticked for a send to several shows it in its border as well as in its
+ * "Selected" text and the ticked box beside it: thick and double, not a different colour. */
+.tile-group.selected .tile {
+  border: 4px double currentColor;
+}
+
+/* A field that was refused says so in its text; its border says so too, dashed and thick. */
+[aria-invalid="true"] {
+  border: 2px dashed currentColor;
 }
 
 /* The Devices ticked for a send to several, with what to send them. */
@@ -171,6 +199,7 @@ progress {
 
 .actions {
   display: flex;
+  flex-wrap: wrap;
   gap: 0.5rem;
   justify-content: flex-end;
 }
