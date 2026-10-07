@@ -3,7 +3,7 @@ import type { Api } from "./api";
 import { t } from "./i18n";
 import { Sheet } from "./Sheet";
 import { parseShareLink } from "./shareLink";
-import { TextComposer } from "./TextComposer";
+import { TextComposer, useFocusWhenLeft } from "./TextComposer";
 import { baseName } from "./transfers";
 
 /**
@@ -40,6 +40,7 @@ export function SendDialog({
   // Writing text instead of picking files.
   const [composing, setComposing] = useState(false);
   const input = useRef<HTMLInputElement>(null);
+  const writeText = useFocusWhenLeft(composing);
 
   useEffect(() => input.current?.focus(), []);
 
@@ -121,7 +122,12 @@ export function SendDialog({
             >
               {t("send.chooseFolder")}
             </button>
-            <button type="button" onClick={() => setComposing(true)} disabled={busy || to.trim() === ""}>
+            <button
+              type="button"
+              ref={writeText}
+              onClick={() => setComposing(true)}
+              disabled={busy || to.trim() === ""}
+            >
               {t("send.writeText")}
             </button>
           </>

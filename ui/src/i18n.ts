@@ -383,6 +383,10 @@ const en = {
   "batch.expired": "{count} expired",
   "batch.inProgress": "{count} in progress",
 
+  "announce.line": "{title}: {text}",
+  "announce.copied": "Copied to the clipboard.",
+  "announce.copyFailed": "Copy failed. Select the text and copy it by hand.",
+
   "selection.select": "Select",
   "selection.selected": "Selected",
   "selection.selectLabel": "Select {name} to send to several Devices at once",

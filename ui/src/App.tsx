@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useReducer, useRef, useState } from "react";
 import { AddContactDialog } from "./AddContactDialog";
+import { Announcer, TransferAnnouncements } from "./Announcer";
 import { tauriApi, type Api, type Contact, type TransferId, type UpdateAction, type Visibility } from "./api";
 import { ClearHistoryDialog } from "./ClearHistoryDialog";
 import { ContactsScreen } from "./ContactsScreen";
@@ -23,6 +24,9 @@ import { applyEvent, baseName, fingerprint, listItems, noTransfers, pendingOffer
 import { offeredVersion, useUpdater } from "./updates";
 import { applyVersionNotices } from "./versions";
 
+/** Gives focus to a heading that is there for it (`tabIndex={-1}`). */
+const focusHeading = (id: string) => document.getElementById(id)?.focus();
+
 const TABS = [
   { id: "home", label: "tab.home", placeholder: "home.placeholder" },
   { id: "history", label: "tab.history", placeholder: "history.placeholder" },
@@ -45,6 +49,14 @@ interface AppProps {
 }
 
 export function App({ api = tauriApi }: AppProps) {
+  return (
+    <Announcer>
+      <Screens api={api} />
+    </Announcer>
+  );
+}
+
+function Screens({ api }: { api: Api }) {
   const [tab, setTab] = useState<TabId>("home");
   // Sending to a pasted ID (`to` empty) or to a Contact, whose ID is filled in.
   const [sending, setSending] = useState<{ to: string; name: string | null } | null>(null);
@@ -229,6 +241,7 @@ export function App({ api = tauriApi }: AppProps) {
 
   return (
     <div className="app">
+      <TransferAnnouncements transfers={transfers} contacts={contacts} />
       <header inert={inert}>
         <h1>{t("app.name")}</h1>
         {shownTab !== null && (
@@ -283,7 +296,9 @@ export function App({ api = tauriApi }: AppProps) {
               </p>
             )}
             <section aria-labelledby="devices-heading">
-              <h2 id="devices-heading">{t("home.devices")}</h2>
+              <h2 id="devices-heading" tabIndex={-1}>
+                {t("home.devices")}
+              </h2>
               <div className="tiles">
                 {sortedContacts(contacts).map((c) => {
                   // A Contact that is Nearby shows what it announces until it has a name here.
@@ -355,8 +370,16 @@ export function App({ api = tauriApi }: AppProps) {
                   api={api}
                   ids={chosen}
                   files={queued}
-                  onClear={() => setSelected([])}
-                  onSent={() => setSelected([])}
+                  // The bar goes with the selection, and the button pressed with it: focus is
+                  // given to the heading of what comes next, so it is not lost to the page.
+                  onClear={() => {
+                    focusHeading("devices-heading");
+                    setSelected([]);
+                  }}
+                  onSent={() => {
+                    focusHeading("transfers-heading");
+                    setSelected([]);
+                  }}
                   onFilesSent={() => setQueued([])}
                 />
               )}
@@ -385,7 +408,9 @@ export function App({ api = tauriApi }: AppProps) {
               )}
             </section>
             <section aria-labelledby="transfers-heading">
-              <h2 id="transfers-heading">{t("home.transfers")}</h2>
+              <h2 id="transfers-heading" tabIndex={-1}>
+                {t("home.transfers")}
+              </h2>
               {transfers.order.length === 0 ? (
                 <p>{t("home.noTransfers")}</p>
               ) : (
@@ -430,62 +455,65 @@ export function App({ api = tauriApi }: AppProps) {
           />
         )}
       </main>
-      {sending && (
-        <SendDialog
-          key={queued.join("\n")}
-          api={api}
-          to={sending.to}
-          contactName={sending.name}
-          files={queued}
-          onSent={() => setQueued([])}
-          onClose={() => setSending(null)}
-        />
-      )}
-      {adding && (
-        <AddContactDialog api={api} onAdded={loadContacts} onClose={() => setAdding(false)} />
-      )}
-      {saving && (
-        <AddContactDialog
-          api={api}
-          prefilled={saving}
-          onAdded={loadContacts}
-          onClose={() => setSaving(null)}
-        />
-      )}
-      {linked && (
-        <AddContactDialog
-          key={linked.stamp}
-          api={api}
-          suggested={linked.suggested ?? undefined}
-          badLink={linked.suggested === null}
-          onAdded={loadContacts}
-          onClose={() => setLinked(null)}
-        />
-      )}
-      {removing && (
-        <RemoveContactDialog
-          api={api}
-          contact={removing}
-          onRemoved={loadContacts}
-          onClose={() => setRemoving(null)}
-        />
-      )}
-      {clearing && (
-        <ClearHistoryDialog
-          api={api}
-          onCleared={() => setCleared((n) => n + 1)}
-          onClose={() => setClearing(false)}
-        />
-      )}
-      {quit && (
-        <QuitDialog
-          api={api}
-          active={quit.active}
-          saving={quit.saving}
-          onSaving={(saving) => setQuit({ active: quit.active, saving })}
-          onCancel={() => setQuit(null)}
-        />
-      )}
+      {/* An Offer sheet goes over whatever else is open, and the sheets under it must not be reached. */}
+      <div inert={offer !== undefined}>
+        {sending && (
+          <SendDialog
+            key={queued.join("\n")}
+            api={api}
+            to={sending.to}
+            contactName={sending.name}
+            files={queued}
+            onSent={() => setQueued([])}
+            onClose={() => setSending(null)}
+          />
+        )}
+        {adding && (
+          <AddContactDialog api={api} onAdded={loadContacts} onClose={() => setAdding(false)} />
+        )}
+        {saving && (
+          <AddContactDialog
+            api={api}
+            prefilled={saving}
+            onAdded={loadContacts}
+            onClose={() => setSaving(null)}
+          />
+        )}
+        {linked && (
+          <AddContactDialog
+            key={linked.stamp}
+            api={api}
+            suggested={linked.suggested ?? undefined}
+            badLink={linked.suggested === null}
+            onAdded={loadContacts}
+            onClose={() => setLinked(null)}
+          />
+        )}
+        {removing && (
+          <RemoveContactDialog
+            api={api}
+            contact={removing}
+            onRemoved={loadContacts}
+            onClose={() => setRemoving(null)}
+          />
+        )}
+        {clearing && (
+          <ClearHistoryDialog
+            api={api}
+            onCleared={() => setCleared((n) => n + 1)}
+            onClose={() => setClearing(false)}
+          />
+        )}
+        {quit && (
+          <QuitDialog
+            api={api}
+            active={quit.active}
+            saving={quit.saving}
+            onSaving={(saving) => setQuit({ active: quit.active, saving })}
+            onCancel={() => setQuit(null)}
+          />
+        )}
+      </div>
       {offer && (
         <OfferSheet
           key={offer.id}

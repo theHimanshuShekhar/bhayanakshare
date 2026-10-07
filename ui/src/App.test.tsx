@@ -687,7 +687,8 @@ describe("cancelling, expiry and the Offer countdown", () => {
       expires_at: EXPIRES_AT,
       state: { kind: "failed", reason: "The other Device already has too many Offers from you." },
     });
-    expect(screen.getByText(/Could not send\. The other Device already has too many Offers/)).toBeTruthy();
+    const list = screen.getByRole("region", { name: "Transfers" });
+    expect(within(list).getByText(/Could not send\. The other Device already has too many Offers/)).toBeTruthy();
   });
 });
 

@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import type { Api, MyId } from "./api";
+import { useAnnounce } from "./Announcer";
 import { t } from "./i18n";
 import { QrCode } from "./QrCode";
 import { shareLink } from "./shareLink";
@@ -15,6 +16,7 @@ export function MyDeviceId({ api, nested = false }: { api: Api; nested?: boolean
   const Heading = nested ? "h4" : "h2";
   const [state, setState] = useState<"loading" | "error" | { myId: MyId; link: string }>("loading");
   const [copy, setCopy] = useState<Copy>("idle");
+  const announce = useAnnounce();
 
   useEffect(() => {
     let live = true;
@@ -34,8 +36,14 @@ export function MyDeviceId({ api, nested = false }: { api: Api; nested?: boolean
   const { myId, link } = state;
   const copyText = (text: string) =>
     api.copyText(text).then(
-      () => setCopy("copied"),
-      () => setCopy("failed"),
+      () => {
+        setCopy("copied");
+        announce(t("announce.copied"));
+      },
+      () => {
+        setCopy("failed");
+        announce(t("announce.copyFailed"));
+      },
     );
 
   return (
@@ -60,7 +68,7 @@ export function MyDeviceId({ api, nested = false }: { api: Api; nested?: boolean
         <button type="button" onClick={() => copyText(link)}>
           {t("myId.copyLink")}
         </button>
-        <span role="status" className="note">
+        <span className="note">
           {copy === "copied" && t("myId.copied")}
           {copy === "failed" && t("myId.copyFailed")}
         </span>

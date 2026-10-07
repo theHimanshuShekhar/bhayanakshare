@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { useAnnounce } from "./Announcer";
 import type { Api, Contact } from "./api";
 import { peerName } from "./contacts";
 import { t, type MessageKey } from "./i18n";
@@ -72,8 +73,8 @@ function BatchRow({ api, contacts, batch }: { api: Api; contacts: Contact[]; bat
   return (
     <li>
       <strong>{t("batch.title", { name, count: batch.members.length })}</strong>
-      {/* Announced as Devices finish, decline or fail. */}
-      <p aria-live="polite">{batchStatus(batch)}</p>
+      {/* Said once, when the Batch is over, by the Announcer: not a live region of its own. */}
+      <p>{batchStatus(batch)}</p>
       <button
         type="button"
         aria-expanded={open}
@@ -110,6 +111,7 @@ function BatchRow({ api, contacts, batch }: { api: Api; contacts: Contact[]; bat
 /** A text, shown as plain text, with a button to copy it. `label` says which text, for the button. */
 export function CopyableText({ api, text, label }: { api: Api; text: string; label: string }) {
   const [copy, setCopy] = useState<"idle" | "copied" | "failed">("idle");
+  const announce = useAnnounce();
   return (
     <>
       <PlainText text={text} />
@@ -118,14 +120,20 @@ export function CopyableText({ api, text, label }: { api: Api; text: string; lab
         aria-label={label}
         onClick={() =>
           api.copyText(text).then(
-            () => setCopy("copied"),
-            () => setCopy("failed"),
+            () => {
+              setCopy("copied");
+              announce(t("announce.copied"));
+            },
+            () => {
+              setCopy("failed");
+              announce(t("announce.copyFailed"));
+            },
           )
         }
       >
         {t("transfer.copy")}
       </button>
-      <span role="status" className="note">
+      <span className="note">
         {copy === "copied" && t("transfer.copied")}
         {copy === "failed" && t("transfer.copyFailed")}
       </span>
@@ -158,8 +166,8 @@ function TransferRow({
   return (
     <li>
       <strong>{title}</strong>
-      {/* Announced when the state changes; the progress below is not, so it stays quiet. */}
-      <p aria-live="polite">{statusText(x, peer, isPreparing(x))}</p>
+      {/* The Announcer says when this changes, and the progress below at coarse steps. */}
+      <p>{statusText(x, peer, isPreparing(x))}</p>
       {x.role === "sender" && x.skippedLinks > 0 && (
         <p>
           {x.skippedLinks === 1
