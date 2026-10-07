@@ -1,9 +1,11 @@
 import { useCallback, useEffect, useReducer, useRef, useState } from "react";
 import { AddContactDialog } from "./AddContactDialog";
+import { Announcer, TransferAnnouncements } from "./Announcer";
 import { tauriApi, type Api, type Contact, type TransferId, type UpdateAction, type Visibility } from "./api";
 import { ClearHistoryDialog } from "./ClearHistoryDialog";
 import { ContactsScreen } from "./ContactsScreen";
 import { FirstRunScreen } from "./FirstRunScreen";
+import { useFocusRescue } from "./focusRescue";
 import { HistoryScreen } from "./HistoryScreen";
 import { MyDeviceId } from "./MyDeviceId";
 import { OfferSheet } from "./OfferSheet";
@@ -12,6 +14,7 @@ import { RemoveContactDialog } from "./RemoveContactDialog";
 import { SelectBox, SelectionBar } from "./SelectionBar";
 import { SendDialog } from "./SendDialog";
 import { SettingsScreen } from "./SettingsScreen";
+import { TileState, tileStateId } from "./TileState";
 import { TransferList } from "./TransferList";
 import { UpdateBanner, UpdateStatus } from "./UpdateBanner";
 import { VersionNotices } from "./VersionNotices";
@@ -22,6 +25,9 @@ import { parseShareLink, type Shared } from "./shareLink";
 import { applyEvent, baseName, fingerprint, listItems, noTransfers, pendingOffer } from "./transfers";
 import { offeredVersion, useUpdater } from "./updates";
 import { applyVersionNotices } from "./versions";
+
+/** Gives focus to a heading that is there for it (`tabIndex={-1}`). */
+const focusHeading = (id: string) => document.getElementById(id)?.focus();
 
 const TABS = [
   { id: "home", label: "tab.home", placeholder: "home.placeholder" },
@@ -45,6 +51,15 @@ interface AppProps {
 }
 
 export function App({ api = tauriApi }: AppProps) {
+  return (
+    <Announcer>
+      <Screens api={api} />
+    </Announcer>
+  );
+}
+
+function Screens({ api }: { api: Api }) {
+  useFocusRescue();
   const [tab, setTab] = useState<TabId>("home");
   // Sending to a pasted ID (`to` empty) or to a Contact, whose ID is filled in.
   const [sending, setSending] = useState<{ to: string; name: string | null } | null>(null);
@@ -229,6 +244,7 @@ export function App({ api = tauriApi }: AppProps) {
 
   return (
     <div className="app">
+      <TransferAnnouncements transfers={transfers} contacts={contacts} />
       <header inert={inert}>
         <h1>{t("app.name")}</h1>
         {shownTab !== null && (
@@ -289,36 +305,49 @@ export function App({ api = tauriApi }: AppProps) {
                   // A Contact that is Nearby shows what it announces until it has a name here.
                   const here = nearby.find((d) => d.id === c.id);
                   const name = peerName(c.id, contacts, here?.name ?? null);
+                  const picked = chosen.includes(c.id);
                   return (
-                    <div key={c.id} className="tile-group">
+                    <div key={c.id} className={picked ? "tile-group selected" : "tile-group"}>
                       <button
                         type="button"
                         className="tile"
                         aria-label={t("home.sendToContact", { name })}
+                        aria-describedby={tileStateId(c.id)}
                         onClick={() => setSending({ to: c.id, name })}
                       >
                         <strong>{name}</strong>
-                        <span className="badge">{t("contacts.badge")}</span>
-                        <span className="note">{fingerprint(c.id)}</span>
-                        {here && <span className="note">{t("home.nearby")}</span>}
+                        <TileState
+                          deviceId={c.id}
+                          badge
+                          print={fingerprint(c.id)}
+                          nearby={here !== undefined}
+                          picked={picked}
+                        />
                       </button>
-                      <SelectBox name={name} checked={chosen.includes(c.id)} onChange={() => toggle(c.id)} />
+                      <SelectBox name={name} checked={picked} onChange={() => toggle(c.id)} />
                     </div>
                   );
                 })}
                 {strangers.map((d) => {
                   const label = peerName(d.id, contacts, d.name);
+                  const picked = chosen.includes(d.id);
                   return (
-                    <div key={d.id} className="tile-group">
+                    <div key={d.id} className={picked ? "tile-group selected" : "tile-group"}>
                       <button
                         type="button"
                         className="tile"
                         aria-label={t("home.sendToNearby", { name: label })}
+                        aria-describedby={tileStateId(d.id)}
                         onClick={() => setSending({ to: d.id, name: label })}
                       >
                         <strong>{d.name ?? fingerprint(d.id)}</strong>
-                        {d.name !== null && <span className="note">{fingerprint(d.id)}</span>}
-                        <span className="note">{t("home.nearby")}</span>
+                        <TileState
+                          deviceId={d.id}
+                          badge={false}
+                          print={d.name !== null ? fingerprint(d.id) : null}
+                          nearby
+                          picked={picked}
+                        />
                       </button>
                       <button
                         type="button"
@@ -327,7 +356,7 @@ export function App({ api = tauriApi }: AppProps) {
                       >
                         {t("home.saveAsContact")}
                       </button>
-                      <SelectBox name={label} checked={chosen.includes(d.id)} onChange={() => toggle(d.id)} />
+                      <SelectBox name={label} checked={picked} onChange={() => toggle(d.id)} />
                     </div>
                   );
                 })}
@@ -345,12 +374,18 @@ export function App({ api = tauriApi }: AppProps) {
                   ids={chosen}
                   files={queued}
                   onClear={() => setSelected([])}
-                  onSent={() => setSelected([])}
+                  // The bar goes with the selection and the button pressed with it: what was
+                  // sent is what is looked at next, so that is where focus goes.
+                  onSent={() => {
+                    focusHeading("transfers-heading");
+                    setSelected([]);
+                  }}
                   onFilesSent={() => setQueued([])}
                 />
               )}
               {visibility === "hidden" && nearby.length === 0 && (
-                <p role="status" className="hint">
+                // Not a live region: it is a state that is there on arriving, not news.
+                <p className="hint">
                   {t("home.hiddenHint")}{" "}
                   <button type="button" onClick={() => setTab("settings")}>
                     {t("home.hiddenChange")}
@@ -374,7 +409,9 @@ export function App({ api = tauriApi }: AppProps) {
               )}
             </section>
             <section aria-labelledby="transfers-heading">
-              <h2 id="transfers-heading">{t("home.transfers")}</h2>
+              <h2 id="transfers-heading" tabIndex={-1}>
+                {t("home.transfers")}
+              </h2>
               {transfers.order.length === 0 ? (
                 <p>{t("home.noTransfers")}</p>
               ) : (
@@ -419,65 +456,67 @@ export function App({ api = tauriApi }: AppProps) {
           />
         )}
       </main>
-      {sending && (
-        <SendDialog
-          key={queued.join("\n")}
-          api={api}
-          to={sending.to}
-          contactName={sending.name}
-          files={queued}
-          onSent={() => setQueued([])}
-          onClose={() => setSending(null)}
-        />
-      )}
-      {adding && (
-        <AddContactDialog api={api} onAdded={loadContacts} onClose={() => setAdding(false)} />
-      )}
-      {saving && (
-        <AddContactDialog
-          api={api}
-          prefilled={saving}
-          onAdded={loadContacts}
-          onClose={() => setSaving(null)}
-        />
-      )}
-      {linked && (
-        <AddContactDialog
-          key={linked.stamp}
-          api={api}
-          suggested={linked.suggested ?? undefined}
-          badLink={linked.suggested === null}
-          onAdded={loadContacts}
-          onClose={() => setLinked(null)}
-        />
-      )}
-      {removing && (
-        <RemoveContactDialog
-          api={api}
-          contact={removing}
-          onRemoved={loadContacts}
-          onClose={() => setRemoving(null)}
-        />
-      )}
-      {clearing && (
-        <ClearHistoryDialog
-          api={api}
-          onCleared={() => setCleared((n) => n + 1)}
-          onClose={() => setClearing(false)}
-        />
-      )}
-      {quit && (
-        <QuitDialog
-          api={api}
-          active={quit.active}
-          saving={quit.saving}
-          onSaving={(saving) => setQuit({ active: quit.active, saving })}
-          onCancel={() => setQuit(null)}
-        />
-      )}
+      {/* An Offer sheet goes over whatever else is open, and the sheets under it must not be reached. */}
+      <div inert={offer !== undefined}>
+        {sending && (
+          <SendDialog
+            key={queued.join("\n")}
+            api={api}
+            to={sending.to}
+            contactName={sending.name}
+            files={queued}
+            onSent={() => setQueued([])}
+            onClose={() => setSending(null)}
+          />
+        )}
+        {adding && (
+          <AddContactDialog api={api} onAdded={loadContacts} onClose={() => setAdding(false)} />
+        )}
+        {saving && (
+          <AddContactDialog
+            api={api}
+            prefilled={saving}
+            onAdded={loadContacts}
+            onClose={() => setSaving(null)}
+          />
+        )}
+        {linked && (
+          <AddContactDialog
+            key={linked.stamp}
+            api={api}
+            suggested={linked.suggested ?? undefined}
+            badLink={linked.suggested === null}
+            onAdded={loadContacts}
+            onClose={() => setLinked(null)}
+          />
+        )}
+        {removing && (
+          <RemoveContactDialog
+            api={api}
+            contact={removing}
+            onRemoved={loadContacts}
+            onClose={() => setRemoving(null)}
+          />
+        )}
+        {clearing && (
+          <ClearHistoryDialog
+            api={api}
+            onCleared={() => setCleared((n) => n + 1)}
+            onClose={() => setClearing(false)}
+          />
+        )}
+        {quit && (
+          <QuitDialog
+            api={api}
+            active={quit.active}
+            saving={quit.saving}
+            onSaving={(saving) => setQuit({ active: quit.active, saving })}
+            onCancel={() => setQuit(null)}
+          />
+        )}
+      </div>
       {offer && (
         <OfferSheet
-          key={offer.id}
           api={api}
           offer={offer}
           contacts={contacts}

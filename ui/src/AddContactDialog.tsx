@@ -1,8 +1,9 @@
-import { useEffect, useRef, useState, type KeyboardEvent } from "react";
+import { useEffect, useRef, useState, type RefObject } from "react";
 import type { Api, Contact } from "./api";
 import { isDeviceId } from "./contacts";
 import { t } from "./i18n";
 import { QrScanner } from "./QrScanner";
+import { Sheet } from "./Sheet";
 import { parseIdOrLink, parseShareLink, type Shared } from "./shareLink";
 import { fingerprint } from "./transfers";
 
@@ -45,22 +46,28 @@ export function AddContactDialog({
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const idInput = useRef<HTMLInputElement>(null);
+  const scanButton = useRef<HTMLButtonElement>(null);
+  const stopButton = useRef<HTMLButtonElement>(null);
+  const wasScanning = useRef(false);
+  // Where focus goes when scanning ends: back to the scan button, or to the ID field a code
+  // was just read into.
+  const afterScan = useRef<RefObject<HTMLElement | null>>(scanButton);
   const shownFingerprint = useRef<HTMLElement>(null);
   const trimmed = id.trim();
   const valid = isDeviceId(trimmed);
-
-  useEffect(() => {
-    // Hand focus back to whatever opened the dialog when it goes away.
-    const opener = document.activeElement;
-    return () => {
-      if (opener instanceof HTMLElement) opener.focus();
-    };
-  }, []);
 
   // Each step starts with focus on its first control: the ID field, then the Fingerprint.
   useEffect(() => {
     (checking ? shownFingerprint : idInput).current?.focus();
   }, [checking]);
+
+  // The scan button and the stop button take each other's place, so focus has to follow: it
+  // would be lost to the page, and with it Escape and the Tab trap.
+  useEffect(() => {
+    if (scanning) stopButton.current?.focus();
+    else if (wasScanning.current) afterScan.current.current?.focus();
+    wasScanning.current = scanning;
+  }, [scanning]);
 
   /** Takes a Device ID or share link, from the ID field or a QR code, into the fields. A name
    * the user typed is kept; one from an earlier link goes when the Device is another. Returns
@@ -80,7 +87,10 @@ export function AddContactDialog({
   const scanned = (text: string) => {
     const found = fill(text);
     setNotLink(!found);
-    if (found) setScanning(false);
+    if (found) {
+      afterScan.current = idInput;
+      setScanning(false);
+    }
   };
 
   // A pasted link becomes its Device ID (and name); anything else is kept as typed.
@@ -104,101 +114,107 @@ export function AddContactDialog({
     }
   };
 
-  const onKeyDown = (e: KeyboardEvent) => {
-    if (e.key === "Escape") onClose();
-  };
-
   return (
-    <div className="overlay" onKeyDown={onKeyDown}>
-      <div role="dialog" aria-modal="true" aria-labelledby="add-contact-heading" className="sheet">
-        <h2 id="add-contact-heading">
-          {checking ? t("addContact.checkHeading") : t("addContact.heading")}
-        </h2>
-        {checking ? (
-          <>
-            <p>{t("addContact.check")}</p>
-            <p className="fingerprint">
-              <strong ref={shownFingerprint} tabIndex={-1}>
-                {fingerprint(trimmed.toUpperCase())}
-              </strong>
-            </p>
-            {error !== null && <p role="alert">{error}</p>}
-            <div className="actions">
-              <button type="button" onClick={add} disabled={busy}>
-                {t("addContact.confirm")}
-              </button>
-              <button type="button" onClick={() => setChecking(false)} disabled={busy}>
-                {t("addContact.back")}
-              </button>
-            </div>
-          </>
-        ) : (
-          <>
-            <label htmlFor="add-contact-id">{t("addContact.idLabel")}</label>
-            <input
-              id="add-contact-id"
-              ref={idInput}
-              value={id}
-              onChange={(e) => typed(e.target.value)}
-              aria-describedby="add-contact-id-hint"
-              aria-invalid={trimmed !== "" && !valid}
-              spellCheck={false}
-              autoComplete="off"
-            />
-            <p id="add-contact-id-hint" className="note">
-              {t("addContact.idHint")}
-            </p>
-            {trimmed !== "" && !valid && <p role="alert">{t("addContact.idInvalid")}</p>}
-            {wasBadLink && <p role="alert">{t("addContact.badLink")}</p>}
-            {scanning ? (
-              <>
-                <QrScanner onDecoded={scanned} />
-                {notLink && <p role="alert">{t("addContact.scanNotLink")}</p>}
-                <button type="button" onClick={() => setScanning(false)}>
-                  {t("addContact.scanStop")}
-                </button>
-              </>
-            ) : (
+    <Sheet
+      labelledBy="add-contact-heading"
+      onEscape={onClose}
+      initialFocus={checking ? shownFingerprint : idInput}
+    >
+      <h2 id="add-contact-heading">
+        {checking ? t("addContact.checkHeading") : t("addContact.heading")}
+      </h2>
+      {checking ? (
+        <>
+          <p>{t("addContact.check")}</p>
+          <p className="fingerprint">
+            <strong ref={shownFingerprint} tabIndex={-1}>
+              {fingerprint(trimmed.toUpperCase())}
+            </strong>
+          </p>
+          {error !== null && <p role="alert">{error}</p>}
+          <div className="actions">
+            <button type="button" onClick={add} disabled={busy}>
+              {t("addContact.confirm")}
+            </button>
+            <button type="button" onClick={() => setChecking(false)} disabled={busy}>
+              {t("addContact.back")}
+            </button>
+          </div>
+        </>
+      ) : (
+        <>
+          <label htmlFor="add-contact-id">{t("addContact.idLabel")}</label>
+          <input
+            id="add-contact-id"
+            ref={idInput}
+            value={id}
+            onChange={(e) => typed(e.target.value)}
+            aria-describedby="add-contact-id-hint"
+            aria-invalid={trimmed !== "" && !valid}
+            spellCheck={false}
+            autoComplete="off"
+          />
+          <p id="add-contact-id-hint" className="note">
+            {t("addContact.idHint")}
+          </p>
+          {trimmed !== "" && !valid && <p role="alert">{t("addContact.idInvalid")}</p>}
+          {wasBadLink && <p role="alert">{t("addContact.badLink")}</p>}
+          {scanning ? (
+            <>
+              <QrScanner onDecoded={scanned} />
+              {notLink && <p role="alert">{t("addContact.scanNotLink")}</p>}
               <button
-                type="button"
-                onClick={() => {
-                  setNotLink(false);
-                  setScanning(true);
-                }}
-              >
-                {t("addContact.scan")}
+                  type="button"
+                  ref={stopButton}
+                  onClick={() => {
+                    afterScan.current = scanButton;
+                    setScanning(false);
+                  }}
+                >
+                {t("addContact.scanStop")}
               </button>
-            )}
-            <label htmlFor="add-contact-name">{t("addContact.nameLabel")}</label>
-            <input
-              id="add-contact-name"
-              value={name}
-              onChange={(e) => setName(e.target.value)}
-              aria-describedby="add-contact-name-hint"
-              maxLength={64}
-              autoComplete="off"
-            />
-            <p id="add-contact-name-hint" className="note">
-              {t("addContact.nameHint")}
-            </p>
-            <div className="actions">
-              <button
-                type="button"
-                onClick={() => {
-                  setScanning(false);
-                  setChecking(true);
-                }}
-                disabled={!valid}
-              >
-                {t("addContact.next")}
-              </button>
-              <button type="button" onClick={onClose}>
-                {t("addContact.cancel")}
-              </button>
-            </div>
-          </>
-        )}
-      </div>
-    </div>
+            </>
+          ) : (
+            <button
+              type="button"
+              ref={scanButton}
+              onClick={() => {
+                setNotLink(false);
+                setScanning(true);
+              }}
+            >
+              {t("addContact.scan")}
+            </button>
+          )}
+          <label htmlFor="add-contact-name">{t("addContact.nameLabel")}</label>
+          <input
+            id="add-contact-name"
+            value={name}
+            onChange={(e) => setName(e.target.value)}
+            aria-describedby="add-contact-name-hint"
+            maxLength={64}
+            autoComplete="off"
+          />
+          <p id="add-contact-name-hint" className="note">
+            {t("addContact.nameHint")}
+          </p>
+          <div className="actions">
+            <button
+              type="button"
+              onClick={() => {
+                setScanning(false);
+                setChecking(true);
+              }}
+              disabled={!valid}
+            >
+              {t("addContact.next")}
+            </button>
+            <button type="button" onClick={onClose}>
+              {t("addContact.cancel")}
+            </button>
+          </div>
+        </>
+      )}
+    </Sheet>
   );
 }

@@ -2,6 +2,20 @@ import { useEffect, useRef, useState } from "react";
 import { t } from "./i18n";
 
 /**
+ * For the button that opens the composer: once the composer is left, its own buttons are gone
+ * and focus would be lost to the page, so it goes back to this one.
+ */
+export function useFocusWhenLeft(composing: boolean) {
+  const target = useRef<HTMLButtonElement>(null);
+  const was = useRef(false);
+  useEffect(() => {
+    if (was.current && !composing) target.current?.focus();
+    was.current = composing;
+  }, [composing]);
+  return target;
+}
+
+/**
  * Where text to send is written. Sending is up to `send`, which offers it to whoever the caller
  * has chosen; `onSent` follows once it has been offered. Text that is only blanks is not sent,
  * but what is sent is exactly what was typed.

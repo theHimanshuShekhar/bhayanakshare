@@ -1,9 +1,10 @@
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { App } from "./App";
-import type { Api, Contact, DeviceEvent, Role, ShellEvent, UpdateAction, Visibility } from "./api";
-import type { HistoryEntry, NearbyDevice, TransferRecord, TransferState } from "./bindings";
+import type { Api, UpdateAction } from "./api";
+import type { HistoryEntry, TransferRecord, TransferState } from "./bindings";
 import { NEARBY_WAIT_MS } from "./nearby";
+import { BATCH, EXPIRES_AT, MY_ID, PEER_ID, TRANSFER, contact, fakeApi } from "./testApi";
 
 // The camera cannot be tested here (QrScanner.test.tsx covers how it is read): this stand-in
 // "reads" whichever text a test chooses.
@@ -17,216 +18,6 @@ vi.mock("./QrScanner", () => ({
 }));
 
 afterEach(cleanup);
-
-const MY_ID = "A".repeat(52);
-/** The Device an identity file in these tests holds. */
-const FILE_ID = "B".repeat(52);
-const PEER_ID = "K3QF7XNA" + "B".repeat(44);
-const TRANSFER = "ab".repeat(16);
-const BATCH = "ba".repeat(16);
-/** When the Offers in these tests lapse: 10 minutes after the stand-in's clock reads 0. */
-const EXPIRES_AT = 600_000;
-
-/** A Device event without the stream position and time the stand-in fills in. */
-type Unstamped = DeviceEvent extends infer E
-  ? E extends unknown
-    ? Omit<E, "seq" | "at"> & { at?: number }
-    : never
-  : never;
-
-function contact(over: Partial<Contact> = {}): Contact {
-  return {
-    id: PEER_ID,
-    nickname: null,
-    device_name: null,
-    auto_accept: false,
-    last_known_address: { relay_url: null, direct: [] },
-    added_at: 1,
-    ...over,
-  };
-}
-
-/** A stand-in for the Rust shell: records commands, and lets a test push Device events. */
-function fakeApi(overrides: Partial<Api> = {}, initialContacts: Contact[] = []) {
-  let handler: (event: DeviceEvent) => void = () => {};
-  let shellHandler: (event: ShellEvent) => void = () => {};
-  let linkHandler: (url: string) => void = () => {};
-  let autostart = true;
-  let debugLogging = false;
-  let publicDht = true;
-  let deviceName = "Alice's desktop";
-  let saveFolder = "/home/me/Downloads/BhayanakShare";
-  let firstRun = false;
-  let seq = 0;
-  let contacts = initialContacts;
-  let visibility: Visibility = "id_holders";
-  let historyEntries: HistoryEntry[] = [];
-  /** What each read of History asked for: the Device, the direction and the search. */
-  const historyReads: [string | null, Role | null, string | null][] = [];
-  const change =(id: string, over: (c: Contact) => Partial<Contact>) => {
-    const changed = contacts.map((c) => (c.id === id ? { ...c, ...over(c) } : c));
-    contacts = changed;
-    return Promise.resolve(changed.find((c) => c.id === id)!);
-  };
-  const api = {
-    myId: () => Promise.resolve({ id: MY_ID, fingerprint: "AAAA-AAAA" }),
-    saveFolder: vi.fn(() => Promise.resolve(saveFolder)),
-    setSaveFolder: vi.fn((path: string) => {
-      saveFolder = path;
-      return Promise.resolve(path);
-    }),
-    needsFirstRun: vi.fn(() => Promise.resolve(firstRun)),
-    finishFirstRun: vi.fn(() => {
-      firstRun = false;
-      return Promise.resolve(null);
-    }),
-    sendFiles: vi.fn((_to: string, _paths: string[]) => Promise.resolve(TRANSFER)),
-    sendBatch: vi.fn((_to: string[], _paths: string[]) => Promise.resolve(BATCH)),
-    sendText: vi.fn((_to: string, _text: string) => Promise.resolve(TRANSFER)),
-    sendTextBatch: vi.fn((_to: string[], _text: string) => Promise.resolve(BATCH)),
-    cancelBatch: vi.fn((_id: string) => Promise.resolve(null)),
-    retryTransfer: vi.fn((_id: string) => Promise.resolve("ef".repeat(16))),
-    // Like the core: the folder it checked is the one given, else the save folder in use.
-    checkOffer: vi.fn((_id: string, folder: string | null) =>
-      Promise.resolve({ folder: folder ?? saveFolder, needed: 2048, free: 1_000_000, paths_too_long: false }),
-    ),
-    acceptOffer: vi.fn((_id: string, _folder: string | null) => Promise.resolve(null)),
-    declineOffer: vi.fn(() => Promise.resolve(null)),
-    cancelTransfer: vi.fn(() => Promise.resolve(null)),
-    resendTransfer: vi.fn(() => Promise.resolve("cd".repeat(16))),
-    deviceName: vi.fn(() => Promise.resolve(deviceName)),
-    // Like the core: trimmed, and cut to 64 characters.
-    setDeviceName: vi.fn((name: string) => {
-      deviceName = name.trim().slice(0, 64);
-      return Promise.resolve(deviceName);
-    }),
-    visibility: vi.fn(() => Promise.resolve(visibility)),
-    setVisibility: vi.fn((v: Visibility) => {
-      visibility = v;
-      return Promise.resolve(null);
-    }),
-    publicDht: vi.fn(() => Promise.resolve(publicDht)),
-    setPublicDht: vi.fn((on: boolean) => {
-      publicDht = on;
-      return Promise.resolve(null);
-    }),
-    autostartEnabled: vi.fn(() => Promise.resolve(autostart)),
-    setAutostart: vi.fn((on: boolean) => {
-      autostart = on;
-      return Promise.resolve(null);
-    }),
-    debugLogging: vi.fn(() => Promise.resolve(debugLogging)),
-    setDebugLogging: vi.fn((on: boolean) => {
-      debugLogging = on;
-      return Promise.resolve(null);
-    }),
-    exportDiagnostics: vi.fn((_path: string) => Promise.resolve(null)),
-    pickDiagnosticsSavePath: vi.fn((_name: string) =>
-      Promise.resolve<string | null>("/home/me/diagnostics.zip"),
-    ),
-    quitApp: vi.fn(() => Promise.resolve(null)),
-    appVersion: vi.fn(() => Promise.resolve("0.1.0")),
-    checkForUpdate: vi.fn(() => Promise.resolve<UpdateAction>({ type: "none" })),
-    pendingUpdate: vi.fn(() => Promise.resolve<UpdateAction>({ type: "none" })),
-    installUpdate: vi.fn((_version: string) => Promise.resolve(null)),
-    contacts: vi.fn(() => Promise.resolve(contacts)),
-    addContact: vi.fn((id: string, deviceName: string | null) => {
-      const added = contact({ id, device_name: deviceName, added_at: contacts.length + 1 });
-      contacts = [...contacts, added];
-      return Promise.resolve(added);
-    }),
-    setNickname: vi.fn((id: string, nickname: string | null) =>
-      change(id, () => ({ nickname: nickname?.trim() ? nickname.trim() : null })),
-    ),
-    setAutoAccept: vi.fn((id: string, on: boolean) => change(id, () => ({ auto_accept: on }))),
-    removeContact: vi.fn((id: string) => {
-      contacts = contacts.filter((c) => c.id !== id);
-      return Promise.resolve(null);
-    }),
-    history: vi.fn((peer: string | null, direction: Role | null, search: string | null) => {
-      historyReads.push([peer, direction, search]);
-      return Promise.resolve(historyEntries);
-    }),
-    deleteHistoryTransfer: vi.fn((_id: string) => Promise.resolve(null)),
-    deleteHistoryBatch: vi.fn((_id: string) => Promise.resolve(null)),
-    clearHistory: vi.fn(() => Promise.resolve(null)),
-    exportIdentity: vi.fn((_path: string, _password: string) => Promise.resolve(null)),
-    checkIdentityImport: vi.fn((_path: string, _password: string) =>
-      Promise.resolve({ id: FILE_ID, fingerprint: "BBBB-BBBB" }),
-    ),
-    importIdentity: vi.fn((_path: string, _password: string) => Promise.resolve(null)),
-    transfersInProgress: vi.fn(() => Promise.resolve(0)),
-    pickIdentityFile: vi.fn(() => Promise.resolve<string | null>("/home/me/old-laptop.bhid")),
-    pickIdentitySavePath: vi.fn((_name: string) => Promise.resolve<string | null>("/home/me/id.bhid")),
-    pickFiles: vi.fn(() => Promise.resolve<string[] | null>(["/tmp/photo.jpg"])),
-    pickFolder: vi.fn(() => Promise.resolve<string | null>("/mnt/big")),
-    showInFolder: vi.fn(() => Promise.resolve()),
-    openUrl: vi.fn((_url: string) => Promise.resolve()),
-    copyText: vi.fn(() => Promise.resolve()),
-    onDeviceEvent: (h: (event: DeviceEvent) => void) => {
-      handler = h;
-      return Promise.resolve(() => {});
-    },
-    onShellEvent: (h: (event: ShellEvent) => void) => {
-      shellHandler = h;
-      return Promise.resolve(() => {});
-    },
-    onOpenLink: (h: (url: string) => void) => {
-      linkHandler = h;
-      return Promise.resolve(() => {});
-    },
-    ...overrides,
-  } satisfies Api;
-  /** The shell says something: a second launch, a clicked notification, Quit. */
-  const shell = (event: ShellEvent) => act(() => shellHandler(event));
-  /** The user opens a link that the system hands to this app. */
-  const openLink = (url: string) => act(() => linkHandler(url));
-  const push = (event: Unstamped) =>
-    act(() => handler({ seq: seq++, at: 1_000 * seq, ...event } as DeviceEvent));
-  /** What an Offer holds when it is not just `photo.jpg`: a folder, several files, links skipped,
-   * names adjusted. */
-  type Contents = Partial<{
-    kind: "files" | "text";
-    text: string | null;
-    name: string;
-    items: string[];
-    file_count: number;
-    skipped_links: number;
-    adjusted_names: number;
-  }>;
-  const transfer = (
-    role: "sender" | "receiver",
-    state: TransferState,
-    peerName: string | null = null,
-    contents: Contents = {},
-  ) =>
-    push({
-      type: "transfer",
-      transfer_id: TRANSFER,
-      role,
-      peer: PEER_ID,
-      peer_name: peerName,
-      kind: "files",
-      text: null,
-      name: "photo.jpg",
-      items: ["photo.jpg"],
-      file_count: 1,
-      skipped_links: 0,
-      adjusted_names: 0,
-      batch_id: null,
-      size: 2048,
-      expires_at: EXPIRES_AT,
-      state,
-      ...contents,
-    });
-  /** The Device reports the Nearby Devices as they are now. */
-  const nearby = (...devices: NearbyDevice[]) => push({ type: "nearby", devices });
-  /** What the Device's History holds from now on, newest first. */
-  const setHistory = (entries: HistoryEntry[]) => {
-    historyEntries = entries;
-  };
-  return { api, push, transfer, nearby, shell, openLink, setHistory, historyReads };
-}
 
 /** Renders the app and waits until it is listening for events. */
 async function start(device = fakeApi()) {
@@ -744,7 +535,7 @@ describe("receiving", () => {
     expect(screen.getByText("Received.")).toBeTruthy();
     expect(screen.getByText(/Saved to \/home\/me\//)).toBeTruthy();
 
-    fireEvent.click(screen.getByRole("button", { name: "Show photo.jpg in folder" }));
+    fireEvent.click(screen.getByRole("button", { name: "Show in folder: photo.jpg" }));
     expect(device.api.showInFolder).toHaveBeenCalledWith("/home/me/Downloads/BhayanakShare/photo.jpg");
   });
 
@@ -756,7 +547,7 @@ describe("receiving", () => {
     const device = await start(fakeApi({ showInFolder }));
     await device.transfer("receiver", { kind: "completed", saved_to: "/home/me/Downloads/photo.jpg" });
 
-    const button = screen.getByRole("button", { name: "Show photo.jpg in folder" });
+    const button = screen.getByRole("button", { name: "Show in folder: photo.jpg" });
     fireEvent.click(button);
     expect((await screen.findByRole("alert")).textContent).toContain("Could not open the folder");
 
@@ -848,10 +639,10 @@ describe("cancelling, expiry and the Offer countdown", () => {
     await device.transfer("sender", { kind: "expired" });
     expect(screen.getByText("K3QF-7XNA did not answer in time. The Offer expired.")).toBeTruthy();
 
-    fireEvent.click(screen.getByRole("button", { name: "Send photo.jpg again" }));
+    fireEvent.click(screen.getByRole("button", { name: "Send again: photo.jpg" }));
     expect(device.api.resendTransfer).toHaveBeenCalledWith(TRANSFER);
     // Once sent again, the expired row no longer offers it.
-    await waitFor(() => expect(screen.queryByRole("button", { name: "Send photo.jpg again" })).toBeNull());
+    await waitFor(() => expect(screen.queryByRole("button", { name: "Send again: photo.jpg" })).toBeNull());
     expect(screen.queryByRole("alert")).toBeNull();
   });
 
@@ -870,7 +661,7 @@ describe("cancelling, expiry and the Offer countdown", () => {
       fakeApi({ resendTransfer: vi.fn(() => Promise.reject("/tmp/photo.jpg is not a file")) }),
     );
     await device.transfer("sender", { kind: "expired" });
-    fireEvent.click(screen.getByRole("button", { name: "Send photo.jpg again" }));
+    fireEvent.click(screen.getByRole("button", { name: "Send again: photo.jpg" }));
     const alert = await screen.findByRole("alert");
     expect(alert.textContent).toContain("Could not send it again");
     expect(alert.textContent).toContain("is not a file");
@@ -896,7 +687,8 @@ describe("cancelling, expiry and the Offer countdown", () => {
       expires_at: EXPIRES_AT,
       state: { kind: "failed", reason: "The other Device already has too many Offers from you." },
     });
-    expect(screen.getByText(/Could not send\. The other Device already has too many Offers/)).toBeTruthy();
+    const list = screen.getByRole("region", { name: "Transfers" });
+    expect(within(list).getByText(/Could not send\. The other Device already has too many Offers/)).toBeTruthy();
   });
 });
 
@@ -1165,7 +957,7 @@ describe("Nearby Devices", () => {
     expect(tiles[0].textContent).toContain("Contact");
     expect(tiles[0].textContent).toContain("Nearby");
     // Only the stranger can be saved.
-    expect(screen.getAllByRole("button", { name: /^Save .* as a Contact$/ })).toHaveLength(1);
+    expect(screen.getAllByRole("button", { name: /^Save as Contact: / })).toHaveLength(1);
   });
 
   it("uses the announced name for a Contact that has none yet, and shows an offline Contact without Nearby", async () => {
@@ -1195,7 +987,7 @@ describe("Nearby Devices", () => {
   it("saves a Nearby tile as a Contact after checking the Fingerprint, with the name it announced", async () => {
     const device = await start();
     await device.nearby({ id: PEER_ID, name: "Dad's PC" });
-    fireEvent.click(await screen.findByRole("button", { name: /^Save Dad's PC · K3QF-7XNA as a Contact$/ }));
+    fireEvent.click(await screen.findByRole("button", { name: /^Save as Contact: Dad's PC · K3QF-7XNA$/ }));
 
     // Straight to the check: the ID was not typed, but the Fingerprint is still compared.
     const dialog = screen.getByRole("dialog");
@@ -1206,13 +998,13 @@ describe("Nearby Devices", () => {
     await waitFor(() => expect(device.api.addContact).toHaveBeenCalledWith(PEER_ID, "Dad's PC"));
     // Now a Contact: its tile is badged and the Save button is gone.
     expect(await screen.findByRole("button", { name: "Send to Dad's PC" })).toBeTruthy();
-    expect(screen.queryByRole("button", { name: /as a Contact$/ })).toBeNull();
+    expect(screen.queryByRole("button", { name: /^Save as Contact: / })).toBeNull();
   });
 
   it("saves nothing when the Fingerprint check is cancelled", async () => {
     const device = await start();
     await device.nearby({ id: PEER_ID, name: null });
-    fireEvent.click(await screen.findByRole("button", { name: /^Save K3QF-7XNA as a Contact$/ }));
+    fireEvent.click(await screen.findByRole("button", { name: /^Save as Contact: K3QF-7XNA$/ }));
     fireEvent.keyDown(screen.getByRole("dialog"), { key: "Escape" });
     expect(screen.queryByRole("dialog")).toBeNull();
     expect(device.api.addContact).not.toHaveBeenCalled();
@@ -2688,7 +2480,8 @@ describe("Batches", () => {
 
     // The new Offer replaces the Failed row; the Failed Transfer is no longer shown.
     await member(device, 3, MUM, { kind: "offered" });
-    expect(screen.queryByText(/The other Device went away/)).toBeNull();
+    const list = screen.getByRole("region", { name: "Transfers" });
+    expect(within(list).queryByText(/The other Device went away/)).toBeNull();
     expect(screen.getByText("Waiting for Mum…")).toBeTruthy();
     expect(screen.getByText("0 of 2 delivered, 1 declined, 1 in progress")).toBeTruthy();
   });
@@ -2957,7 +2750,7 @@ describe("History", () => {
     expect(times.textContent).toContain(new Date(1_700_000_005_000).toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" }));
     expect(within(row).getByText(`Saved to ${SAVED}`, { exact: false })).toBeTruthy();
 
-    fireEvent.click(within(row).getByRole("button", { name: "Show photos and 1 more in folder" }));
+    fireEvent.click(within(row).getByRole("button", { name: "Show in folder: photos and 1 more" }));
     expect(device.api.showInFolder).toHaveBeenCalledWith(SAVED);
   });
 

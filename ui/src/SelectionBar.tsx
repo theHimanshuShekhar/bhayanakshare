@@ -1,7 +1,7 @@
 import { useState } from "react";
 import type { Api } from "./api";
 import { t } from "./i18n";
-import { TextComposer } from "./TextComposer";
+import { TextComposer, useFocusWhenLeft } from "./TextComposer";
 import { baseName } from "./transfers";
 
 /** The checkbox on a Device's tile that adds it to, or takes it out of, a send to several. */
@@ -55,6 +55,7 @@ export function SelectionBar({
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [composing, setComposing] = useState(false);
+  const writeText = useFocusWhenLeft(composing);
 
   const offer = (paths: string[]) =>
     ids.length === 1 ? api.sendFiles(ids[0], paths) : api.sendBatch(ids, paths);
@@ -112,7 +113,7 @@ export function SelectionBar({
             >
               {t("send.chooseFolder")}
             </button>
-            <button type="button" onClick={() => setComposing(true)} disabled={busy}>
+            <button type="button" ref={writeText} onClick={() => setComposing(true)} disabled={busy}>
               {t("send.writeText")}
             </button>
           </>

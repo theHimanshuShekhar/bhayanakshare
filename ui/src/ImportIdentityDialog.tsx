@@ -1,6 +1,7 @@
-import { useEffect, useRef, useState, type FormEvent, type KeyboardEvent } from "react";
+import { useEffect, useRef, useState, type FormEvent } from "react";
 import type { Api, IdentityOwner, MyId } from "./api";
 import { t } from "./i18n";
+import { Sheet } from "./Sheet";
 import { identityFailure } from "./identity";
 import { baseName } from "./transfers";
 
@@ -32,21 +33,15 @@ export function ImportIdentityDialog({
   const [error, setError] = useState<string | null>(null);
   const passwordInput = useRef<HTMLInputElement>(null);
   const keep = useRef<HTMLButtonElement>(null);
+  const close = useRef<HTMLButtonElement>(null);
   const same = incoming !== null && incoming.id === current.id;
   const confirming = incoming !== null && !same;
 
+  // Each step starts with focus on its first control: the password, then the safe answer, or
+  // Close when the file holds this Device's own identity.
   useEffect(() => {
-    // Hand focus back to whatever opened the dialog when it goes away.
-    const opener = document.activeElement;
-    return () => {
-      if (opener instanceof HTMLElement) opener.focus();
-    };
-  }, []);
-
-  // Each step starts with focus on its first control: the password, then the safe answer.
-  useEffect(() => {
-    (confirming ? keep : passwordInput).current?.focus();
-  }, [confirming]);
+    (confirming ? keep : same ? close : passwordInput).current?.focus();
+  }, [confirming, same]);
 
   const check = async (e: FormEvent) => {
     e.preventDefault();
@@ -78,80 +73,74 @@ export function ImportIdentityDialog({
     }
   };
 
-  const onKeyDown = (e: KeyboardEvent) => {
-    if (e.key === "Escape" && !restarting) onClose();
-  };
-
   return (
-    <div className="overlay" onKeyDown={onKeyDown}>
-      <div
-        role={confirming ? "alertdialog" : "dialog"}
-        aria-modal="true"
-        aria-labelledby="import-identity-heading"
-        aria-describedby={confirming ? "import-identity-body" : undefined}
-        className="sheet"
-      >
-        <h2 id="import-identity-heading">
-          {confirming ? t("identity.replaceHeading") : t("identity.importHeading")}
-        </h2>
-        {confirming ? (
-          <>
-            <div id="import-identity-body">
+    <Sheet
+      role={confirming ? "alertdialog" : "dialog"}
+      labelledBy="import-identity-heading"
+      describedBy={confirming ? "import-identity-body" : undefined}
+      onEscape={restarting ? undefined : onClose}
+      initialFocus={passwordInput}
+    >
+      <h2 id="import-identity-heading">
+        {confirming ? t("identity.replaceHeading") : t("identity.importHeading")}
+      </h2>
+      {confirming ? (
+        <>
+          <div id="import-identity-body">
+            <p>
+              {t("identity.replaceId", { current: current.fingerprint, incoming: incoming.fingerprint })}
+            </p>
+            <p>{t("identity.replaceOld")}</p>
+            {active > 0 && (
               <p>
-                {t("identity.replaceId", { current: current.fingerprint, incoming: incoming.fingerprint })}
+                {active === 1 ? t("identity.replaceActiveOne") : t("identity.replaceActive", { count: active })}
               </p>
-              <p>{t("identity.replaceOld")}</p>
-              {active > 0 && (
-                <p>
-                  {active === 1 ? t("identity.replaceActiveOne") : t("identity.replaceActive", { count: active })}
-                </p>
-              )}
-              <p>{t("identity.replaceRestart")}</p>
-            </div>
-            {error !== null && <p role="alert">{error}</p>}
-            {restarting && <p role="status">{t("identity.restarting")}</p>}
-            <div className="actions">
-              <button type="button" onClick={replace} disabled={busy || restarting}>
-                {t("identity.replaceConfirm")}
-              </button>
-              <button type="button" ref={keep} onClick={onClose} disabled={restarting}>
-                {t("identity.cancel")}
-              </button>
-            </div>
-          </>
-        ) : same ? (
-          <>
-            <p role="status">{t("identity.importSame", { fingerprint: current.fingerprint })}</p>
-            <div className="actions">
-              <button type="button" onClick={onClose}>
-                {t("identity.close")}
-              </button>
-            </div>
-          </>
-        ) : (
-          <form onSubmit={check}>
-            <p>{t("identity.importFile", { name: baseName(path) })}</p>
-            <label htmlFor="import-identity-password">{t("identity.importPassword")}</label>
-            <input
-              id="import-identity-password"
-              ref={passwordInput}
-              type="password"
-              value={password}
-              onChange={(e) => setPassword(e.target.value)}
-              autoComplete="current-password"
-            />
-            {error !== null && <p role="alert">{error}</p>}
-            <div className="actions">
-              <button type="submit" disabled={busy || password === ""}>
-                {t("identity.importNext")}
-              </button>
-              <button type="button" onClick={onClose}>
-                {t("identity.cancel")}
-              </button>
-            </div>
-          </form>
-        )}
-      </div>
-    </div>
+            )}
+            <p>{t("identity.replaceRestart")}</p>
+          </div>
+          {error !== null && <p role="alert">{error}</p>}
+          {restarting && <p role="status">{t("identity.restarting")}</p>}
+          <div className="actions">
+            <button type="button" onClick={replace} disabled={busy || restarting}>
+              {t("identity.replaceConfirm")}
+            </button>
+            <button type="button" ref={keep} onClick={onClose} disabled={restarting}>
+              {t("identity.cancel")}
+            </button>
+          </div>
+        </>
+      ) : same ? (
+        <>
+          <p role="status">{t("identity.importSame", { fingerprint: current.fingerprint })}</p>
+          <div className="actions">
+            <button type="button" ref={close} onClick={onClose}>
+              {t("identity.close")}
+            </button>
+          </div>
+        </>
+      ) : (
+        <form onSubmit={check}>
+          <p>{t("identity.importFile", { name: baseName(path) })}</p>
+          <label htmlFor="import-identity-password">{t("identity.importPassword")}</label>
+          <input
+            id="import-identity-password"
+            ref={passwordInput}
+            type="password"
+            value={password}
+            onChange={(e) => setPassword(e.target.value)}
+            autoComplete="current-password"
+          />
+          {error !== null && <p role="alert">{error}</p>}
+          <div className="actions">
+            <button type="submit" disabled={busy || password === ""}>
+              {t("identity.importNext")}
+            </button>
+            <button type="button" onClick={onClose}>
+              {t("identity.cancel")}
+            </button>
+          </div>
+        </form>
+      )}
+    </Sheet>
   );
 }

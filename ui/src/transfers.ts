@@ -2,7 +2,7 @@
 // only: the React side just feeds events in and renders the result.
 
 import type { BatchId, DeviceEvent, Role, TransferId, TransferKind, TransferState } from "./bindings";
-import { t } from "./i18n";
+import { t, type MessageKey } from "./i18n";
 
 export interface TransferView {
   id: TransferId;
@@ -175,6 +175,20 @@ export function canResend(view: TransferView): boolean {
  */
 export function canRetry(view: TransferView): boolean {
   return view.role === "sender" && view.batch !== null && view.state.kind === "failed";
+}
+
+/** Sentence for a Transfer's current state, e.g. "Waiting for Mum…" (or a Fingerprint). */
+export function statusText(x: Pick<TransferView, "role" | "state">, peer: string, preparing = false): string {
+  const side = x.role === "sender" ? "sending" : "receiving";
+  const params = {
+    peer,
+    reason: x.state.kind === "failed" ? x.state.reason : "",
+  };
+  if (x.state.kind === "cancelled") {
+    return t(x.state.by === x.role ? "transfer.cancelledByYou" : "transfer.cancelledByPeer", params);
+  }
+  const state = preparing ? "preparing" : x.state.kind;
+  return t(`transfer.${side}.${state}` as MessageKey, params);
 }
 
 /** A Batch as the Sender sees it: its Transfers, grouped. */

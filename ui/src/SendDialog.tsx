@@ -1,8 +1,9 @@
-import { useEffect, useRef, useState, type KeyboardEvent } from "react";
+import { useRef, useState } from "react";
 import type { Api } from "./api";
 import { t } from "./i18n";
+import { Sheet } from "./Sheet";
 import { parseShareLink } from "./shareLink";
-import { TextComposer } from "./TextComposer";
+import { TextComposer, useFocusWhenLeft } from "./TextComposer";
 import { baseName } from "./transfers";
 
 /**
@@ -39,15 +40,7 @@ export function SendDialog({
   // Writing text instead of picking files.
   const [composing, setComposing] = useState(false);
   const input = useRef<HTMLInputElement>(null);
-
-  useEffect(() => {
-    // Hand focus back to whatever opened the dialog when it goes away.
-    const opener = document.activeElement;
-    input.current?.focus();
-    return () => {
-      if (opener instanceof HTMLElement) opener.focus();
-    };
-  }, []);
+  const writeText = useFocusWhenLeft(composing);
 
   /** Sends what `pick` asks the user for, or the files already chosen if there are some. */
   const send = async (pick?: () => Promise<string[] | null>) => {
@@ -73,76 +66,75 @@ export function SendDialog({
     }
   };
 
-  const onKeyDown = (e: KeyboardEvent) => {
-    if (e.key === "Escape") onClose();
-  };
-
   return (
-    <div className="overlay" onKeyDown={onKeyDown}>
-      <div role="dialog" aria-modal="true" aria-labelledby="send-heading" className="sheet">
-        <h2 id="send-heading">
-          {contactName === null ? t("send.heading") : t("send.contactHeading", { name: contactName })}
-        </h2>
-        <label htmlFor="send-to">{t("send.idLabel")}</label>
-        <input
-          id="send-to"
-          ref={input}
-          value={to}
-          // A pasted share link becomes the Device ID in it; its name is of no use here.
-          onChange={(e) => setTo(parseShareLink(e.target.value)?.id ?? e.target.value)}
-          aria-describedby="send-to-hint"
-          spellCheck={false}
-          autoComplete="off"
-        />
-        <p id="send-to-hint" className="note">
-          {t("send.idHint")}
+    <Sheet labelledBy="send-heading" onEscape={onClose} initialFocus={input}>
+      <h2 id="send-heading">
+        {contactName === null ? t("send.heading") : t("send.contactHeading", { name: contactName })}
+      </h2>
+      <label htmlFor="send-to">{t("send.idLabel")}</label>
+      <input
+        id="send-to"
+        ref={input}
+        value={to}
+        // A pasted share link becomes the Device ID in it; its name is of no use here.
+        onChange={(e) => setTo(parseShareLink(e.target.value)?.id ?? e.target.value)}
+        aria-describedby="send-to-hint"
+        spellCheck={false}
+        autoComplete="off"
+      />
+      <p id="send-to-hint" className="note">
+        {t("send.idHint")}
+      </p>
+      {remaining.length > 0 && (
+        <p>
+          {t("send.files")}: {remaining.map(baseName).join(", ")}
         </p>
-        {remaining.length > 0 && (
-          <p>
-            {t("send.files")}: {remaining.map(baseName).join(", ")}
-          </p>
-        )}
-        {error !== null && !composing && <p role="alert">{error}</p>}
-        {composing ? (
-          <TextComposer
-            send={(text) => api.sendText(to.trim(), text)}
-            onSent={onClose}
-            onBack={() => setComposing(false)}
-            disabled={to.trim() === ""}
-          />
-        ) : (
-        <div className="actions">
-          {remaining.length > 0 ? (
-            <button type="button" onClick={() => send()} disabled={busy || to.trim() === ""}>
-              {t("send.sendFiles")}
-            </button>
-          ) : (
-            <>
-              <button
-                type="button"
-                onClick={() => send(api.pickFiles)}
-                disabled={busy || to.trim() === ""}
-              >
-                {t("send.chooseFiles")}
-              </button>
-              <button
-                type="button"
-                onClick={() => send(() => api.pickFolder().then((folder) => (folder === null ? null : [folder])))}
-                disabled={busy || to.trim() === ""}
-              >
-                {t("send.chooseFolder")}
-              </button>
-              <button type="button" onClick={() => setComposing(true)} disabled={busy || to.trim() === ""}>
-                {t("send.writeText")}
-              </button>
-            </>
-          )}
-          <button type="button" onClick={onClose}>
-            {t("send.cancel")}
+      )}
+      {error !== null && !composing && <p role="alert">{error}</p>}
+      {composing ? (
+        <TextComposer
+          send={(text) => api.sendText(to.trim(), text)}
+          onSent={onClose}
+          onBack={() => setComposing(false)}
+          disabled={to.trim() === ""}
+        />
+      ) : (
+      <div className="actions">
+        {remaining.length > 0 ? (
+          <button type="button" onClick={() => send()} disabled={busy || to.trim() === ""}>
+            {t("send.sendFiles")}
           </button>
-        </div>
+        ) : (
+          <>
+            <button
+              type="button"
+              onClick={() => send(api.pickFiles)}
+              disabled={busy || to.trim() === ""}
+            >
+              {t("send.chooseFiles")}
+            </button>
+            <button
+              type="button"
+              onClick={() => send(() => api.pickFolder().then((folder) => (folder === null ? null : [folder])))}
+              disabled={busy || to.trim() === ""}
+            >
+              {t("send.chooseFolder")}
+            </button>
+            <button
+              type="button"
+              ref={writeText}
+              onClick={() => setComposing(true)}
+              disabled={busy || to.trim() === ""}
+            >
+              {t("send.writeText")}
+            </button>
+          </>
         )}
+        <button type="button" onClick={onClose}>
+          {t("send.cancel")}
+        </button>
       </div>
-    </div>
+      )}
+    </Sheet>
   );
 }
