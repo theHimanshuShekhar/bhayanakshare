@@ -28,6 +28,17 @@ const en = {
   "version.update": "Update now",
   "version.dismiss": "Dismiss",
 
+  "update.available": "Update available (version {version})",
+  "update.install": "Install and restart",
+  "update.restartHint": "Transfers in progress resume after the restart.",
+  "update.releasePage": "Open the release page",
+  "update.dismiss": "Dismiss",
+  "update.checking": "Checking for updates…",
+  "update.installing": "Installing version {version}…",
+  "update.none": "No newer version was found.",
+  "update.checkFailed": "Could not check for updates. Are you online?",
+  "update.installFailed": "Could not install the update. {reason}",
+
   "home.transfers": "Transfers",
   "home.noTransfers": "No Transfers yet.",
   "home.loading": "Starting this Device…",

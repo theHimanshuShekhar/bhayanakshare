@@ -3,11 +3,9 @@
 
 import type { DeviceEvent, Outdated } from "./bindings";
 
-/**
- * Where "Update now" leads until the updater exists: the page with the latest installers.
- * The updater (#44) takes over the button.
- */
-export const RELEASES_URL = "https://github.com/theHimanshuShekhar/bhayanakshare/releases";
+/** The page of the latest release, with its installers: where an install that cannot update
+ * itself (a deb or rpm) is sent. */
+export const RELEASES_URL = "https://github.com/theHimanshuShekhar/bhayanakshare/releases/latest";
 
 /** A Device that could not be talked to, and who has to update. */
 export interface VersionNotice {

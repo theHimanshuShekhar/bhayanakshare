@@ -21,7 +21,7 @@ use tauri_plugin_deep_link::DeepLinkExt as _;
 use tauri_plugin_dialog::DialogExt as _;
 use tauri_specta::Event as _;
 
-use crate::{QUIT_DEADLINE, notice};
+use crate::{QUIT_DEADLINE, notice, updates::UpdateAction};
 
 /// Passed by the login entry, so that starting at login leaves the window closed.
 pub const BACKGROUND_FLAG: &str = "--background";
@@ -46,6 +46,8 @@ pub enum ShellEvent {
     ConfirmQuit { active: u32 },
     /// Shutdown has begun: the Device is saving its progress, which can take a while.
     Quitting,
+    /// A check found a release newer than this one; `action` is what to offer for it.
+    UpdateAvailable { action: UpdateAction },
 }
 
 /// Set once the user has confirmed quitting.
@@ -109,7 +111,7 @@ pub fn register_links<R: Runtime>(app: &AppHandle<R>) {
     }
 }
 
-fn emit<R: Runtime>(app: &AppHandle<R>, event: ShellEvent) {
+pub(crate) fn emit<R: Runtime>(app: &AppHandle<R>, event: ShellEvent) {
     if let Err(e) = event.emit(app) {
         tracing::warn!("could not tell the UI: {e}");
     }

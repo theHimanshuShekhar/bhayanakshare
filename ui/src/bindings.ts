@@ -56,6 +56,23 @@ export const commands = {
 	exportDiagnostics: (path: string) => __TAURI_INVOKE<null>("export_diagnostics", { path }),
 	/**  The user confirmed quitting while Transfers are in progress: save their progress and exit. */
 	quitApp: () => __TAURI_INVOKE<void>("quit_app"),
+	/**
+	 *  Looks for a newer release now (the "Update now" button). Rejects when the check fails, as it
+	 *  does offline.
+	 */
+	checkForUpdate: () => __TAURI_INVOKE<UpdateAction>("check_for_update"),
+	/**
+	 *  The newer release the last check found, if any: what the UI asks for when it opens, as a
+	 *  check at startup may have finished before it was listening.
+	 */
+	pendingUpdate: () => __TAURI_INVOKE<UpdateAction>("pending_update"),
+	/**
+	 *  Downloads the release the last check found, replaces this AppImage with it (the plugin checks
+	 *  the signature first), and starts the app again by the way out of quitting, so that the
+	 *  Device saves its Transfers' progress: they resume in the new version. The UI calls this only
+	 *  once the user has agreed. A deb or rpm install is refused: those are never updated in place.
+	 */
+	installUpdate: () => __TAURI_INVOKE<null>("install_update"),
 	/**  Every Contact, in the order they were added. */
 	contacts: () => __TAURI_INVOKE<Contact[]>("contacts"),
 	/**
@@ -302,7 +319,9 @@ export type ShellEvent =
  */
 { type: "confirm_quit"; active: number } | 
 /**  Shutdown has begun: the Device is saving its progress, which can take a while. */
-{ type: "quitting" };
+{ type: "quitting" } | 
+/**  A check found a release newer than this one; `action` is what to offer for it. */
+{ type: "update_available"; action: UpdateAction };
 
 /**  What an Offer needs, against what its save folder has. */
 export type SpaceCheck = {
@@ -448,6 +467,15 @@ export type TransferState = { kind: "offered" } | { kind: "accepted" } | { kind:
 { kind: "expired" } | 
 /**  One side stopped the Transfer before it completed; `by` is which. */
 { kind: "cancelled"; by: Role };
+
+/**  What to do about the latest release. */
+export type UpdateAction = 
+/**  Nothing newer, or nothing that could be compared. */
+{ type: "none" } | 
+/**  Offer to install `version` and restart: an AppImage. */
+{ type: "install"; version: string } | 
+/**  Offer a link to the release page for `version`: a package. */
+{ type: "open_page"; version: string };
 
 /**
  *  A connection with another Device was refused for the versions of BhayanakShare. Sent on

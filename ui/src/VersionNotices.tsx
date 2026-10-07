@@ -1,7 +1,9 @@
 import type { Api, Contact } from "./api";
 import { peerName } from "./contacts";
 import { t } from "./i18n";
-import { RELEASES_URL, type VersionNotice } from "./versions";
+import { UpdateStatus } from "./UpdateBanner";
+import { useUpdater } from "./updates";
+import type { VersionNotice } from "./versions";
 
 interface VersionNoticesProps {
   api: Api;
@@ -12,6 +14,7 @@ interface VersionNoticesProps {
 
 /** Devices that were refused for their version, and who has to update. */
 export function VersionNotices({ api, contacts, notices, onDismiss }: VersionNoticesProps) {
+  const updater = useUpdater(api);
   return (
     <>
       {notices.map((notice) => {
@@ -21,13 +24,7 @@ export function VersionNotices({ api, contacts, notices, onDismiss }: VersionNot
           <p key={notice.peer} role="status" className="hint">
             {t(thisDevice ? "version.thisOlder" : "version.peerOlder", { name })}{" "}
             {thisDevice && (
-              <button
-                type="button"
-                onClick={() => {
-                  // Opens the releases page until the updater (#44) is wired to this button.
-                  api.openUrl(RELEASES_URL).catch(() => {});
-                }}
-              >
+              <button type="button" disabled={updater.busy} onClick={() => updater.updateNow()}>
                 {t("version.update")}
               </button>
             )}{" "}
@@ -37,6 +34,7 @@ export function VersionNotices({ api, contacts, notices, onDismiss }: VersionNot
           </p>
         );
       })}
+      {notices.length > 0 && <UpdateStatus progress={updater.progress} />}
     </>
   );
 }

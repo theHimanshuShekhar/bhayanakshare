@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useReducer, useRef, useState } from "react";
 import { AddContactDialog } from "./AddContactDialog";
-import { tauriApi, type Api, type Contact, type TransferId, type Visibility } from "./api";
+import { tauriApi, type Api, type Contact, type TransferId, type UpdateAction, type Visibility } from "./api";
 import { ClearHistoryDialog } from "./ClearHistoryDialog";
 import { ContactsScreen } from "./ContactsScreen";
 import { HistoryScreen } from "./HistoryScreen";
@@ -12,12 +12,14 @@ import { SelectBox, SelectionBar } from "./SelectionBar";
 import { SendDialog } from "./SendDialog";
 import { SettingsScreen } from "./SettingsScreen";
 import { TransferList } from "./TransferList";
+import { UpdateBanner } from "./UpdateBanner";
 import { VersionNotices } from "./VersionNotices";
 import { peerName, sortedContacts } from "./contacts";
 import { t, type MessageKey } from "./i18n";
 import { FIREWALL_DOCS_URL, NEARBY_WAIT_MS, applyNearby, nearbyStrangers } from "./nearby";
 import { parseShareLink, type Shared } from "./shareLink";
 import { applyEvent, baseName, fingerprint, listItems, noTransfers, pendingOffer } from "./transfers";
+import { offeredVersion } from "./updates";
 import { applyVersionNotices } from "./versions";
 
 const TABS = [
@@ -66,6 +68,9 @@ export function App({ api = tauriApi }: AppProps) {
   const [nearby, dispatchNearby] = useReducer(applyNearby, []);
   // Devices that were refused for their version, until the user dismisses the notice.
   const [versionNotices, dispatchVersion] = useReducer(applyVersionNotices, []);
+  // A newer release the shell found, and the version of it the user dismissed.
+  const [update, setUpdate] = useState<UpdateAction>({ type: "none" });
+  const [dismissedUpdate, setDismissedUpdate] = useState<string | null>(null);
   // Set once Home has waited long enough for a Nearby Device to show up.
   const [waited, setWaited] = useState(false);
   // A Hidden Device lists nobody Nearby, so an empty list there is no sign of a firewall.
@@ -129,9 +134,14 @@ export function App({ api = tauriApi }: AppProps) {
           case "quitting":
             setQuit((q) => ({ active: q?.active ?? 0, saving: true }));
             break;
+          case "update_available":
+            setUpdate(event.action);
+            break;
         }
       })
       .then((stop) => (live ? (unlisten = stop) : stop()));
+    // The check at startup may have finished before this was listening.
+    api.pendingUpdate().then((found) => live && setUpdate(found), () => {});
     return () => {
       live = false;
       unlisten?.();
@@ -209,6 +219,9 @@ export function App({ api = tauriApi }: AppProps) {
         </nav>
       </header>
       <div inert={inert}>
+        {offeredVersion(update) !== dismissedUpdate && (
+          <UpdateBanner api={api} update={update} onDismiss={() => setDismissedUpdate(offeredVersion(update))} />
+        )}
         <VersionNotices
           api={api}
           contacts={contacts}

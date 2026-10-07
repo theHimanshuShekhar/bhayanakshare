@@ -1,7 +1,7 @@
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { App } from "./App";
-import type { Api, Contact, DeviceEvent, Role, ShellEvent, Visibility } from "./api";
+import type { Api, Contact, DeviceEvent, Role, ShellEvent, UpdateAction, Visibility } from "./api";
 import type { HistoryEntry, NearbyDevice, TransferRecord, TransferState } from "./bindings";
 import { NEARBY_WAIT_MS } from "./nearby";
 
@@ -101,6 +101,9 @@ function fakeApi(overrides: Partial<Api> = {}, initialContacts: Contact[] = []) 
       Promise.resolve<string | null>("/home/me/diagnostics.zip"),
     ),
     quitApp: vi.fn(() => Promise.resolve(null)),
+    checkForUpdate: vi.fn(() => Promise.resolve<UpdateAction>({ type: "none" })),
+    pendingUpdate: vi.fn(() => Promise.resolve<UpdateAction>({ type: "none" })),
+    installUpdate: vi.fn(() => Promise.resolve(null)),
     contacts: vi.fn(() => Promise.resolve(contacts)),
     addContact: vi.fn((id: string, deviceName: string | null) => {
       const added = contact({ id, device_name: deviceName, added_at: contacts.length + 1 });
@@ -2475,7 +2478,7 @@ describe("History", () => {
 });
 
 describe("version mismatches", () => {
-  const RELEASES = "https://github.com/theHimanshuShekhar/bhayanakshare/releases";
+  const RELEASES = "https://github.com/theHimanshuShekhar/bhayanakshare/releases/latest";
   const refused = (device: ReturnType<typeof fakeApi>, outdated: "this_device" | "peer") =>
     device.push({
       type: "version_mismatch",
@@ -2494,12 +2497,60 @@ describe("version mismatches", () => {
     expect(screen.queryByRole("button", { name: "Update now" })).toBeNull();
   });
 
-  it("offers Update now when this Device is the older one, and opens the releases page", async () => {
-    const device = await start();
+  it("offers Update now when this Device is the older one, and opens the release page for a package", async () => {
+    const device = await start(fakeApi({ checkForUpdate: () => Promise.resolve({ type: "open_page", version: "9.9.9" }) }));
     await refused(device, "this_device");
     expect(screen.getByText(/This Device is running an older BhayanakShare than Alice's Laptop/)).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: "Update now" }));
-    expect(device.api.openUrl).toHaveBeenCalledWith(RELEASES);
+    await waitFor(() => expect(device.api.openUrl).toHaveBeenCalledWith(RELEASES));
+    expect(device.api.installUpdate).not.toHaveBeenCalled();
+  });
+
+  it("Update now looks for the update and installs it on an AppImage, saying which version", async () => {
+    // The install does not finish: the app is restarting.
+    const device = await start(
+      fakeApi({
+        checkForUpdate: vi.fn(() => Promise.resolve<UpdateAction>({ type: "install", version: "9.9.9" })),
+        installUpdate: vi.fn(() => new Promise(() => {})),
+      }),
+    );
+    await refused(device, "this_device");
+    fireEvent.click(screen.getByRole("button", { name: "Update now" }));
+    expect((await screen.findByText("Installing version 9.9.9…")).getAttribute("role")).toBe("status");
+    expect(device.api.checkForUpdate).toHaveBeenCalledTimes(1);
+    expect(device.api.installUpdate).toHaveBeenCalledTimes(1);
+    expect(device.api.openUrl).not.toHaveBeenCalled();
+    expect((screen.getByRole("button", { name: "Update now" }) as HTMLButtonElement).disabled).toBe(true);
+  });
+
+  it("says when no update was found", async () => {
+    const device = await start();
+    await refused(device, "this_device");
+    fireEvent.click(screen.getByRole("button", { name: "Update now" }));
+    expect((await screen.findByRole("alert")).textContent).toBe("No newer version was found.");
+    expect(device.api.installUpdate).not.toHaveBeenCalled();
+    expect(device.api.openUrl).not.toHaveBeenCalled();
+  });
+
+  it("says when the check could not be made, as when offline", async () => {
+    const device = await start(fakeApi({ checkForUpdate: () => Promise.reject("error sending request") }));
+    await refused(device, "this_device");
+    fireEvent.click(screen.getByRole("button", { name: "Update now" }));
+    expect((await screen.findByRole("alert")).textContent).toBe("Could not check for updates. Are you online?");
+    // The button is there to try again.
+    expect((screen.getByRole("button", { name: "Update now" }) as HTMLButtonElement).disabled).toBe(false);
+  });
+
+  it("says when the update could not be installed", async () => {
+    const device = await start(
+      fakeApi({
+        checkForUpdate: () => Promise.resolve({ type: "install", version: "9.9.9" }),
+        installUpdate: () => Promise.reject("signature mismatch"),
+      }),
+    );
+    await refused(device, "this_device");
+    fireEvent.click(screen.getByRole("button", { name: "Update now" }));
+    expect((await screen.findByRole("alert")).textContent).toBe("Could not install the update. signature mismatch");
   });
 
   it("goes away when dismissed", async () => {
@@ -2507,6 +2558,69 @@ describe("version mismatches", () => {
     await refused(device, "this_device");
     fireEvent.click(screen.getByRole("button", { name: "Dismiss" }));
     expect(screen.queryByRole("button", { name: "Update now" })).toBeNull();
+  });
+});
+
+describe("updates", () => {
+  const RELEASES = "https://github.com/theHimanshuShekhar/bhayanakshare/releases/latest";
+  const found = (action: UpdateAction) => fakeApi({ pendingUpdate: () => Promise.resolve(action) });
+
+  it("shows nothing when there is no newer release", async () => {
+    await start();
+    expect(screen.queryByText(/Update available/)).toBeNull();
+  });
+
+  it("offers an AppImage to install the new version and restart, and installs only when asked", async () => {
+    const device = await start(found({ type: "install", version: "0.2.0" }));
+    expect((await screen.findByText(/Update available \(version 0\.2\.0\)/)).getAttribute("role")).toBe("status");
+    expect(screen.queryByRole("link", { name: "Open the release page" })).toBeNull();
+    expect(device.api.installUpdate).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getByRole("button", { name: "Install and restart" }));
+    expect(await screen.findByText("Installing version 0.2.0…")).toBeTruthy();
+    expect(device.api.installUpdate).toHaveBeenCalledTimes(1);
+    expect(device.api.openUrl).not.toHaveBeenCalled();
+  });
+
+  it("links a package to the release page instead of updating it", async () => {
+    const device = await start(found({ type: "open_page", version: "0.2.0" }));
+    expect(await screen.findByText(/Update available \(version 0\.2\.0\)/)).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Install and restart" })).toBeNull();
+
+    fireEvent.click(screen.getByRole("link", { name: "Open the release page" }));
+    expect(device.api.openUrl).toHaveBeenCalledWith(RELEASES);
+    expect(device.api.installUpdate).not.toHaveBeenCalled();
+  });
+
+  it("shows an update the shell finds while the app is open", async () => {
+    const device = await start();
+    await device.shell({ type: "update_available", action: { type: "install", version: "0.3.0" } });
+    expect(screen.getByText(/Update available \(version 0\.3\.0\)/)).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Install and restart" })).toBeTruthy();
+  });
+
+  it("says when the update could not be installed, and lets the user try again", async () => {
+    const device = await start(
+      fakeApi({
+        pendingUpdate: () => Promise.resolve({ type: "install", version: "0.2.0" }),
+        installUpdate: vi.fn(() => Promise.reject("no space left")),
+      }),
+    );
+    fireEvent.click(await screen.findByRole("button", { name: "Install and restart" }));
+    expect((await screen.findByRole("alert")).textContent).toBe("Could not install the update. no space left");
+    expect((screen.getByRole("button", { name: "Install and restart" }) as HTMLButtonElement).disabled).toBe(false);
+    expect(device.api.installUpdate).toHaveBeenCalledTimes(1);
+  });
+
+  it("goes away when dismissed, until there is a newer version still", async () => {
+    const device = await start(found({ type: "open_page", version: "0.2.0" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Dismiss" }));
+    expect(screen.queryByText(/Update available/)).toBeNull();
+
+    await device.shell({ type: "update_available", action: { type: "open_page", version: "0.2.0" } });
+    expect(screen.queryByText(/Update available/)).toBeNull();
+    await device.shell({ type: "update_available", action: { type: "open_page", version: "0.3.0" } });
+    expect(screen.getByText(/Update available \(version 0\.3\.0\)/)).toBeTruthy();
   });
 });
 
