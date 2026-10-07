@@ -9,20 +9,25 @@ mod background;
 mod notice;
 
 use std::{
+    io::Read as _,
     path::PathBuf,
-    sync::{Arc, Mutex},
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicBool, Ordering},
+    },
     time::Duration,
 };
 
 use bhayanakshare_core::{
     BatchId, Contact, Device, DeviceAddr, DeviceConfig, DeviceId, Error, Event, HistoryEntry,
-    HistoryQuery, IdentityFileError, KeySource, Network, Role, SpaceCheck, SystemClock,
+    HistoryQuery, IdentityFileError, KeyError, KeySource, Network, Role, SpaceCheck, SystemClock,
     SystemFreeSpace, TransferId, Visibility,
 };
 use serde::Serialize;
 use specta::Type;
 use tauri::{AppHandle, Manager, Runtime, State};
 use tauri_plugin_autostart::AutoLaunchManager;
+use tauri_plugin_dialog::{DialogExt as _, MessageDialogKind};
 use tauri_specta::{Builder, ErrorHandlingMode, Event as _, collect_commands, collect_events};
 
 /// Overrides where this install keeps its data (Device ID, database, blobs). Set it to
@@ -30,6 +35,14 @@ use tauri_specta::{Builder, ErrorHandlingMode, Event as _, collect_commands, col
 const DATA_DIR_VAR: &str = "BHAYANAKSHARE_DATA_DIR";
 /// Overrides the folder accepted files are saved to.
 const SAVE_DIR_VAR: &str = "BHAYANAKSHARE_SAVE_DIR";
+
+/// Shown when the Device cannot start, with the reason. The shell has no translated strings of
+/// its own (the tray and notifications are English constants too), so this is one as well.
+const START_FAILED_TITLE: &str = "BhayanakShare can't start";
+
+/// Set when the app is leaving to start again, as after an identity import.
+#[derive(Default)]
+struct Relaunch(AtomicBool);
 
 /// How long quitting waits for the Device to save its Transfers' progress.
 pub(crate) const QUIT_DEADLINE: Duration = Duration::from_secs(30);
@@ -63,6 +76,9 @@ pub enum IdentityErrorKind {
     NotAnIdentityFile,
     /// The OS secret store cannot be used.
     StoreUnavailable,
+    /// The store may hold either key, because replacing the old one failed half-way and so did
+    /// putting it back.
+    ReplaceUncertain,
     Other,
 }
 
@@ -71,6 +87,7 @@ impl From<Error> for IdentityError {
         let kind = match &e {
             Error::IdentityFile(IdentityFileError::WrongPassword) => IdentityErrorKind::WrongPassword,
             Error::IdentityFile(IdentityFileError::NotAnIdentityFile) => IdentityErrorKind::NotAnIdentityFile,
+            Error::Key(KeyError::ReplaceUncertain) => IdentityErrorKind::ReplaceUncertain,
             Error::Key(_) => IdentityErrorKind::StoreUnavailable,
             _ => IdentityErrorKind::Other,
         };
@@ -82,6 +99,16 @@ impl IdentityError {
     fn io(what: &str, path: &str, e: std::io::Error) -> Self {
         Self { kind: IdentityErrorKind::Other, message: format!("{what} {path}: {e}") }
     }
+}
+
+/// Whose identity a file holds: a Device ID and its Fingerprint, as for [`MyId`], but not this
+/// Device's.
+#[derive(Serialize, Type)]
+pub struct IdentityOwner {
+    /// 52-character base32 Device ID.
+    id: String,
+    /// First 8 characters, `XXXX-XXXX`.
+    fingerprint: String,
 }
 
 /// The folder accepted files are saved to (shown on the Offer sheet).
@@ -409,13 +436,15 @@ async fn export_identity(
 /// Whose identity the file at `path` holds, if `password` opens it. Changes nothing.
 #[tauri::command]
 #[specta::specta]
-async fn check_identity_import(path: String, password: String) -> Result<MyId, IdentityError> {
+async fn check_identity_import(path: String, password: String) -> Result<IdentityOwner, IdentityError> {
     let id = Device::identity_file_owner(&read_identity_file(&path)?, &password).await?;
-    Ok(MyId { id: id.to_string(), fingerprint: id.fingerprint() })
+    Ok(IdentityOwner { id: id.to_string(), fingerprint: id.fingerprint() })
 }
 
-/// Replaces this Device's identity with the one in the file at `path`, and restarts the app to
-/// take it up. Importing the Device's own identity changes nothing and does not restart.
+/// Replaces this Device's identity with the one in the file at `path`, and starts the app again
+/// to take it up, as it was started from the menu or the desktop: whatever it was launched with
+/// (to stay in the tray, to open a link) is not repeated. Importing the Device's own identity
+/// changes nothing and does not restart.
 #[tauri::command]
 #[specta::specta]
 async fn import_identity<R: Runtime>(
@@ -427,21 +456,30 @@ async fn import_identity<R: Runtime>(
     let file = read_identity_file(&path)?;
     let current = device.device_id();
     if device.import_identity(&file, &password).await? != current {
-        // Exits through the same path as quitting, which lets the Device save its Transfers'
-        // progress, and starts the app again.
-        app.request_restart();
+        // The way out is the one of quitting, so the Device saves its Transfers' progress; the
+        // new start waits for that, and for the single instance lock, in `run`.
+        app.state::<Relaunch>().0.store(true, Ordering::SeqCst);
+        background::finish_quit(&app).await;
     }
     Ok(())
 }
 
-/// An identity file is under a hundred bytes; anything much bigger is not one, and is not read.
+/// An identity file is under a hundred bytes; anything bigger is not one, and the rest of it is
+/// not read.
+const MAX_IDENTITY_FILE_LEN: u64 = 4096;
+
 fn read_identity_file(path: &str) -> Result<Vec<u8>, IdentityError> {
-    const MOST: u64 = 4096;
     let io = |e| IdentityError::io("reading", path, e);
-    if std::fs::metadata(path).map_err(io)?.len() > MOST {
+    let mut bytes = Vec::new();
+    std::fs::File::open(path)
+        .map_err(io)?
+        .take(MAX_IDENTITY_FILE_LEN + 1)
+        .read_to_end(&mut bytes)
+        .map_err(io)?;
+    if bytes.len() as u64 > MAX_IDENTITY_FILE_LEN {
         return Err(Error::IdentityFile(IdentityFileError::NotAnIdentityFile).into());
     }
-    std::fs::read(path).map_err(io)
+    Ok(bytes)
 }
 
 /// Not a Device command: the UI calls it once it is listening for `DeviceEvent`s, and
@@ -524,6 +562,23 @@ pub fn start_device<R: Runtime>(
         }
     });
     Ok(())
+}
+
+/// Tells the user why the Device did not start, and exits with an error. Setup runs on the main
+/// thread, which a blocking dialog must not, so this waits on a thread of its own, and the event
+/// loop that shows the dialog carries on meanwhile.
+fn fail_to_start<R: Runtime>(app: &AppHandle<R>, reason: &str) {
+    tracing::error!("the Device did not start: {reason}");
+    let app = app.clone();
+    let reason = reason.to_owned();
+    std::thread::spawn(move || {
+        app.dialog()
+            .message(reason)
+            .title(START_FAILED_TITLE)
+            .kind(MessageDialogKind::Error)
+            .blocking_show();
+        app.exit(1);
+    });
 }
 
 /// Where this install keeps its data and saves received files.
@@ -612,7 +667,15 @@ pub fn run() {
             builder.mount_events(app);
             app.manage(background::Quitting::default());
             app.manage(notice::Notifier::default());
-            start_device(app, default_config(app)?)?;
+            app.manage(Relaunch::default());
+            let started = default_config(app)
+                .map_err(Into::into)
+                .and_then(|config| start_device(app, config));
+            if let Err(e) = started {
+                // Not a panic: the window is not shown yet, so the user would see nothing.
+                fail_to_start(app.handle(), &e.to_string());
+                return Ok(());
+            }
 
             let handle = app.handle();
             let visibility = tauri::async_runtime::block_on(app.state::<Device>().visibility());
@@ -642,6 +705,14 @@ pub fn run() {
             if let tauri::RunEvent::Exit = event {
                 if let Some(device) = app.try_state::<Device>() {
                     tauri::async_runtime::block_on(device.shutdown(QUIT_DEADLINE));
+                }
+                // The Device is closed and the single instance plugin has let go of its lock
+                // (it does so before this), so the new start is neither held up by the data
+                // folder nor taken for a second launch. It gets no arguments.
+                if app.try_state::<Relaunch>().is_some_and(|r| r.0.load(Ordering::SeqCst)) {
+                    let mut env = app.env();
+                    env.args_os.truncate(1);
+                    tauri::process::restart(&env);
                 }
             }
         });
@@ -690,6 +761,26 @@ mod tests {
 
         gate.open(); // a reloaded window asks again: nothing is delivered twice
         assert_eq!(*delivered.lock().unwrap(), [0, 1, 2]);
+    }
+
+    #[test]
+    fn a_device_that_cannot_start_is_an_error_to_show_the_user_not_a_panic() {
+        let tmp = tempfile::tempdir().unwrap();
+        let key = tmp.path().join("data").join("secret.key");
+        std::fs::create_dir_all(key.parent().unwrap()).unwrap();
+        std::fs::write(&key, b"not a key").unwrap();
+        let config = DeviceConfig {
+            key_source: KeySource::File(key),
+            data_dir: tmp.path().join("data"),
+            save_dir: tmp.path().join("save"),
+            clock: Arc::new(SystemClock),
+            network: Network::Localhost,
+            free_space: Arc::new(SystemFreeSpace),
+        };
+        let app = tauri::test::mock_app();
+        let err = start_device(&app, config).unwrap_err();
+        assert!(err.to_string().contains("not 32 bytes"), "{err}");
+        assert!(app.try_state::<Device>().is_none());
     }
 
     fn generate(to: &Path) {

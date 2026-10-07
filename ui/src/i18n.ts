@@ -147,7 +147,11 @@ const en = {
   "identity.wrongPassword": "Wrong password, or the file is damaged.",
   "identity.notAFile": "That is not a BhayanakShare identity file.",
   "identity.storeUnavailable": "The secret key could not be stored. {reason}",
+  "identity.replaceUncertain":
+    "The secret key may not have been replaced cleanly, so this Device's identity may have changed. Restart BhayanakShare and check the Fingerprint above.",
   "identity.failed": "Something went wrong. {reason}",
+  "identity.fileType": "BhayanakShare identity",
+  "identity.fileTypeAll": "All files",
   "identity.cancel": "Cancel",
   "identity.close": "Close",
   "identity.exportHeading": "Export identity",

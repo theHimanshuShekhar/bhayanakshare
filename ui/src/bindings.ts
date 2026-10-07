@@ -76,10 +76,12 @@ export const commands = {
 	/**  Writes this Device's identity, protected by `password`, to the file at `path`. */
 	exportIdentity: (path: string, password: string) => __TAURI_INVOKE<null>("export_identity", { path, password }),
 	/**  Whose identity the file at `path` holds, if `password` opens it. Changes nothing. */
-	checkIdentityImport: (path: string, password: string) => __TAURI_INVOKE<MyId>("check_identity_import", { path, password }),
+	checkIdentityImport: (path: string, password: string) => __TAURI_INVOKE<IdentityOwner>("check_identity_import", { path, password }),
 	/**
-	 *  Replaces this Device's identity with the one in the file at `path`, and restarts the app to
-	 *  take it up. Importing the Device's own identity changes nothing and does not restart.
+	 *  Replaces this Device's identity with the one in the file at `path`, and starts the app again
+	 *  to take it up, as it was started from the menu or the desktop: whatever it was launched with
+	 *  (to stay in the tray, to open a link) is not repeated. Importing the Device's own identity
+	 *  changes nothing and does not restart.
 	 */
 	importIdentity: (path: string, password: string) => __TAURI_INVOKE<null>("import_identity", { path, password }),
 	/**
@@ -187,7 +189,23 @@ export type IdentityErrorKind =
 /**  The password does not open the file (or the file is damaged). */
 "wrong_password" | "not_an_identity_file" | 
 /**  The OS secret store cannot be used. */
-"store_unavailable" | "other";
+"store_unavailable" | 
+/**
+ *  The store may hold either key, because replacing the old one failed half-way and so did
+ *  putting it back.
+ */
+"replace_uncertain" | "other";
+
+/**
+ *  Whose identity a file holds: a Device ID and its Fingerprint, as for [`MyId`], but not this
+ *  Device's.
+ */
+export type IdentityOwner = {
+	/**  52-character base32 Device ID. */
+	id: string,
+	/**  First 8 characters, `XXXX-XXXX`. */
+	fingerprint: string,
+};
 
 /**
  *  Where a Contact was last reached: its relay and the direct addresses seen on the latest

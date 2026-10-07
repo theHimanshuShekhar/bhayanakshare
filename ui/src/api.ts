@@ -5,6 +5,7 @@
 import { getCurrent, onOpenUrl } from "@tauri-apps/plugin-deep-link";
 import { open, save } from "@tauri-apps/plugin-dialog";
 import { openUrl, revealItemInDir } from "@tauri-apps/plugin-opener";
+import { t } from "./i18n";
 import {
   commands,
   events,
@@ -13,6 +14,7 @@ import {
   type DeviceEvent,
   type HistoryEntry,
   type IdentityError,
+  type IdentityOwner,
   type MyId,
   type Role,
   type ShellEvent,
@@ -27,6 +29,7 @@ export type {
   DeviceEvent,
   HistoryEntry,
   IdentityError,
+  IdentityOwner,
   MyId,
   Role,
   ShellEvent,
@@ -98,7 +101,7 @@ export interface Api {
   exportIdentity(path: string, password: string): Promise<unknown>;
   /** Whose identity the file at `path` holds, if `password` opens it. Changes nothing. Rejects
    * with an `IdentityError`. */
-  checkIdentityImport(path: string, password: string): Promise<MyId>;
+  checkIdentityImport(path: string, password: string): Promise<IdentityOwner>;
   /** Replaces this Device's identity with the one in the file, and restarts the app. Rejects
    * with an `IdentityError`. */
   importIdentity(path: string, password: string): Promise<unknown>;
@@ -184,14 +187,14 @@ export const tauriApi: Api = {
       multiple: false,
       directory: false,
       filters: [
-        { name: "BhayanakShare identity", extensions: ["bhid"] },
-        { name: "All files", extensions: ["*"] },
+        { name: t("identity.fileType"), extensions: ["bhid"] },
+        { name: t("identity.fileTypeAll"), extensions: ["*"] },
       ],
     });
     return typeof picked === "string" ? picked : null;
   },
   pickIdentitySavePath: (name) =>
-    save({ defaultPath: name, filters: [{ name: "BhayanakShare identity", extensions: ["bhid"] }] }),
+    save({ defaultPath: name, filters: [{ name: t("identity.fileType"), extensions: ["bhid"] }] }),
   pickFiles: async () => {
     const picked = await open({ multiple: true, directory: false });
     return Array.isArray(picked) && picked.length > 0 ? picked : null;

@@ -36,6 +36,8 @@ export function identityFailure(e: unknown): string {
         return t("identity.notAFile");
       case "store_unavailable":
         return t("identity.storeUnavailable", { reason: e.message });
+      case "replace_uncertain":
+        return t("identity.replaceUncertain");
       case "other":
         return t("identity.failed", { reason: e.message });
     }

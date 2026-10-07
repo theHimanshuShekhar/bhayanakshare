@@ -2610,6 +2610,16 @@ describe("Identity", () => {
       expect((screen.getByRole("button", { name: "Replace and restart" }) as HTMLButtonElement).disabled).toBe(false);
     });
 
+    it("says so when replacing the key failed half-way and the identity may have changed", async () => {
+      const device = await startImport(
+        fakeApi({ importIdentity: vi.fn(() => fail("replace_uncertain")) }),
+      );
+      await toConfirmation(device);
+      fireEvent.click(screen.getByRole("button", { name: "Replace and restart" }));
+      expect((await screen.findByRole("alert")).textContent).toContain("identity may have changed");
+      expect(screen.queryByText("Restarting…")).toBeNull();
+    });
+
     it("does not warn about replacing when the file holds this Device's own identity", async () => {
       const device = await startImport(
         fakeApi({ checkIdentityImport: vi.fn(() => Promise.resolve({ id: MY_ID, fingerprint: "AAAA-AAAA" })) }),

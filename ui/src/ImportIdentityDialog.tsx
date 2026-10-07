@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type FormEvent, type KeyboardEvent } from "react";
-import type { Api, MyId } from "./api";
+import type { Api, IdentityOwner, MyId } from "./api";
 import { t } from "./i18n";
 import { identityFailure } from "./identity";
 import { baseName } from "./transfers";
@@ -24,7 +24,7 @@ export function ImportIdentityDialog({
 }) {
   const [password, setPassword] = useState("");
   // Set once the password has opened the file: whose identity it holds.
-  const [incoming, setIncoming] = useState<MyId | null>(null);
+  const [incoming, setIncoming] = useState<IdentityOwner | null>(null);
   const [restarting, setRestarting] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);

@@ -244,3 +244,32 @@ fn contacts_are_managed_through_commands() {
         tauri::async_runtime::block_on(shell.device().shutdown(Duration::from_secs(30)));
     }
 }
+
+#[test]
+fn an_identity_is_exported_and_checked_through_commands_and_failures_say_which_kind() {
+    let shell = start_shell();
+    let id = shell.invoke("my_id", json!({})).unwrap();
+    let file = shell.save_dir.join("me.bhid");
+    let path = file.to_string_lossy().into_owned();
+
+    shell.invoke("export_identity", json!({ "path": path, "password": "correct horse" })).unwrap();
+    assert_eq!(std::fs::metadata(&file).unwrap().len(), 93);
+    // The file holds this Device's identity, which the UI is told before it asks to replace anything.
+    let owner = shell.invoke("check_identity_import", json!({ "path": path, "password": "correct horse" })).unwrap();
+    assert_eq!(owner, id);
+
+    let wrong = shell.invoke("check_identity_import", json!({ "path": path, "password": "wrong horse" })).unwrap_err();
+    assert_eq!(wrong["kind"], "wrong_password");
+    let empty = shell.invoke("export_identity", json!({ "path": path, "password": "" })).unwrap_err();
+    assert_eq!(empty["kind"], "other");
+
+    // A file that is not one is refused, and one that is far too big is not read.
+    let junk = shell.save_dir.join("junk.bhid");
+    std::fs::write(&junk, vec![7u8; 1_000_000]).unwrap();
+    let junk = junk.to_string_lossy().into_owned();
+    let not_one = shell.invoke("check_identity_import", json!({ "path": junk, "password": "correct horse" })).unwrap_err();
+    assert_eq!(not_one["kind"], "not_an_identity_file");
+    let missing = shell.save_dir.join("nothing.bhid").to_string_lossy().into_owned();
+    let gone = shell.invoke("check_identity_import", json!({ "path": missing, "password": "correct horse" })).unwrap_err();
+    assert_eq!(gone["kind"], "other");
+}

@@ -63,5 +63,5 @@ _Avoid_: Log, activity, inbox
 A per-Contact setting on the Receiver that accepts Transfers from that Contact without prompting. Off by default.
 
 **Identity export**:
-A password-protected file holding one Device's secret key, and so its Device ID, and nothing else: no Contacts, no Transfer History, no settings. Importing it on another install (or after a reinstall) gives that install the same Device ID, and replaces the one it had. The install it came from must not keep running with it.
+A password-protected file holding one Device's secret key, and so its Device ID, and nothing else: no Contacts, no Transfer History, no settings. Importing it on another install (or after a reinstall) gives that install the same Device ID, and replaces the one it had. The install it came from must not keep running with it. The file an Identity export writes is the **identity file** (`.bhid`).
 _Avoid_: Backup, account export, key file
