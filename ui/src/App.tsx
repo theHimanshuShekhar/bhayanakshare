@@ -386,7 +386,8 @@ function Screens({ api }: { api: Api }) {
                 />
               )}
               {visibility === "hidden" && nearby.length === 0 && (
-                <p role="status" className="hint">
+                // Not a live region: it is a state that is there on arriving, not news.
+                <p className="hint">
                   {t("home.hiddenHint")}{" "}
                   <button type="button" onClick={() => setTab("settings")}>
                     {t("home.hiddenChange")}

@@ -535,7 +535,7 @@ describe("receiving", () => {
     expect(screen.getByText("Received.")).toBeTruthy();
     expect(screen.getByText(/Saved to \/home\/me\//)).toBeTruthy();
 
-    fireEvent.click(screen.getByRole("button", { name: "Show photo.jpg in folder" }));
+    fireEvent.click(screen.getByRole("button", { name: "Show in folder: photo.jpg" }));
     expect(device.api.showInFolder).toHaveBeenCalledWith("/home/me/Downloads/BhayanakShare/photo.jpg");
   });
 
@@ -547,7 +547,7 @@ describe("receiving", () => {
     const device = await start(fakeApi({ showInFolder }));
     await device.transfer("receiver", { kind: "completed", saved_to: "/home/me/Downloads/photo.jpg" });
 
-    const button = screen.getByRole("button", { name: "Show photo.jpg in folder" });
+    const button = screen.getByRole("button", { name: "Show in folder: photo.jpg" });
     fireEvent.click(button);
     expect((await screen.findByRole("alert")).textContent).toContain("Could not open the folder");
 
@@ -639,10 +639,10 @@ describe("cancelling, expiry and the Offer countdown", () => {
     await device.transfer("sender", { kind: "expired" });
     expect(screen.getByText("K3QF-7XNA did not answer in time. The Offer expired.")).toBeTruthy();
 
-    fireEvent.click(screen.getByRole("button", { name: "Send photo.jpg again" }));
+    fireEvent.click(screen.getByRole("button", { name: "Send again: photo.jpg" }));
     expect(device.api.resendTransfer).toHaveBeenCalledWith(TRANSFER);
     // Once sent again, the expired row no longer offers it.
-    await waitFor(() => expect(screen.queryByRole("button", { name: "Send photo.jpg again" })).toBeNull());
+    await waitFor(() => expect(screen.queryByRole("button", { name: "Send again: photo.jpg" })).toBeNull());
     expect(screen.queryByRole("alert")).toBeNull();
   });
 
@@ -661,7 +661,7 @@ describe("cancelling, expiry and the Offer countdown", () => {
       fakeApi({ resendTransfer: vi.fn(() => Promise.reject("/tmp/photo.jpg is not a file")) }),
     );
     await device.transfer("sender", { kind: "expired" });
-    fireEvent.click(screen.getByRole("button", { name: "Send photo.jpg again" }));
+    fireEvent.click(screen.getByRole("button", { name: "Send again: photo.jpg" }));
     const alert = await screen.findByRole("alert");
     expect(alert.textContent).toContain("Could not send it again");
     expect(alert.textContent).toContain("is not a file");
@@ -957,7 +957,7 @@ describe("Nearby Devices", () => {
     expect(tiles[0].textContent).toContain("Contact");
     expect(tiles[0].textContent).toContain("Nearby");
     // Only the stranger can be saved.
-    expect(screen.getAllByRole("button", { name: /^Save .* as a Contact$/ })).toHaveLength(1);
+    expect(screen.getAllByRole("button", { name: /^Save as Contact: / })).toHaveLength(1);
   });
 
   it("uses the announced name for a Contact that has none yet, and shows an offline Contact without Nearby", async () => {
@@ -987,7 +987,7 @@ describe("Nearby Devices", () => {
   it("saves a Nearby tile as a Contact after checking the Fingerprint, with the name it announced", async () => {
     const device = await start();
     await device.nearby({ id: PEER_ID, name: "Dad's PC" });
-    fireEvent.click(await screen.findByRole("button", { name: /^Save Dad's PC · K3QF-7XNA as a Contact$/ }));
+    fireEvent.click(await screen.findByRole("button", { name: /^Save as Contact: Dad's PC · K3QF-7XNA$/ }));
 
     // Straight to the check: the ID was not typed, but the Fingerprint is still compared.
     const dialog = screen.getByRole("dialog");
@@ -998,13 +998,13 @@ describe("Nearby Devices", () => {
     await waitFor(() => expect(device.api.addContact).toHaveBeenCalledWith(PEER_ID, "Dad's PC"));
     // Now a Contact: its tile is badged and the Save button is gone.
     expect(await screen.findByRole("button", { name: "Send to Dad's PC" })).toBeTruthy();
-    expect(screen.queryByRole("button", { name: /as a Contact$/ })).toBeNull();
+    expect(screen.queryByRole("button", { name: /^Save as Contact: / })).toBeNull();
   });
 
   it("saves nothing when the Fingerprint check is cancelled", async () => {
     const device = await start();
     await device.nearby({ id: PEER_ID, name: null });
-    fireEvent.click(await screen.findByRole("button", { name: /^Save K3QF-7XNA as a Contact$/ }));
+    fireEvent.click(await screen.findByRole("button", { name: /^Save as Contact: K3QF-7XNA$/ }));
     fireEvent.keyDown(screen.getByRole("dialog"), { key: "Escape" });
     expect(screen.queryByRole("dialog")).toBeNull();
     expect(device.api.addContact).not.toHaveBeenCalled();
@@ -2749,7 +2749,7 @@ describe("History", () => {
     expect(times.textContent).toContain(new Date(1_700_000_005_000).toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" }));
     expect(within(row).getByText(`Saved to ${SAVED}`, { exact: false })).toBeTruthy();
 
-    fireEvent.click(within(row).getByRole("button", { name: "Show photos and 1 more in folder" }));
+    fireEvent.click(within(row).getByRole("button", { name: "Show in folder: photos and 1 more" }));
     expect(device.api.showInFolder).toHaveBeenCalledWith(SAVED);
   });
 

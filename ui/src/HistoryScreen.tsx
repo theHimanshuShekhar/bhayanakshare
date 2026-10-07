@@ -258,7 +258,7 @@ function HistoryRow({
         <p>
           {t("transfer.savedTo", { path: savedTo })}{" "}
           {present === false ? (
-            <span role="status">{t("history.fileGone")}</span>
+            <span>{t("history.fileGone")}</span>
           ) : (
             <button
               type="button"

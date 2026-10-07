@@ -37,7 +37,26 @@ async function expectNoViolations() {
         v.nodes.map((n) => `    ${n.target.join(" ")}\n    ${n.html}`).join("\n"),
     )
     .join("\n");
-  expect(report).toBe("");
+  // Thrown rather than compared, so that the whole report is the message.
+  if (report !== "") throw new Error(report);
+  expectNamesHoldVisibleText();
+}
+
+/**
+ * A button or link given an `aria-label` must still be named by the words it shows (WCAG 2.5.3,
+ * for people who speak "click Show in folder"). axe has a rule for this, but it only marks the
+ * labels it cannot judge as "needs review", so it is checked here. A tile is the one exception:
+ * it shows its name with words about its state, which it carries as its description instead.
+ */
+function expectNamesHoldVisibleText() {
+  const odd = [...document.querySelectorAll<HTMLElement>("button[aria-label], a[aria-label]")]
+    .filter((el) => !el.classList.contains("tile"))
+    .filter((el) => {
+      const shown = (el.textContent ?? "").replace(/…/g, "").trim().toLowerCase();
+      return shown !== "" && !el.getAttribute("aria-label")!.toLowerCase().includes(shown);
+    })
+    .map((el) => `"${el.getAttribute("aria-label")}" does not hold "${el.textContent}"`);
+  if (odd.length > 0) throw new Error(odd.join("\n"));
 }
 
 /** Renders the app and waits until it is listening for events (and My ID, on Home, is shown). */
@@ -110,6 +129,18 @@ describe("accessibility: the check itself", () => {
   it("finds a control with no name, so a clean result means something", async () => {
     render(<button type="button" />);
     await expect(expectNoViolations()).rejects.toThrow(/button-name/);
+  });
+
+  it("finds a label that does not hold the words the control shows", async () => {
+    render(
+      <main>
+        <h1>Page</h1>
+        <button type="button" aria-label="Show photo.jpg in folder">
+          Show in folder
+        </button>
+      </main>,
+    );
+    await expect(expectNoViolations()).rejects.toThrow(/does not hold/);
   });
 
   it("finds content outside every landmark", async () => {
@@ -419,5 +450,37 @@ describe("accessibility: dialogs", () => {
     await start();
     expect(within(document.body).getByRole("img", { name: "QR code of the share link" })).toBeTruthy();
     await expectNoViolations();
+  });
+});
+
+describe("accessibility: live regions", () => {
+  /** Live regions that already hold words when they are first on the page: some screen readers read them out. */
+  const talking = () => screen.queryAllByRole("status").filter((el) => el.textContent !== "");
+
+  it("does not make a standing hint a live region: Hidden is a state, reached by changing tab", async () => {
+    await start(fakeApi({ visibility: () => Promise.resolve("hidden") }));
+    const hint = await screen.findByText(/You're Hidden/);
+    expect(hint.closest("[role=status]")).toBeNull();
+    expect(talking()).toHaveLength(0);
+  });
+
+  it("does not read out a History of rows whose files are gone", async () => {
+    const device = fakeApi({}, contacts());
+    device.setHistory(
+      [1, 2, 3].map((i) => ({
+        kind: "transfer" as const,
+        transfer: { record: record({ id: String(i).repeat(32) }), saved_present: false },
+      })),
+    );
+    await start(device);
+    open("History");
+    expect(await screen.findAllByText("File no longer at saved location")).toHaveLength(3);
+    expect(talking()).toHaveLength(0);
+  });
+
+  it("keeps the words of a hint that appears because something happened: an update", async () => {
+    const device = await start();
+    await device.shell({ type: "update_available", action: { type: "open_page", version: "0.3.0" } });
+    expect((await screen.findByText(/Update available/)).getAttribute("role")).toBe("status");
   });
 });
