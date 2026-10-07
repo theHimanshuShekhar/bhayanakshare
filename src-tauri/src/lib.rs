@@ -117,9 +117,6 @@ pub struct IdentityOwner {
     fingerprint: String,
 }
 
-/// The folder accepted files are saved to (shown on the Offer sheet).
-struct SaveFolder(PathBuf);
-
 /// Holds the Device's events back until the UI is listening, so an Offer that arrives while
 /// the window is still loading is not lost; after that it passes events straight through.
 struct EventGate(Mutex<GateState>);
@@ -161,10 +158,36 @@ fn my_id(device: State<'_, Device>) -> MyId {
     MyId { id: id.to_string(), fingerprint: id.fingerprint() }
 }
 
+/// The folder accepted files are saved to unless an Offer names another (shown on the Offer
+/// sheet and in Settings).
 #[tauri::command]
 #[specta::specta]
-fn save_folder(folder: State<'_, SaveFolder>) -> String {
-    folder.0.to_string_lossy().into_owned()
+async fn save_folder(device: State<'_, Device>) -> Result<String, String> {
+    let folder = device.save_folder().await.map_err(|e| e.to_string())?;
+    Ok(folder.to_string_lossy().into_owned())
+}
+
+/// Makes `path` the save folder (made if missing, and it must be writable) from the next Offer
+/// on; resolves to the folder as kept.
+#[tauri::command]
+#[specta::specta]
+async fn set_save_folder(device: State<'_, Device>, path: String) -> Result<String, String> {
+    let folder = device.set_save_folder(std::path::Path::new(&path)).await.map_err(|e| e.to_string())?;
+    Ok(folder.to_string_lossy().into_owned())
+}
+
+/// Whether first run is still to be done: the UI shows its screen instead of the tabs.
+#[tauri::command]
+#[specta::specta]
+async fn needs_first_run(device: State<'_, Device>) -> Result<bool, String> {
+    device.needs_first_run().await.map_err(|e| e.to_string())
+}
+
+/// Records that the user has been through first run.
+#[tauri::command]
+#[specta::specta]
+async fn finish_first_run(device: State<'_, Device>) -> Result<(), String> {
+    device.finish_first_run().await.map_err(|e| e.to_string())
 }
 
 /// Offers the files and folders at `paths` to the Device with the pasted Device ID `to`, as
@@ -314,6 +337,21 @@ async fn set_visibility<R: Runtime>(
     device.set_visibility(visibility).await.map_err(|e| e.to_string())?;
     background::sync_visibility(&app, visibility);
     Ok(())
+}
+
+/// Whether this Device uses the public Mainline DHT, besides n0 DNS, to publish its address and
+/// find its Contacts'.
+#[tauri::command]
+#[specta::specta]
+fn public_dht(device: State<'_, Device>) -> bool {
+    device.public_dht()
+}
+
+/// Turns the public DHT on or off; it takes effect at once and is kept across restarts.
+#[tauri::command]
+#[specta::specta]
+async fn set_public_dht(device: State<'_, Device>, on: bool) -> Result<(), String> {
+    device.set_public_dht(on).await.map_err(|e| e.to_string())
 }
 
 /// Whether debug logging is on: a bigger log, for finding what went wrong.
@@ -551,6 +589,9 @@ pub fn specta_builder<R: Runtime>() -> Builder<R> {
         .commands(collect_commands![
             my_id,
             save_folder,
+            set_save_folder,
+            needs_first_run,
+            finish_first_run,
             send_files,
             send_batch,
             send_text,
@@ -566,6 +607,8 @@ pub fn specta_builder<R: Runtime>() -> Builder<R> {
             set_device_name,
             visibility,
             set_visibility::<tauri::Wry>,
+            public_dht,
+            set_public_dht,
             autostart_enabled,
             set_autostart,
             debug_logging,
@@ -603,8 +646,6 @@ pub fn start_device<R: Runtime>(
     app: &impl Manager<R>,
     config: DeviceConfig,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    // Shown to the user as the Device resolves it.
-    app.manage(SaveFolder(std::path::absolute(&config.save_dir)?));
     let (device, mut events) = tauri::async_runtime::block_on(Device::start(config))?;
     app.manage(device);
 
@@ -917,6 +958,52 @@ mod tests {
         let mut line = String::new();
         zip.by_name(&log).unwrap().read_to_string(&mut line).unwrap();
         assert_eq!(line, "a line of the log\n");
+    }
+
+    #[test]
+    fn the_settings_commands_read_and_change_what_the_device_keeps() {
+        use tauri::async_runtime::block_on;
+
+        let tmp = tempfile::tempdir().unwrap();
+        let save_dir = tmp.path().join("save");
+        let config = DeviceConfig {
+            key_source: KeySource::File(tmp.path().join("data").join("secret.key")),
+            data_dir: tmp.path().join("data"),
+            save_dir: save_dir.clone(),
+            clock: Arc::new(SystemClock),
+            network: Network::Localhost,
+            free_space: Arc::new(SystemFreeSpace),
+        };
+        let app = tauri::test::mock_app();
+        start_device(&app, config).unwrap();
+
+        // The save folder is the Device's: the configured one, then the one set.
+        assert_eq!(block_on(save_folder(app.state())).unwrap(), save_dir.to_string_lossy());
+        let chosen = tmp.path().join("chosen");
+        let kept = block_on(set_save_folder(app.state(), chosen.to_string_lossy().into_owned())).unwrap();
+        assert_eq!(kept, chosen.to_string_lossy());
+        assert!(chosen.is_dir());
+        assert_eq!(block_on(save_folder(app.state())).unwrap(), chosen.to_string_lossy());
+        assert_eq!(block_on(app.state::<Device>().save_folder()).unwrap(), chosen);
+        // A folder that cannot be used is a rejected command that says why; nothing changes.
+        let file = tmp.path().join("a-file");
+        std::fs::write(&file, b"x").unwrap();
+        let err = block_on(set_save_folder(app.state(), file.to_string_lossy().into_owned())).unwrap_err();
+        assert_eq!(err, "That is not a folder.");
+        assert_eq!(block_on(save_folder(app.state())).unwrap(), chosen.to_string_lossy());
+
+        // The public DHT is on until switched off, and the Device has the setting.
+        assert!(public_dht(app.state()));
+        block_on(set_public_dht(app.state(), false)).unwrap();
+        assert!(!public_dht(app.state()));
+        assert!(!app.state::<Device>().public_dht());
+        block_on(set_public_dht(app.state(), true)).unwrap();
+        assert!(public_dht(app.state()));
+
+        // First run is needed until it is finished.
+        assert!(block_on(needs_first_run(app.state())).unwrap());
+        block_on(finish_first_run(app.state())).unwrap();
+        assert!(!block_on(needs_first_run(app.state())).unwrap());
     }
 
     fn generate(to: &Path) {

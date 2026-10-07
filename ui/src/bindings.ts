@@ -6,7 +6,20 @@ import * as __TAURI_EVENT from "@tauri-apps/api/event";
 /** Commands */
 export const commands = {
 	myId: () => __TAURI_INVOKE<MyId>("my_id"),
+	/**
+	 *  The folder accepted files are saved to unless an Offer names another (shown on the Offer
+	 *  sheet and in Settings).
+	 */
 	saveFolder: () => __TAURI_INVOKE<string>("save_folder"),
+	/**
+	 *  Makes `path` the save folder (made if missing, and it must be writable) from the next Offer
+	 *  on; resolves to the folder as kept.
+	 */
+	setSaveFolder: (path: string) => __TAURI_INVOKE<string>("set_save_folder", { path }),
+	/**  Whether first run is still to be done: the UI shows its screen instead of the tabs. */
+	needsFirstRun: () => __TAURI_INVOKE<boolean>("needs_first_run"),
+	/**  Records that the user has been through first run. */
+	finishFirstRun: () => __TAURI_INVOKE<null>("finish_first_run"),
 	/**
 	 *  Offers the files and folders at `paths` to the Device with the pasted Device ID `to`, as
 	 *  one Transfer; resolves to the Transfer ID.
@@ -45,6 +58,13 @@ export const commands = {
 	visibility: () => __TAURI_INVOKE<Visibility>("visibility"),
 	/**  Changes who can see this Device as a Nearby Device; it takes effect at once. */
 	setVisibility: (visibility: Visibility) => __TAURI_INVOKE<null>("set_visibility", { visibility }),
+	/**
+	 *  Whether this Device uses the public Mainline DHT, besides n0 DNS, to publish its address and
+	 *  find its Contacts'.
+	 */
+	publicDht: () => __TAURI_INVOKE<boolean>("public_dht"),
+	/**  Turns the public DHT on or off; it takes effect at once and is kept across restarts. */
+	setPublicDht: (on: boolean) => __TAURI_INVOKE<null>("set_public_dht", { on }),
 	/**  Whether this Device starts when the user logs in. */
 	autostartEnabled: () => __TAURI_INVOKE<boolean>("autostart_enabled"),
 	setAutostart: (on: boolean) => __TAURI_INVOKE<null>("set_autostart", { on }),
