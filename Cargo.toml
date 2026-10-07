@@ -1,6 +1,8 @@
 [workspace]
 resolver = "3"
 members = ["crates/core", "src-tauri"]
+# A standalone benchmark kept with the research notes (docs/research/README.md).
+exclude = ["docs/research/blobs-bench"]
 # Plain `cargo test` / `cargo check` cover the core only (fast, no system libraries);
 # the Tauri shell is built with `--workspace` (see README).
 default-members = ["crates/core"]
