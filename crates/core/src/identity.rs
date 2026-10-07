@@ -42,7 +42,10 @@ impl DeviceId {
         self.0.as_bytes()
     }
 
-    /// The first 8 characters as `XXXX-XXXX`, for checking by eye. Never used to dial.
+    /// The first 8 characters as `XXXX-XXXX`, for checking by eye. Never used to dial. This is
+    /// also how a Device is named in the log: never `Display` a `DeviceId` there (that is the
+    /// whole ID), nor an `EndpointId`, whose `Display` and `Debug` are the whole ID in hex. A
+    /// `DeviceId`'s `Debug` is this.
     pub fn fingerprint(&self) -> String {
         let id = self.to_string();
         format!("{}-{}", &id[..4], &id[4..8])

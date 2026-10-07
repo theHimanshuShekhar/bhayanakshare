@@ -7,7 +7,10 @@ use std::{
     collections::HashMap,
     net::SocketAddr,
     path::{Path, PathBuf},
-    sync::{Arc, Mutex, Weak},
+    sync::{
+        Arc, Mutex, Weak,
+        atomic::{AtomicBool, Ordering},
+    },
     time::Duration,
 };
 
@@ -35,7 +38,7 @@ use crate::{
     gate::Gate,
     history::{self, HistoryEntry, HistoryQuery},
     identity::{DeviceId, KeySource},
-    identity_file, protocol, receiver,
+    identity_file, logs, protocol, receiver,
     sender::{self, Outgoing, Payload},
     session::RESTARTED,
     space::{FreeSpace, SpaceCheck},
@@ -254,6 +257,10 @@ pub(crate) struct Shared {
     pub contact_addrs: MemoryLookup,
     /// Whether this Device publishes to and looks things up on the Mainline DHT.
     pub public_dht: PublicDht,
+    /// Which network this Device lives on.
+    pub network: Network,
+    /// The "Debug logging" setting, as stored (the shell applies it to the log).
+    pub debug_logging: AtomicBool,
     pub tasks: TaskTracker,
     /// Cancelled on shutdown; Transfer tasks stop, cleanup tasks run to the end.
     pub cancel: CancellationToken,
@@ -530,13 +537,15 @@ impl Device {
     /// the network endpoint and starts accepting.
     pub async fn start(config: DeviceConfig) -> Result<(Self, EventStream), Error> {
         let DeviceConfig { data_dir, save_dir, key_source, clock, network, free_space } = config;
+        // The save folder is named in no error: this one is logged, and the user chose that name.
         let io = |what: &'static str, dir: &Path| {
             let ctx = format!("{what} {}", dir.display());
             move |e| Error::io(ctx, e)
         };
+        let save_io = |what: &'static str| move |e| Error::io(format!("{what} the save folder"), e);
         tokio::fs::create_dir_all(&data_dir).await.map_err(io("creating", &data_dir))?;
-        tokio::fs::create_dir_all(&save_dir).await.map_err(io("creating", &save_dir))?;
-        let save_dir = std::path::absolute(&save_dir).map_err(io("resolving", &save_dir))?;
+        tokio::fs::create_dir_all(&save_dir).await.map_err(save_io("creating"))?;
+        let save_dir = std::path::absolute(&save_dir).map_err(save_io("resolving"))?;
         let data_dir = std::path::absolute(&data_dir).map_err(io("resolving", &data_dir))?;
 
         // The OS secret store may ask the user to unlock it, which can take a while.
@@ -556,6 +565,7 @@ impl Device {
             }
         }
         let public_dht = PublicDht::new(secret.clone(), dht::load(&db).await);
+        let debug_logging = logs::load(&db).await;
         let mut builder = match network {
             // The preset brings n0 DNS; the DHT is added below.
             Network::Internet => Endpoint::builder(presets::N0),
@@ -605,6 +615,8 @@ impl Device {
             lookup,
             contact_addrs,
             public_dht,
+            network,
+            debug_logging: AtomicBool::new(debug_logging),
             tasks: TaskTracker::new(),
             cancel: CancellationToken::new(),
         });
@@ -1067,6 +1079,53 @@ impl Device {
         sh.db.set_setting(dht::SETTING, if on { "1" } else { "0" }).await?;
         sh.public_dht.set_enabled(on);
         Ok(())
+    }
+
+    /// Whether the log is at debug level, which is bigger and for finding what went wrong. Off
+    /// until changed. This is only the setting: the shell, which owns the log, applies it.
+    pub fn debug_logging(&self) -> bool {
+        self.inner.shared.debug_logging.load(Ordering::Acquire)
+    }
+
+    /// Turns debug logging on or off, and keeps the choice across restarts. Debug logs hold the
+    /// same kinds of thing as the others (Fingerprints, never file names, text or whole Device
+    /// IDs), just more of it.
+    pub async fn set_debug_logging(&self, on: bool) -> Result<(), Error> {
+        let sh = &self.inner.shared;
+        if sh.cancel.is_cancelled() {
+            return Err(Error::ShuttingDown);
+        }
+        sh.db.set_setting(logs::SETTING, if on { "1" } else { "0" }).await?;
+        sh.debug_logging.store(on, Ordering::Release);
+        Ok(())
+    }
+
+    /// Writes a zip to `dest` with the log files found in `logs_dir` (none if it is `None`, as
+    /// where there is no log) and an `about.txt` (the
+    /// app version, the system, Visibility, whether debug logging is on, the network, and this
+    /// Device's Fingerprint, never its ID). Nothing is sent anywhere: the user hands the file
+    /// over. Anything already at `dest` is replaced.
+    pub async fn export_diagnostics(
+        &self,
+        logs_dir: Option<&Path>,
+        dest: &Path,
+        app_version: &str,
+    ) -> Result<(), Error> {
+        let sh = &self.inner.shared;
+        let about = format!(
+            "BhayanakShare diagnostics\nApp version: {app_version}\nSystem: {}\nDevice: {}\n\
+             Visibility: {:?}\nDebug logging: {}\nNetwork: {:?}\n",
+            logs::os_description(),
+            sh.id.fingerprint(),
+            self.visibility().await,
+            if self.debug_logging() { "on" } else { "off" },
+            sh.network,
+        );
+        let (logs_dir, dest) = (logs_dir.map(Path::to_owned), dest.to_owned());
+        blocking("writing the diagnostics", move || logs::write_diagnostics_zip(logs_dir.as_deref(), &dest, &about))
+            .await?
+            // The zip's own name is the user's, so it is not in the message.
+            .map_err(|e| Error::io("writing the diagnostics zip", e))
     }
 
     /// A persisted setting, if it has been set.

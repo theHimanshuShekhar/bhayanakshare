@@ -52,6 +52,7 @@ function fakeApi(overrides: Partial<Api> = {}, initialContacts: Contact[] = []) 
   let shellHandler: (event: ShellEvent) => void = () => {};
   let linkHandler: (url: string) => void = () => {};
   let autostart = true;
+  let debugLogging = false;
   let seq = 0;
   let contacts = initialContacts;
   let visibility: Visibility = "id_holders";
@@ -90,6 +91,15 @@ function fakeApi(overrides: Partial<Api> = {}, initialContacts: Contact[] = []) 
       autostart = on;
       return Promise.resolve(null);
     }),
+    debugLogging: vi.fn(() => Promise.resolve(debugLogging)),
+    setDebugLogging: vi.fn((on: boolean) => {
+      debugLogging = on;
+      return Promise.resolve(null);
+    }),
+    exportDiagnostics: vi.fn((_path: string) => Promise.resolve(null)),
+    pickDiagnosticsSavePath: vi.fn((_name: string) =>
+      Promise.resolve<string | null>("/home/me/diagnostics.zip"),
+    ),
     quitApp: vi.fn(() => Promise.resolve(null)),
     contacts: vi.fn(() => Promise.resolve(contacts)),
     addContact: vi.fn((id: string, deviceName: string | null) => {
@@ -1585,6 +1595,114 @@ describe("Start at login", () => {
     fireEvent.click(box);
     expect((await screen.findByRole("alert")).textContent).toContain("read-only folder");
     expect(box.checked).toBe(true);
+  });
+});
+
+describe("Diagnostics", () => {
+  const open = async (device = fakeApi()) => {
+    await start(device);
+    fireEvent.click(screen.getByRole("button", { name: "Settings" }));
+    await screen.findByRole("heading", { name: "Diagnostics" });
+    return device;
+  };
+  const debugBox = async () => {
+    const box = (await screen.findByRole("checkbox", { name: "Debug logging" })) as HTMLInputElement;
+    await waitFor(() => expect(box.disabled).toBe(false));
+    return box;
+  };
+  const exportButton = () => screen.getByRole("button", { name: "Export diagnostics…" });
+
+  it("is a section of Settings, and says what debug logs hold and do not hold", async () => {
+    await open();
+    const section = screen.getByRole("region", { name: "Diagnostics" });
+    const box = await debugBox();
+    expect(within(section).getByRole("button", { name: "Export diagnostics…" })).toBeTruthy();
+    const hint = document.getElementById(box.getAttribute("aria-describedby") ?? "");
+    expect(hint?.textContent).toBe(
+      "Debug logs are bigger, but still contain no file names, text or full Device IDs.",
+    );
+  });
+
+  it("shows debug logging as the Device has it, and sets it", async () => {
+    const device = await open();
+    const box = await debugBox();
+    expect(box.checked).toBe(false);
+
+    fireEvent.click(box);
+    await waitFor(() => expect(device.api.setDebugLogging).toHaveBeenCalledWith(true));
+    await waitFor(() => expect(box.checked).toBe(true));
+
+    // Read again when Settings is opened again.
+    fireEvent.click(screen.getByRole("button", { name: "Home" }));
+    fireEvent.click(screen.getByRole("button", { name: "Settings" }));
+    await waitFor(async () => expect(((await debugBox()) as HTMLInputElement).checked).toBe(true));
+    fireEvent.click(await debugBox());
+    await waitFor(() => expect(device.api.setDebugLogging).toHaveBeenLastCalledWith(false));
+  });
+
+  it("keeps the old setting and says why when the change is refused", async () => {
+    await open(
+      fakeApi({ setDebugLogging: () => Promise.reject(new Error("the Device is shutting down")) }),
+    );
+    const box = await debugBox();
+    fireEvent.click(box);
+    expect((await screen.findByRole("alert")).textContent).toContain("the Device is shutting down");
+    expect(box.checked).toBe(false);
+  });
+
+  it("says so, and offers no switch, when the setting cannot be read", async () => {
+    await open(fakeApi({ debugLogging: () => Promise.reject(new Error("no")) }));
+    expect((await screen.findByRole("alert")).textContent).toBe(
+      "Could not read whether debug logging is on.",
+    );
+    expect((screen.getByRole("checkbox", { name: "Debug logging" }) as HTMLInputElement).disabled).toBe(true);
+  });
+
+  it("exports to the file the user chose, suggesting a name with today's date", async () => {
+    const device = await open();
+    fireEvent.click(exportButton());
+
+    expect((await screen.findByRole("status")).textContent).toBe("Saved to /home/me/diagnostics.zip.");
+    expect(device.api.exportDiagnostics).toHaveBeenCalledWith("/home/me/diagnostics.zip");
+    expect(device.api.pickDiagnosticsSavePath).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(device.api.pickDiagnosticsSavePath).mock.calls[0][0]).toMatch(
+      /^bhayanakshare-diagnostics-\d{4}-\d{2}-\d{2}\.zip$/,
+    );
+  });
+
+  it("exports nothing when the save dialog is cancelled", async () => {
+    const device = await open(fakeApi({ pickDiagnosticsSavePath: () => Promise.resolve(null) }));
+    fireEvent.click(exportButton());
+    await waitFor(() => expect((exportButton() as HTMLButtonElement).disabled).toBe(false));
+    expect(device.api.exportDiagnostics).not.toHaveBeenCalled();
+    expect(screen.queryByRole("status")).toBeNull();
+    expect(screen.queryByRole("alert")).toBeNull();
+  });
+
+  it("shows an error where the button is, and nothing is called saved", async () => {
+    await open(
+      fakeApi({ exportDiagnostics: () => Promise.reject("writing the diagnostics zip: No space left on device") }),
+    );
+    fireEvent.click(exportButton());
+    expect((await screen.findByRole("alert")).textContent).toBe(
+      "Could not export diagnostics. writing the diagnostics zip: No space left on device",
+    );
+    expect(screen.queryByRole("status")).toBeNull();
+    // It can be tried again.
+    expect((exportButton() as HTMLButtonElement).disabled).toBe(false);
+  });
+
+  it("clears an earlier result when exporting again", async () => {
+    const exportDiagnostics = vi
+      .fn<(path: string) => Promise<unknown>>()
+      .mockResolvedValueOnce(null)
+      .mockRejectedValueOnce(new Error("disk full"));
+    await open(fakeApi({ exportDiagnostics }));
+    fireEvent.click(exportButton());
+    await screen.findByRole("status");
+    fireEvent.click(exportButton());
+    expect((await screen.findByRole("alert")).textContent).toContain("disk full");
+    expect(screen.queryByRole("status")).toBeNull();
   });
 });
 

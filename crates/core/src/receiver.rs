@@ -458,7 +458,7 @@ async fn auto_accept_folder(sh: &Shared, info: &TransferInfo, longest_path: usiz
         Ok(check) if check.passes() => Some(sh.save_dir.clone()),
         Ok(_) => None,
         Err(e) => {
-            tracing::warn!("Auto-accept held back, the save folder cannot be checked: {e}");
+            tracing::warn!("Auto-accept held back, the save folder cannot be checked: {}", e.for_log());
             None
         }
     }
@@ -609,7 +609,8 @@ async fn drive(
                 Ok(store) => *opened = Some(Opened { store, dir }),
                 Err(e) => {
                     remove_dir(&dir).await;
-                    return Err(Failure::with("Could not prepare space to receive the file.", e));
+                    // Not `e`: it names the folder, which is under the save folder.
+                    return Err(Failure::with("Could not prepare space to receive the file.", e.cause()));
                 }
             }
         }
@@ -734,7 +735,13 @@ async fn try_resume(sh: &Shared, info: &TransferInfo) -> Resumed {
         Some(Ok(Message::Unknown)) => Resumed::Refused(FORGOTTEN.into()),
         Some(Ok(Message::Failed { reason })) => Resumed::Refused(reason),
         other => {
-            tracing::debug!(transfer = %info.id, "no usable answer to Resume: {other:?}");
+            // Not `{other:?}`: a message can hold names or text.
+            let said = match &other {
+                Some(Ok(_)) => "an unexpected message".to_owned(),
+                Some(Err(e)) => e.to_string(),
+                None => "nothing".to_owned(),
+            };
+            tracing::debug!(transfer = %info.id, "no usable answer to Resume: {said}");
             Resumed::Unreachable
         }
     }
@@ -1000,7 +1007,8 @@ fn move_into_save_folder(out: &Path, save_dir: &Path, items: &[String]) -> io::R
     if let Err(e) = result.and_then(|()| sync_dir(save_dir)) {
         for (dest, staged) in moved.iter().rev() {
             if let Err(undo) = rename_no_replace(dest, staged) {
-                tracing::warn!("could not take {} back out of the save folder: {undo}", dest.display());
+                // Not where: the name of what was saved is the Sender's, and the folder the user's.
+                tracing::warn!("could not take a saved item back out of the save folder: {undo}");
             }
         }
         return Err(e);
@@ -1053,7 +1061,9 @@ fn close_store(sh: &Shared, opened: Opened, delete: bool) {
 async fn remove_dir(dir: &Path) {
     if let Err(e) = tokio::fs::remove_dir_all(dir).await {
         if e.kind() != io::ErrorKind::NotFound {
-            tracing::warn!("removing {}: {e}", dir.display());
+            // Only the last part of the path, which is a Transfer ID or `out` (see `incoming_dir`):
+            // the rest is under the save folder.
+            tracing::warn!(folder = ?dir.file_name().unwrap_or_default(), "could not remove an incoming folder: {e}");
         }
     }
 }

@@ -26,6 +26,19 @@ pub enum StoreError {
     Close(String),
 }
 
+impl StoreError {
+    /// What went wrong, without the folder it went wrong in: for the log, where a store under a
+    /// save folder must not have the folder's path.
+    pub(crate) fn cause(&self) -> String {
+        match self {
+            Self::AlreadyOpen(_) => "the store is already open".to_owned(),
+            Self::Dir { source, .. } => source.to_string(),
+            Self::Open { reason, .. } => reason.clone(),
+            Self::Close(reason) => reason.clone(),
+        }
+    }
+}
+
 /// An open fs store. Holds its directory in the registry until closed or dropped.
 #[derive(Debug)]
 pub struct Store {

@@ -77,6 +77,19 @@ impl Error {
         Self::Io { context: context.into(), source }
     }
 
+    /// The error as the log may have it: without the paths in it, which can hold the names of
+    /// folders and files the user chose (the save folder, something being sent). Where the
+    /// error goes to the user instead, [`Display`](std::fmt::Display) is what to use.
+    pub(crate) fn for_log(&self) -> String {
+        match self {
+            Self::NotAFile(_) => "not a file or folder".to_owned(),
+            Self::NotAFolder(_) => "not a folder".to_owned(),
+            Self::Io { source, .. } => source.to_string(),
+            Self::Store(e) => e.cause(),
+            other => other.to_string(),
+        }
+    }
+
     pub(crate) fn network(context: &str, e: impl std::fmt::Display) -> Self {
         Self::Network(format!("{context}: {e}"))
     }

@@ -174,6 +174,19 @@ const en = {
   "identity.replaceConfirm": "Replace and restart",
   "identity.restarting": "Restarting…",
 
+  "diagnostics.heading": "Diagnostics",
+  "diagnostics.body":
+    "BhayanakShare keeps a log of what it does, only on this computer, for a week. Nothing is sent anywhere: if something goes wrong, export it and pass it on yourself.",
+  "diagnostics.debug": "Debug logging",
+  "diagnostics.debugHint":
+    "Debug logs are bigger, but still contain no file names, text or full Device IDs.",
+  "diagnostics.debugLoadFailed": "Could not read whether debug logging is on.",
+  "diagnostics.debugFailed": "Could not change debug logging. {reason}",
+  "diagnostics.export": "Export diagnostics…",
+  "diagnostics.exported": "Saved to {path}.",
+  "diagnostics.exportFailed": "Could not export diagnostics. {reason}",
+  "diagnostics.fileType": "Zip archive",
+
   "quit.heading": "Quit BhayanakShare?",
   "quit.inProgressOne": "A Transfer is in progress.",
   "quit.inProgress": "{count} Transfers are in progress.",

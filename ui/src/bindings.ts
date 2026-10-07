@@ -48,6 +48,12 @@ export const commands = {
 	/**  Whether this Device starts when the user logs in. */
 	autostartEnabled: () => __TAURI_INVOKE<boolean>("autostart_enabled"),
 	setAutostart: (on: boolean) => __TAURI_INVOKE<null>("set_autostart", { on }),
+	/**  Whether debug logging is on: a bigger log, for finding what went wrong. */
+	debugLogging: () => __TAURI_INVOKE<boolean>("debug_logging"),
+	/**  Turns debug logging on or off; it takes effect at once and is kept across restarts. */
+	setDebugLogging: (on: boolean) => __TAURI_INVOKE<null>("set_debug_logging", { on }),
+	/**  Writes the log files and an `about.txt` as a zip to `path`. Nothing is sent anywhere. */
+	exportDiagnostics: (path: string) => __TAURI_INVOKE<null>("export_diagnostics", { path }),
 	/**  The user confirmed quitting while Transfers are in progress: save their progress and exit. */
 	quitApp: () => __TAURI_INVOKE<void>("quit_app"),
 	/**  Every Contact, in the order they were added. */

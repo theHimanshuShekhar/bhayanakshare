@@ -39,7 +39,9 @@ pub(crate) struct Session {
     pub incoming: Incoming,
 }
 
-/// Why a Transfer failed: one plain sentence for the user. The technical cause goes to the log.
+/// Why a Transfer failed: one plain sentence for the user. The technical cause goes to the log,
+/// and [`Failure::with`] logs the reason too, so a reason that holds a file name must not be made
+/// with it.
 #[derive(Debug)]
 pub(crate) struct Failure(pub String);
 
