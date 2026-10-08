@@ -3405,7 +3405,8 @@ describe("Identity", () => {
       // The warning is what the dialog is described by, and the safe answer has focus.
       const body = document.getElementById(warning.getAttribute("aria-describedby") ?? "");
       expect(body?.textContent).toContain("must not keep running");
-      expect(document.activeElement).toBe(screen.getByRole("button", { name: "Cancel" }));
+      // Focus is moved by an effect, which can run after the dialog is found on a slow machine.
+      await waitFor(() => expect(document.activeElement).toBe(screen.getByRole("button", { name: "Cancel" })));
       expect(device.api.importIdentity).not.toHaveBeenCalled();
     });
 
