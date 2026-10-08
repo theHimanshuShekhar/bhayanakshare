@@ -75,9 +75,10 @@ pub fn multicast_available() -> bool {
 /// Holds the mDNS port exclusively, as a program that does not share it would, so that a Device
 /// cannot bind it until this is dropped. `None` if it cannot be held here (something else has
 /// the port, shared or not), which is said on stderr, or fails the test if multicast was
-/// required, as `multicast_available` does. On the Windows CI runner it cannot: the DNS client
-/// already shares the port, which an exclusive socket cannot join (WSAEADDRINUSE, also for the
-/// loopback address), so the tests of a Device that cannot bind it are skipped there.
+/// required, as `multicast_available` does. On the Windows CI runner it cannot: something there
+/// already shares the port, which an exclusive socket cannot join (WSAEADDRINUSE, also when the
+/// loopback address alone is tried), so the tests of a Device that cannot bind it are skipped
+/// there.
 pub fn hold_mdns_port() -> Option<Socket> {
     let hold = || -> std::io::Result<Socket> {
         let socket = Socket::new(Domain::IPV4, Type::DGRAM, Some(Protocol::UDP))?;
