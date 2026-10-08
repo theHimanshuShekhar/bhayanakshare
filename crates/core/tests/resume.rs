@@ -19,6 +19,9 @@ use tempfile::TempDir;
 const INCOMING: &str = ".bhayanakshare-incoming";
 /// Big enough that a Transfer is still running when a test stops a Device part-way.
 const BIG: u64 = 256 << 20;
+/// The nanoseconds of the times these tests set. NTFS keeps times to 100 ns, so on Windows the
+/// last two digits cannot be kept.
+const NANOS: u32 = if cfg!(windows) { 123_456_700 } else { 123_456_789 };
 /// How much a Receiver has when the test stops a Device.
 const PART: u64 = 16 << 20;
 /// Long enough for several of the Devices' checks of their clocks, which run on real time.
@@ -58,7 +61,7 @@ fn big_album(len: u64) -> (TempDir, PathBuf) {
         use std::os::unix::fs::PermissionsExt;
         std::fs::set_permissions(album.join("run.sh"), std::fs::Permissions::from_mode(0o755)).unwrap();
     }
-    let at = std::time::UNIX_EPOCH + Duration::new(1_600_000_000, 123_456_789);
+    let at = std::time::UNIX_EPOCH + Duration::new(1_600_000_000, NANOS);
     let notes = std::fs::OpenOptions::new().write(true).open(album.join("notes/a.txt")).unwrap();
     notes.set_modified(at).unwrap();
     (dir, album)
@@ -68,7 +71,7 @@ fn big_album(len: u64) -> (TempDir, PathBuf) {
 fn assert_album_arrived(sent: &Path, got: &Path) {
     assert!(same_content(&sent.join("movie.bin"), &got.join("movie.bin")));
     assert_eq!(std::fs::read(got.join("notes/a.txt")).unwrap(), b"alpha");
-    let at = std::time::UNIX_EPOCH + Duration::new(1_600_000_000, 123_456_789);
+    let at = std::time::UNIX_EPOCH + Duration::new(1_600_000_000, NANOS);
     assert_eq!(std::fs::metadata(got.join("notes/a.txt")).unwrap().modified().unwrap(), at);
     assert!(got.join("empty").is_dir());
     #[cfg(unix)]
@@ -102,7 +105,7 @@ async fn part_way(alice: &mut TestDevice, bob: &mut TestDevice, path: &Path) -> 
     let id = alice.device.send_file(bob.addr(), path).await.unwrap();
     bob.wait_offer().await;
     bob.device.accept(id).await.unwrap();
-    bob.wait_progress(id, PART).await;
+    bob.wait_progress_big(id, PART).await;
     let received = bob.progress(id).last().unwrap().bytes;
     (id, received)
 }
@@ -154,8 +157,8 @@ async fn the_receiver_restarts_cleanly_and_the_transfer_carries_on() {
     // The restarted Receiver shows Reconnecting, then fetches the rest.
     bob.wait_state(id, "reconnecting").await;
     bob.wait_state(id, "transferring").await;
-    bob.wait_state(id, "completed").await;
-    alice.wait_state(id, "completed").await;
+    bob.wait_state_big(id, "completed").await;
+    alice.wait_state_big(id, "completed").await;
     assert!(same_content(&path, &bob.save_dir.join("movie.bin")));
     assert_picked_up(&progress_after(&bob, seen, id), before, BIG);
     alice.shutdown().await;
@@ -178,8 +181,8 @@ async fn the_sender_restarts_cleanly_and_the_transfer_carries_on() {
     // Bob lost Alice mid-fetch, redials, and Alice, from her database, takes him back.
     bob.wait_state(id, "reconnecting").await;
     bob.wait_state(id, "transferring").await;
-    bob.wait_state(id, "completed").await;
-    alice.wait_state(id, "completed").await;
+    bob.wait_state_big(id, "completed").await;
+    alice.wait_state_big(id, "completed").await;
     assert!(same_content(&path, &bob.save_dir.join("movie.bin")));
     assert_picked_up(&progress_after(&bob, seen, id), before, BIG);
     alice.shutdown().await;
@@ -204,8 +207,8 @@ async fn a_folder_carries_on_after_the_receiver_restarts_and_is_built_from_the_s
 
     bob.wait_state(id, "reconnecting").await;
     bob.wait_state(id, "transferring").await;
-    bob.wait_state(id, "completed").await;
-    alice.wait_state(id, "completed").await;
+    bob.wait_state_big(id, "completed").await;
+    alice.wait_state_big(id, "completed").await;
     assert_album_arrived(&album, &bob.save_dir.join("album"));
     assert_picked_up(&progress_after(&bob, seen, id), before, BIG + 5 + 10);
     // The events of a resumed Transfer still say what it holds.
@@ -231,12 +234,35 @@ async fn a_folder_carries_on_after_the_sender_restarts() {
     alice.restart().await;
     bob.device.note_address(alice.addr());
 
-    bob.wait_state(id, "completed").await;
-    alice.wait_state(id, "completed").await;
+    bob.wait_state_big(id, "completed").await;
+    alice.wait_state_big(id, "completed").await;
     assert_album_arrived(&album, &bob.save_dir.join("album"));
     alice.shutdown().await;
     bob.shutdown().await;
     assert_incoming_empty(&bob).await;
+}
+
+/// Windows refuses to delete or move a file that any handle has open, so what a stopped Device
+/// leaves open would block clearing its data folder, or an installer replacing it, until the
+/// process ended.
+#[tokio::test]
+async fn a_stopped_device_holds_no_file_open_in_its_data_folder() {
+    let mut alice = TestDevice::start("alice").await;
+    let mut bob = TestDevice::start("bob").await;
+    let src = tempfile::tempdir().unwrap();
+    let path = src.path().join("a.txt");
+    std::fs::write(&path, b"hello").unwrap();
+    let id = alice.device.send_file(bob.addr(), &path).await.unwrap();
+    bob.wait_offer().await;
+    bob.device.accept(id).await.unwrap();
+    bob.wait_state(id, "completed").await;
+    alice.wait_state(id, "completed").await;
+
+    alice.shutdown().await;
+    bob.shutdown().await;
+
+    std::fs::remove_dir_all(&alice.data_dir).unwrap();
+    std::fs::remove_dir_all(&bob.data_dir).unwrap();
 }
 
 #[tokio::test]

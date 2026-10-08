@@ -60,13 +60,18 @@ fn start_shell() -> Shell {
     Shell { app, window, events, save_dir, _tmp: tmp }
 }
 
+/// Where the app's own page is served from: a request from anywhere else is a remote page,
+/// which the capabilities (for the `main` window's local page) do not cover. Windows cannot
+/// register a `tauri://` scheme, so Tauri serves the page from this address there instead.
+const APP_URL: &str = if cfg!(windows) { "http://tauri.localhost" } else { "tauri://localhost" };
+
 impl Shell {
     fn invoke(&self, cmd: &str, args: Value) -> Result<Value, Value> {
         let request = InvokeRequest {
             cmd: cmd.into(),
             callback: CallbackFn(0),
             error: CallbackFn(1),
-            url: "tauri://localhost".parse().unwrap(),
+            url: APP_URL.parse().unwrap(),
             body: InvokeBody::Json(args),
             headers: Default::default(),
             invoke_key: INVOKE_KEY.to_string(),

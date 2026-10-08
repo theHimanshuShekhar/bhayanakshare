@@ -238,7 +238,27 @@ mod tests {
         assert_eq!(scan.sources[0].mtime_ns, 1_600_000_000_000_000_000);
     }
 
-    #[cfg(unix)]
+    /// Makes a symlink at `link` to `target`.
+    fn symlink(target: &Path, link: &Path) -> std::io::Result<()> {
+        #[cfg(unix)]
+        return std::os::unix::fs::symlink(target, link);
+        #[cfg(windows)]
+        return if target.is_dir() {
+            std::os::windows::fs::symlink_dir(target, link)
+        } else {
+            std::os::windows::fs::symlink_file(target, link)
+        };
+    }
+
+    /// Whether all of `links` were made. Windows lets only an account with a privilege make
+    /// symlinks: a test that cannot says so and returns; anywhere else a failure is one.
+    fn made(links: &[std::io::Result<()>]) -> bool {
+        let Some(e) = links.iter().find_map(|l| l.as_ref().err()) else { return true };
+        assert!(cfg!(windows), "could not make a symlink: {e}");
+        eprintln!("SKIPPED: this account cannot make symlinks ({e}). Symlinks were NOT tested.");
+        false
+    }
+
     #[test]
     fn symlinks_inside_a_folder_are_skipped_and_counted_not_followed() {
         let tmp = tempfile::tempdir().unwrap();
@@ -246,12 +266,17 @@ mod tests {
         write(&outside.join("secret.txt"), b"s");
         let root = tmp.path().join("pack");
         write(&root.join("real.txt"), b"r");
-        std::os::unix::fs::symlink(outside.join("secret.txt"), root.join("link-to-file")).unwrap();
-        std::os::unix::fs::symlink(&outside, root.join("link-to-dir")).unwrap();
-        std::os::unix::fs::symlink(&root, root.join("loop")).unwrap();
-        std::os::unix::fs::symlink("nowhere", root.join("dangling")).unwrap();
         std::fs::create_dir_all(root.join("sub")).unwrap();
-        std::os::unix::fs::symlink(outside.join("secret.txt"), root.join("sub/link")).unwrap();
+        let links = [
+            symlink(&outside.join("secret.txt"), &root.join("link-to-file")),
+            symlink(&outside, &root.join("link-to-dir")),
+            symlink(&root, &root.join("loop")),
+            symlink(Path::new("nowhere"), &root.join("dangling")),
+            symlink(&outside.join("secret.txt"), &root.join("sub/link")),
+        ];
+        if !made(&links) {
+            return;
+        }
 
         let scan = scan(&[root]).unwrap();
 
@@ -261,19 +286,28 @@ mod tests {
         assert_eq!(scan.skipped_links, 5);
     }
 
-    #[cfg(unix)]
     #[test]
     fn a_path_the_user_chose_is_followed_even_if_it_is_a_symlink() {
         let tmp = tempfile::tempdir().unwrap();
         write(&tmp.path().join("real/f.txt"), b"f");
-        std::os::unix::fs::symlink(tmp.path().join("real"), tmp.path().join("alias")).unwrap();
-        std::os::unix::fs::symlink(tmp.path().join("real/f.txt"), tmp.path().join("one.txt")).unwrap();
+        let links = [
+            symlink(&tmp.path().join("real"), &tmp.path().join("alias")),
+            symlink(&tmp.path().join("real/f.txt"), &tmp.path().join("one.txt")),
+        ];
+        if !made(&links) {
+            return;
+        }
 
         let scan = scan(&[tmp.path().join("alias"), tmp.path().join("one.txt")]).unwrap();
 
         assert_eq!(paths(&scan), ["alias/f.txt", "one.txt"]);
         assert_eq!(scan.skipped_links, 0);
     }
+
+    #[cfg(windows)]
+    #[test]
+    #[ignore = "Unix sockets and pipes do not exist on Windows"]
+    fn sockets_and_pipes_are_left_out_without_being_counted_as_links() {}
 
     #[cfg(unix)]
     #[test]
@@ -316,6 +350,11 @@ mod tests {
         let result = scan(&[tmp.path().join("a"), tmp.path().join("a")]);
         assert!(matches!(result, Err(Error::Manifest(ManifestError::Duplicate(_)))));
     }
+
+    #[cfg(windows)]
+    #[test]
+    #[ignore = "a newline, a backslash and bytes that are not UTF-8 cannot be in a file name on Windows"]
+    fn names_that_cannot_be_sent_refuse_the_selection() {}
 
     #[cfg(unix)]
     #[test]

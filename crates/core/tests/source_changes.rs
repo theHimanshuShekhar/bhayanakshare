@@ -102,8 +102,8 @@ async fn the_offer_goes_out_first_and_both_sides_prepare_until_the_files_are_has
     let offer = bob.wait_offer().await;
     assert_eq!((offer.name.as_str(), offer.size, offer.file_count), ("movie.bin", BIG, 1));
     bob.device.accept(id).await.unwrap();
-    bob.wait_state(id, "completed").await;
-    alice.wait_state(id, "completed").await;
+    bob.wait_state_big(id, "completed").await;
+    alice.wait_state_big(id, "completed").await;
 
     // Both showed Preparing from the Offer on, and stopped when the Sender was done.
     assert_eq!(alice.preparing(id), [true, false]);
@@ -291,13 +291,13 @@ async fn a_file_that_changes_while_it_is_served_never_delivers_other_bytes() {
     let (_src, path) = big_file("movie.bin", BIG);
 
     let id = sent_and_accepted(&mut alice, &mut bob, &path).await;
-    bob.wait_progress(id, PART).await;
+    bob.wait_progress_big(id, PART).await;
     // Overwritten in place, so it is as long as it was and the Receiver would get other bytes
     // for the end of it.
     overwrite_the_end(&path);
 
     for device in [&mut bob, &mut alice] {
-        let failed = device.wait_state(id, "failed").await;
+        let failed = device.wait_state_big(id, "failed").await;
         assert_eq!(failed.state, changed("movie.bin"), "{}", device.name);
     }
     assert!(!bob.save_dir.join("movie.bin").exists());

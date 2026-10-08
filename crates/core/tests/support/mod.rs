@@ -26,6 +26,11 @@ use tempfile::TempDir;
 /// How long a test waits for any single event before failing.
 const EVENT_TIMEOUT: Duration = Duration::from_secs(30);
 
+/// How long `wait_state_big` waits for any single event. It is the limit for a hang, not a
+/// speed: the 256 to 512 MB Transfers of the resume and crash tests, and the 600 small files of
+/// the folder test, take up to a minute on a Windows runner, where they take seconds on Linux.
+const BIG_TRANSFER_TIMEOUT: Duration = Duration::from_secs(if cfg!(windows) { 150 } else { 30 });
+
 /// How long a test lets a Device take to shut down.
 const SHUTDOWN_DEADLINE: Duration = Duration::from_secs(30);
 
@@ -123,6 +128,16 @@ impl TestDevice {
         what: &str,
         pred: impl Fn(&TransferEvent) -> bool,
     ) -> TransferEvent {
+        self.wait_for_within(EVENT_TIMEOUT, what, pred).await
+    }
+
+    /// Like `wait_for`, with `limit` for any single event instead of the usual.
+    async fn wait_for_within(
+        &mut self,
+        limit: Duration,
+        what: &str,
+        pred: impl Fn(&TransferEvent) -> bool,
+    ) -> TransferEvent {
         loop {
             for (i, event) in self.log.iter().enumerate() {
                 let EventKind::Transfer(t) = &event.kind else { continue };
@@ -131,7 +146,7 @@ impl TestDevice {
                     return t.clone();
                 }
             }
-            self.read_next(what).await;
+            self.read_next_within(limit, what).await;
         }
     }
 
@@ -172,7 +187,11 @@ impl TestDevice {
 
     /// Reads the next event into the log, or fails the test if none comes in time.
     async fn read_next(&mut self, what: &str) {
-        match tokio::time::timeout(EVENT_TIMEOUT, self.events.next()).await {
+        self.read_next_within(EVENT_TIMEOUT, what).await;
+    }
+
+    async fn read_next_within(&mut self, limit: Duration, what: &str) {
+        match tokio::time::timeout(limit, self.events.next()).await {
             Ok(Some(event)) => {
                 self.log.push(event);
                 self.consumed.push(false);
@@ -193,6 +212,19 @@ impl TestDevice {
         .await
     }
 
+    /// Like `wait_state`, for a Transfer of hundreds of megabytes or files that is still moving: allows
+    /// `BIG_TRANSFER_TIMEOUT` and says on stderr how long it took.
+    pub async fn wait_state_big(&mut self, id: TransferId, label: &str) -> TransferEvent {
+        let began = std::time::Instant::now();
+        let event = self
+            .wait_for_within(BIG_TRANSFER_TIMEOUT, &format!("{id} -> {label}"), |t| {
+                t.transfer_id == id && t.state.label() == label
+            })
+            .await;
+        eprintln!("{}: waited {:?} for {id} -> {label} (a big Transfer)", self.name, began.elapsed());
+        event
+    }
+
     /// Waits for an incoming Offer and returns it.
     pub async fn wait_offer(&mut self) -> TransferEvent {
         self.wait_for("an incoming Offer", |t| {
@@ -205,7 +237,20 @@ impl TestDevice {
     /// returns that report. Progress reports are paced by the Device's clock, which a test
     /// holds still, so this moves the clock along while it waits.
     pub async fn wait_progress(&mut self, id: TransferId, bytes: u64) -> ProgressEvent {
-        let give_up = tokio::time::Instant::now() + EVENT_TIMEOUT;
+        self.wait_progress_within(EVENT_TIMEOUT, id, bytes).await
+    }
+
+    /// Like `wait_progress`, for a Transfer of hundreds of megabytes, which the Sender has to
+    /// hash before any of it moves: allows `BIG_TRANSFER_TIMEOUT` and says how long it took.
+    pub async fn wait_progress_big(&mut self, id: TransferId, bytes: u64) -> ProgressEvent {
+        let began = std::time::Instant::now();
+        let progress = self.wait_progress_within(BIG_TRANSFER_TIMEOUT, id, bytes).await;
+        eprintln!("{}: waited {:?} for {bytes} bytes of {id} (a big Transfer)", self.name, began.elapsed());
+        progress
+    }
+
+    async fn wait_progress_within(&mut self, limit: Duration, id: TransferId, bytes: u64) -> ProgressEvent {
+        let give_up = tokio::time::Instant::now() + limit;
         loop {
             let reached = self.log.iter().find_map(|e| match &e.kind {
                 EventKind::Progress(p) if p.transfer_id == id && p.bytes >= bytes => Some(p.clone()),

@@ -2,13 +2,13 @@
 //! folders, modification times and the executable bit; symlinks are left behind and counted;
 //! and a manifest that is malformed, or that the Collection does not match, is turned away.
 //! The hostile peers here are written by hand and speak the control protocol raw.
-#![cfg(unix)]
+//! The executable bit and symlinks are Unix things; on Windows the bit is never kept and the
+//! symlink test makes its links only if the account may.
 
 mod support;
 
 use std::{
     collections::BTreeMap,
-    os::unix::fs::PermissionsExt,
     path::{Path, PathBuf},
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
@@ -26,6 +26,10 @@ use iroh::{
 use iroh_blobs::{BlobsProtocol, Hash, format::collection::Collection, store::mem::MemStore};
 use support::{TestDevice, dial_addr, list_dir, pseudo_random_bytes, raw_peer};
 
+/// The nanoseconds of the times these tests set. NTFS keeps times to 100 ns, so on Windows the
+/// last two digits cannot be kept.
+const NANOS: u32 = if cfg!(windows) { 123_456_700 } else { 123_456_789 };
+
 /// The reason a Sender is shown when the Receiver turns its Offer away.
 const INVALID_NAMES: &str = "Couldn't be sent: invalid file names";
 
@@ -33,6 +37,18 @@ const INVALID_NAMES: &str = "Couldn't be sent: invalid file names";
 enum Node {
     Dir,
     File { bytes: Vec<u8>, mtime: SystemTime, executable: bool },
+}
+
+#[cfg(unix)]
+fn is_executable(meta: &std::fs::Metadata) -> bool {
+    use std::os::unix::fs::PermissionsExt;
+    meta.permissions().mode() & 0o111 != 0
+}
+
+/// Windows has no executable bit, and a Receiver there never keeps one.
+#[cfg(not(unix))]
+fn is_executable(_: &std::fs::Metadata) -> bool {
+    false
 }
 
 /// Everything under `root` by relative path, not following symlinks (which are not sent, so
@@ -55,7 +71,7 @@ fn snapshot(root: &Path) -> BTreeMap<String, Node> {
                     Node::File {
                         bytes: std::fs::read(entry.path()).unwrap(),
                         mtime: meta.modified().unwrap(),
-                        executable: meta.permissions().mode() & 0o111 != 0,
+                        executable: is_executable(&meta),
                     },
                 );
             }
@@ -66,13 +82,26 @@ fn snapshot(root: &Path) -> BTreeMap<String, Node> {
     out
 }
 
+/// Makes a symlink at `link` to `target`. On Windows that takes a privilege (administrator, or
+/// developer mode), so it can fail where the account does not have it.
+fn symlink(target: &Path, link: &Path) -> std::io::Result<()> {
+    #[cfg(unix)]
+    return std::os::unix::fs::symlink(target, link);
+    #[cfg(windows)]
+    return if target.is_dir() {
+        std::os::windows::fs::symlink_dir(target, link)
+    } else {
+        std::os::windows::fs::symlink_file(target, link)
+    };
+}
+
 fn write(path: &Path, bytes: &[u8]) {
     std::fs::create_dir_all(path.parent().unwrap()).unwrap();
     std::fs::write(path, bytes).unwrap();
 }
 
 fn set_mtime(path: &Path, secs: u64) {
-    let at = UNIX_EPOCH + Duration::new(secs, 123_456_789);
+    let at = UNIX_EPOCH + Duration::new(secs, NANOS);
     std::fs::OpenOptions::new().write(true).open(path).unwrap().set_modified(at).unwrap();
 }
 
@@ -87,7 +116,11 @@ fn make_album(parent: &Path) -> PathBuf {
     write(&album.join("sub/deep/c.txt"), b"ccc");
     write(&album.join("bin/run.sh"), b"#!/bin/sh\necho hi\n");
     write(&album.join("zero"), b"");
-    std::fs::set_permissions(album.join("bin/run.sh"), std::fs::Permissions::from_mode(0o755)).unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(album.join("bin/run.sh"), std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
     std::fs::create_dir_all(album.join("empty")).unwrap();
     std::fs::create_dir_all(album.join("sub/also empty")).unwrap();
     for (i, file) in ["a.txt", "big.bin", "copy of big.bin", "sub/deep/c.txt", "bin/run.sh", "zero"]
@@ -142,8 +175,8 @@ async fn a_folder_round_trips_with_nested_and_empty_folders_times_and_the_execut
     assert_eq!(tree["empty"], Node::Dir);
     assert_eq!(tree["sub/also empty"], Node::Dir);
     let Node::File { mtime, executable, .. } = &tree["bin/run.sh"] else { panic!() };
-    assert!(executable);
-    assert_eq!(*mtime, UNIX_EPOCH + Duration::new(1_600_000_000 + 4_000, 123_456_789));
+    assert_eq!(*executable, cfg!(unix));
+    assert_eq!(*mtime, UNIX_EPOCH + Duration::new(1_600_000_000 + 4_000, NANOS));
     let Node::File { executable, .. } = &tree["a.txt"] else { panic!() };
     assert!(!executable);
 
@@ -172,7 +205,11 @@ async fn a_folder_of_hundreds_of_small_files_arrives_whole() {
     }
 
     let began = std::time::Instant::now();
-    send_and_accept(&mut alice, &mut bob, &[many.clone()]).await;
+    let id = alice.device.send(bob.addr(), &[many.clone()]).await.unwrap();
+    bob.wait_offer().await;
+    bob.device.accept(id).await.unwrap();
+    bob.wait_state_big(id, "completed").await;
+    alice.wait_state_big(id, "completed").await;
     eprintln!("600 files sent and received in {:?}", began.elapsed());
 
     assert_eq!(snapshot(&bob.save_dir.join("many")), snapshot(&many));
@@ -252,9 +289,15 @@ async fn symlinks_are_skipped_and_both_sides_see_how_many() {
     write(&src.path().join("outside/secret.txt"), b"not for sending");
     let pack = src.path().join("pack");
     write(&pack.join("real.txt"), b"real");
-    std::os::unix::fs::symlink(src.path().join("outside/secret.txt"), pack.join("link")).unwrap();
-    std::os::unix::fs::symlink(src.path().join("outside"), pack.join("dirlink")).unwrap();
-    std::os::unix::fs::symlink(&pack, pack.join("loop")).unwrap();
+    let links = [
+        symlink(&src.path().join("outside/secret.txt"), &pack.join("link")),
+        symlink(&src.path().join("outside"), &pack.join("dirlink")),
+        symlink(&pack, &pack.join("loop")),
+    ];
+    if let Some(Err(e)) = links.iter().find(|l| l.is_err()) {
+        eprintln!("SKIPPED: this account cannot make symlinks ({e}). Symlinks were NOT tested.");
+        return;
+    }
 
     let id = alice.device.send_file(bob.addr(), &pack).await.unwrap();
 
@@ -376,14 +419,15 @@ async fn the_offer_carries_a_manifest_of_paths_sizes_times_exec_bits_and_empty_f
     let mut alice = TestDevice::start("alice").await;
     let src = tempfile::tempdir().unwrap();
     let album = make_album(src.path());
-    std::os::unix::fs::symlink(album.join("a.txt"), album.join("link")).unwrap();
+    // Where symlinks cannot be made (Windows without the privilege) there is nothing to skip.
+    let skipped = u32::from(symlink(&album.join("a.txt"), &album.join("link")).is_ok());
 
     let (offer, _half) = offer_seen_by_a_raw_receiver(&alice, &[album]).await;
 
     let file = |path: &str, size: u64, secs: u64, executable: bool| Entry::File {
         path: path.into(),
         size,
-        mtime_ns: ((1_600_000_000 + secs) * 1_000_000_000 + 123_456_789) as i64,
+        mtime_ns: ((1_600_000_000 + secs) * 1_000_000_000 + u64::from(NANOS)) as i64,
         executable,
     };
     let big = 300 * 1024;
@@ -393,7 +437,7 @@ async fn the_offer_carries_a_manifest_of_paths_sizes_times_exec_bits_and_empty_f
         [
             file("album/a.txt", 5, 0, false),
             file("album/big.bin", big, 1_000, false),
-            file("album/bin/run.sh", 18, 4_000, true),
+            file("album/bin/run.sh", 18, 4_000, cfg!(unix)),
             file("album/copy of big.bin", big, 2_000, false),
             Entry::empty_dir("album/empty"),
             Entry::empty_dir("album/sub/also empty"),
@@ -401,7 +445,7 @@ async fn the_offer_carries_a_manifest_of_paths_sizes_times_exec_bits_and_empty_f
             file("album/zero", 0, 5_000, false),
         ]
     );
-    assert_eq!((offer.size, offer.file_count, offer.skipped_links), (5 + 2 * big + 3 + 18, 6, 1));
+    assert_eq!((offer.size, offer.file_count, offer.skipped_links), (5 + 2 * big + 3 + 18, 6, skipped));
     assert_eq!(offer.validate(), Ok(()));
     alice.shutdown().await;
 }
@@ -428,11 +472,16 @@ async fn selections_that_cannot_be_sent_are_refused_before_anything_is_sent() {
     write(&src.path().join("ok.txt"), b"ok");
 
     // Names a Receiver would refuse (a backslash and a newline are legal on Linux).
-    for name in ["back\\slash", "new\nline"] {
-        write(&src.path().join("bad").join(name), b"x");
-        let result = alice.device.send(bob.addr(), &[src.path().join("bad")]).await;
-        assert!(matches!(result, Err(Error::Manifest(ManifestError::InvalidName(_)))), "{name:?}: {result:?}");
-        std::fs::remove_file(src.path().join("bad").join(name)).unwrap();
+    let refused = ["back\\slash", "new\nline"];
+    if cfg!(windows) {
+        eprintln!("SKIPPED: a file named {refused:?} cannot be made on Windows, so refusing it was NOT tested.");
+    } else {
+        for name in refused {
+            write(&src.path().join("bad").join(name), b"x");
+            let result = alice.device.send(bob.addr(), &[src.path().join("bad")]).await;
+            assert!(matches!(result, Err(Error::Manifest(ManifestError::InvalidName(_)))), "{name:?}: {result:?}");
+            std::fs::remove_file(src.path().join("bad").join(name)).unwrap();
+        }
     }
     // Nothing chosen, something missing, and two items with one name.
     assert!(matches!(alice.device.send(bob.addr(), &[]).await, Err(Error::Manifest(ManifestError::Empty))));

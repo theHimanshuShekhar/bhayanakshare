@@ -444,7 +444,7 @@ async fn clearing_history_leaves_a_transfer_that_is_running_to_finish_and_stay()
     let moving = alice.device.send_file(bob.addr(), &big).await.unwrap();
     bob.wait_offer().await;
     bob.device.accept(moving).await.unwrap();
-    bob.wait_progress(moving, 1 << 20).await;
+    bob.wait_progress_big(moving, 1 << 20).await;
 
     for device in [&alice, &bob] {
         assert_eq!(device.device.clear_history().await.unwrap(), 1, "only what ended");
@@ -455,8 +455,8 @@ async fn clearing_history_leaves_a_transfer_that_is_running_to_finish_and_stay()
     // download is not interrupted.
     bob.device.accept(unanswered).await.unwrap();
     bob.wait_state(unanswered, "completed").await;
-    bob.wait_state(moving, "completed").await;
-    alice.wait_state(moving, "completed").await;
+    bob.wait_state_big(moving, "completed").await;
+    alice.wait_state_big(moving, "completed").await;
     assert!(bob.save_dir.join("big.bin").is_file());
     for device in [&alice, &bob] {
         assert_eq!(ids(&everything(device).await), [moving, unanswered], "and stay, now that they ended");
@@ -478,7 +478,7 @@ async fn a_transfer_resumes_after_a_restart_though_history_was_cleared_meanwhile
     let id = alice.device.send_file(bob.addr(), &big).await.unwrap();
     bob.wait_offer().await;
     bob.device.accept(id).await.unwrap();
-    bob.wait_progress(id, 16 << 20).await;
+    bob.wait_progress_big(id, 16 << 20).await;
 
     // Both sides clear, then both are restarted: each takes the Transfer up from its record.
     assert_eq!(alice.device.clear_history().await.unwrap(), 1);
@@ -488,8 +488,8 @@ async fn a_transfer_resumes_after_a_restart_though_history_was_cleared_meanwhile
     bob.device.note_address(alice.addr());
     alice.device.note_address(bob.addr());
 
-    bob.wait_state(id, "completed").await;
-    alice.wait_state(id, "completed").await;
+    bob.wait_state_big(id, "completed").await;
+    alice.wait_state_big(id, "completed").await;
     assert_eq!(std::fs::metadata(bob.save_dir.join("big.bin")).unwrap().len(), 256 << 20);
     for device in [&alice, &bob] {
         assert_eq!(ids(&everything(device).await), [id]);

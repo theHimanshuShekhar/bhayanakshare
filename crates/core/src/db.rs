@@ -107,17 +107,19 @@ pub(crate) enum Scope {
 /// A handle to the database. Cheap to clone; calls run on the blocking pool.
 #[derive(Clone)]
 pub struct Db {
-    conn: Arc<Mutex<Connection>>,
+    path: Arc<PathBuf>,
+    /// `None` while closed (see [`Db::close`]).
+    conn: Arc<Mutex<Option<Connection>>>,
 }
 
 impl Db {
     pub async fn open(path: &Path) -> Result<Self, DbError> {
         let path = path.to_owned();
         tokio::task::spawn_blocking(move || {
-            let conn = Connection::open(path)?;
+            let conn = Connection::open(&path)?;
             conn.pragma_update(None, "journal_mode", "WAL")?;
             migrate(&conn)?;
-            Ok(Self { conn: Arc::new(Mutex::new(conn)) })
+            Ok(Self { path: Arc::new(path), conn: Arc::new(Mutex::new(Some(conn))) })
         })
         .await?
     }
@@ -127,8 +129,26 @@ impl Db {
         f: impl FnOnce(&Connection) -> Result<T, DbError> + Send + 'static,
     ) -> Result<T, DbError> {
         let conn = self.conn.clone();
-        tokio::task::spawn_blocking(move || f(&conn.lock().unwrap_or_else(|e| e.into_inner())))
-            .await?
+        let path = self.path.clone();
+        tokio::task::spawn_blocking(move || {
+            let mut conn = conn.lock().unwrap_or_else(|e| e.into_inner());
+            if conn.is_none() {
+                *conn = Some(Connection::open(&*path)?);
+            }
+            f(conn.as_ref().expect("opened above"))
+        })
+        .await?
+    }
+
+    /// Closes the database file, which flushes it and lets it be moved or deleted: Windows will
+    /// not while any handle to it is open, and a handle lasts as long as the connection does.
+    /// A later call opens it again, so a command after a Device has shut down still works.
+    pub(crate) async fn close(&self) {
+        let conn = self.conn.clone();
+        let _ = tokio::task::spawn_blocking(move || {
+            drop(conn.lock().unwrap_or_else(|e| e.into_inner()).take());
+        })
+        .await;
     }
 
     pub async fn setting(&self, key: &str) -> Result<Option<String>, DbError> {

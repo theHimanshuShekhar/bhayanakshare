@@ -1265,7 +1265,8 @@ impl Device {
     /// disk; then the network endpoint closes. Flushing can take a long time after a large
     /// download, so this gives up waiting after `deadline` and returns anyway: stopping the
     /// process then is like a crash, which is safe but makes the next start re-check what was
-    /// downloaded. Safe to call more than once.
+    /// downloaded. Safe to call more than once. A Device that has shut down has closed its
+    /// database file; a command that needs it afterwards opens it again.
     pub async fn shutdown(&self, deadline: Duration) {
         let sh = &self.inner.shared;
         let until = tokio::time::Instant::now() + deadline;
@@ -1290,6 +1291,9 @@ impl Device {
         // Device started on the same folders would open it a second time, which hangs.
         if closed {
             self.inner.store.lock().unwrap_or_else(|e| e.into_inner()).take();
+            // Nothing is running that uses it now, and an open file blocks the deletion of the
+            // data folder (or its replacement by an installer) on Windows until the process ends.
+            self.inner.shared.db.close().await;
         }
     }
 }
