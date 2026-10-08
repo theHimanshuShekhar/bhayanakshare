@@ -12,6 +12,9 @@ export const NEARBY_WAIT_MS = 30_000;
 export const FIREWALL_DOCS_URL =
   "https://github.com/theHimanshuShekhar/bhayanakshare/blob/main/docs/firewall.md";
 
+/** Its section on what to do when local discovery could not start at all. */
+export const DISCOVERY_DOCS_URL = `${FIREWALL_DOCS_URL}#when-home-says-local-discovery-could-not-start`;
+
 /**
  * Applies one event. Every `nearby` event holds the whole list as it is then, so it replaces
  * the last one; any other event leaves the list alone.
@@ -25,9 +28,18 @@ export function nearbyStrangers(devices: NearbyDevice[], contacts: Contact[]): N
   return devices.filter((d) => findContact(contacts, d.id) === undefined);
 }
 
+/** The status the UI should hold once `next` is known: `current` itself if it is the same, so
+ * that nothing renders again for it. */
+export function settleDiscovery(current: DiscoveryStatus, next: DiscoveryStatus): DiscoveryStatus {
+  const same =
+    current.state === next.state &&
+    (current.state === "working" || (next.state === "unavailable" && current.reason === next.reason));
+  return same ? current : next;
+}
+
 /** Applies one event: a `discovery_status` event holds the status as it is then. */
 export function applyDiscovery(status: DiscoveryStatus, event: DeviceEvent): DiscoveryStatus {
-  return event.type === "discovery_status" ? event.status : status;
+  return event.type === "discovery_status" ? settleDiscovery(status, event.status) : status;
 }
 
 /**

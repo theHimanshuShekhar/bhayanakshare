@@ -29,12 +29,14 @@ import { VersionNotices } from "./VersionNotices";
 import { peerName, sortedContacts } from "./contacts";
 import { t, type MessageKey } from "./i18n";
 import {
+  DISCOVERY_DOCS_URL,
   FIREWALL_DOCS_URL,
   NEARBY_WAIT_MS,
   applyDiscovery,
   applyNearby,
   discoveryHint,
   nearbyStrangers,
+  settleDiscovery,
 } from "./nearby";
 import { parseShareLink, type Shared } from "./shareLink";
 import { applyEvent, baseName, fingerprint, listItems, noTransfers, pendingOffer } from "./transfers";
@@ -101,7 +103,7 @@ function Screens({ api }: { api: Api }) {
   const [transfers, dispatch] = useReducer(applyEvent, noTransfers);
   const [nearby, dispatchNearby] = useReducer(applyNearby, []);
   // Whether local discovery could start. It is working until the Device says it is not.
-  const [discovery, dispatchDiscovery] = useReducer(applyDiscovery, WORKING);
+  const [discovery, setDiscovery] = useState<DiscoveryStatus>(WORKING);
   // Devices that were refused for their version, until the user dismisses the notice.
   const [versionNotices, dispatchVersion] = useReducer(applyVersionNotices, []);
   // A newer release the shell found, and the version of it the user dismissed.
@@ -144,6 +146,8 @@ function Screens({ api }: { api: Api }) {
   const strangers = nearbyStrangers(nearby, contacts);
   // Nobody is listed Nearby, and the Device knows why when discovery could not start.
   const down = nearby.length === 0 ? discoveryHint(discovery, visibility === "hidden") : null;
+  // The guess points at the page; what is known, at the section for it.
+  const docs = down === null ? FIREWALL_DOCS_URL : DISCOVERY_DOCS_URL;
   // A Device that has gone from Home cannot stay chosen: there is no tile to untick.
   const shown = new Set([...contacts.map((c) => c.id), ...strangers.map((d) => d.id)]);
   const chosen = selected.filter((id) => shown.has(id));
@@ -162,13 +166,17 @@ function Screens({ api }: { api: Api }) {
         dispatchNearby(event);
         dispatchVersion(event);
         if (event.type === "discovery_status") heard = true;
-        dispatchDiscovery(event);
+        setDiscovery((now) => applyDiscovery(now, event));
       })
-      .then((stop) => (live ? (unlisten = stop) : stop()));
-    api.discoveryStatus().then(
-      (status) => live && !heard && dispatchDiscovery({ seq: 0, at: 0, type: "discovery_status", status }),
-      () => {},
-    );
+      .then((stop) => {
+        if (!live) return stop();
+        unlisten = stop;
+        // Read once listening, so a change between the two cannot be missed.
+        api.discoveryStatus().then(
+          (status) => live && !heard && setDiscovery((now) => settleDiscovery(now, status)),
+          () => {},
+        );
+      });
     return () => {
       live = false;
       unlisten?.();
@@ -435,11 +443,11 @@ function Screens({ api }: { api: Api }) {
                     </>
                   )}{" "}
                   <a
-                    href={FIREWALL_DOCS_URL}
+                    href={docs}
                     onClick={(e) => {
                       // The webview must not navigate away from the app.
                       e.preventDefault();
-                      api.openUrl(FIREWALL_DOCS_URL).catch(() => {});
+                      api.openUrl(docs).catch(() => {});
                     }}
                   >
                     {t("home.firewallDocs")}

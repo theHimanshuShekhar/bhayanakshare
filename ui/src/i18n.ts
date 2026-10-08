@@ -24,7 +24,7 @@ const en = {
   "home.discoveryDownHidden":
     "Local discovery could not start, so people who have your ID can't find this Device on the network.",
   "home.discoveryDownPort":
-    "Another program may be using the port it needs (UDP 5353), or a firewall refused it. BhayanakShare keeps trying.",
+    "Another program may be using the port it needs (UDP 5353), or security software blocked it. BhayanakShare keeps trying.",
   "home.discoveryDownInterface":
     "No network connection that can use it was found. BhayanakShare keeps trying.",
   "home.discoveryDownOther": "The system reported an error. BhayanakShare keeps trying.",

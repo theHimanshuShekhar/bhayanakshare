@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { Contact, DeviceEvent, DiscoveryStatus, NearbyDevice } from "./bindings";
-import { applyDiscovery, applyNearby, discoveryHint, nearbyStrangers } from "./nearby";
+import { applyDiscovery, applyNearby, discoveryHint, nearbyStrangers, settleDiscovery } from "./nearby";
 
 const A = "A".repeat(52);
 const B = "B".repeat(52);
@@ -73,6 +73,14 @@ describe("applyDiscovery", () => {
 
   it("ignores events that are not about discovery", () => {
     expect(applyDiscovery(NO_PORT, nearby())).toBe(NO_PORT);
+  });
+
+  it("keeps the status it has when the event says the same, so nothing renders again", () => {
+    expect(applyDiscovery(NO_PORT, discovery({ ...NO_PORT }))).toBe(NO_PORT);
+    expect(applyDiscovery(WORKING, discovery({ state: "working" }))).toBe(WORKING);
+    const other: DiscoveryStatus = { state: "unavailable", reason: "other" };
+    expect(settleDiscovery(NO_PORT, other)).toBe(other);
+    expect(settleDiscovery(WORKING, NO_PORT)).toBe(NO_PORT);
   });
 });
 

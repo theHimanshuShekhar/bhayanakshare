@@ -1283,7 +1283,8 @@ describe("the firewall hint", () => {
 describe("the hint that local discovery could not start", () => {
   const FIREWALL = /No Devices found on this network yet/;
   const HIDDEN = "You're Hidden, so Nearby Devices aren't shown.";
-  const DOCS = "https://github.com/theHimanshuShekhar/bhayanakshare/blob/main/docs/firewall.md";
+  const DOCS =
+    "https://github.com/theHimanshuShekhar/bhayanakshare/blob/main/docs/firewall.md#when-home-says-local-discovery-could-not-start";
   const DOWN = /Local discovery could not start, so Nearby Devices can't be found\./;
   const DOWN_HIDDEN = /Local discovery could not start, so people who have your ID can't find this Device/;
   const PORT = /UDP 5353/;
@@ -1339,6 +1340,30 @@ describe("the hint that local discovery could not start", () => {
     device.setDiscovery(PORT_IN_USE);
     await start(device);
     expect(await screen.findByText(DOWN, { exact: false })).toBeTruthy();
+  });
+
+  it("reads the status only once it is listening, so a change in between cannot be lost", async () => {
+    const order: string[] = [];
+    const device = fakeApi({
+      discoveryStatus: () => {
+        order.push("read");
+        return Promise.resolve(WORKING);
+      },
+    });
+    let listening: () => void = () => {};
+    const subscribed = new Promise<void>((resolve) => (listening = resolve));
+    const listen = device.api.onDeviceEvent;
+    device.api.onDeviceEvent = (handler) => {
+      order.push("listen");
+      const stop = listen(handler);
+      return subscribed.then(() => stop);
+    };
+    await start(device);
+    await new Promise((r) => setTimeout(r, 20));
+    // The listener is asked for but not yet ready: nothing may be read yet.
+    expect(order).toEqual(["listen"]);
+    listening();
+    await waitFor(() => expect(order).toEqual(["listen", "read"]));
   });
 
   it("is not undone by a status read that comes after a newer event", async () => {
