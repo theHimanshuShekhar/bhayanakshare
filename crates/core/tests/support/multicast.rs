@@ -96,7 +96,17 @@ pub fn hold_mdns_port() -> Option<HeldPort> {
         socket.bind(&address)?;
         Ok(socket)
     };
-    let v4 = hold(Domain::IPV4, SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, MDNS.1).into());
+    // The test before this one has finished with the port, but its runtime may still be closing
+    // the sockets of its Devices: give it a moment before taking the port to be someone else's.
+    let started = std::time::Instant::now();
+    let v4 = loop {
+        let held = hold(Domain::IPV4, SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, MDNS.1).into());
+        let in_use = held.as_ref().is_err_and(|e| e.kind() == std::io::ErrorKind::AddrInUse);
+        if !in_use || started.elapsed() > Duration::from_secs(5) {
+            break held;
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    };
     match v4 {
         Ok(v4) => {
             // Where there is no IPv6, or it is held already, a Device cannot use it either.
