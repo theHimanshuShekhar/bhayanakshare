@@ -1,5 +1,5 @@
-//! Crash tests: a Receiver Device in a child process is killed with SIGKILL part-way through
-//! a fetch, and a fresh Device on the same folders carries on from what the dead one had
+//! Crash tests: a Receiver Device in a child process is killed (SIGKILL; TerminateProcess on
+//! Windows, which gives it no more chance to clean up) part-way through a fetch, and a fresh Device on the same folders carries on from what the dead one had
 //! stored. The child is this test binary run again for `child_receiver`, with the folder it
 //! is to use in `BHS_CRASH_CHILD_DIR`.
 //!

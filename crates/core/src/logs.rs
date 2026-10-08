@@ -331,8 +331,10 @@ fn log_files(dir: &Path) -> io::Result<Vec<(PathBuf, u64)>> {
         let entry = entry?;
         let name = entry.file_name();
         let Some(name) = name.to_str() else { continue };
-        // A file that went between listing and looking at it is not there.
-        let Ok(meta) = entry.metadata() else { continue };
+        // A file that went between listing and looking at it is not there. Looked at by its
+        // path, not `entry.metadata()`: on Windows that is the size from the folder listing,
+        // which is not updated while a file is open for writing, as today's log is.
+        let Ok(meta) = fs::symlink_metadata(entry.path()) else { continue };
         if meta.is_file() && name.starts_with(&format!("{LOG_PREFIX}.")) && name.ends_with(&format!(".{LOG_SUFFIX}")) {
             files.push((entry.path(), meta.len()));
         }
@@ -694,6 +696,11 @@ mod tests {
         assert_eq!(written, "first line of the next day\nsecond line\n");
     }
 
+    #[cfg(windows)]
+    #[test]
+    #[ignore = "uses a 0500 folder mode, which Windows lacks"]
+    fn a_folder_that_cannot_be_pruned_does_not_make_a_write_fail_or_stop_the_log() {}
+
     #[cfg(unix)]
     #[test]
     fn a_folder_that_cannot_be_pruned_does_not_make_a_write_fail_or_stop_the_log() {
@@ -808,6 +815,11 @@ mod tests {
             assert_eq!(zip.file_names().collect::<Vec<_>>(), ["about.txt"]);
         }
     }
+
+    #[cfg(windows)]
+    #[test]
+    #[ignore = "uses a 000 file mode, which Windows lacks"]
+    fn a_failed_export_leaves_no_partial_zip() {}
 
     #[cfg(unix)]
     #[test]

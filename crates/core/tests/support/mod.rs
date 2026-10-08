@@ -23,8 +23,10 @@ use bhayanakshare_core::{
 use iroh::{Endpoint, EndpointAddr, RelayMode, TransportAddr, endpoint::presets};
 use tempfile::TempDir;
 
-/// How long a test waits for any single event before failing.
-const EVENT_TIMEOUT: Duration = Duration::from_secs(30);
+/// How long a test waits for any single event before failing. It is the limit for a hang, not
+/// a speed: the 256 MB Transfers of the resume and crash tests take up to a minute on a Windows
+/// runner, where they take a few seconds on Linux.
+const EVENT_TIMEOUT: Duration = Duration::from_secs(if cfg!(windows) { 150 } else { 30 });
 
 /// How long a test lets a Device take to shut down.
 const SHUTDOWN_DEADLINE: Duration = Duration::from_secs(30);

@@ -58,7 +58,7 @@ fn big_album(len: u64) -> (TempDir, PathBuf) {
         use std::os::unix::fs::PermissionsExt;
         std::fs::set_permissions(album.join("run.sh"), std::fs::Permissions::from_mode(0o755)).unwrap();
     }
-    let at = std::time::UNIX_EPOCH + Duration::new(1_600_000_000, 123_456_789);
+    let at = std::time::UNIX_EPOCH + Duration::new(1_600_000_000, 123_456_700);
     let notes = std::fs::OpenOptions::new().write(true).open(album.join("notes/a.txt")).unwrap();
     notes.set_modified(at).unwrap();
     (dir, album)
@@ -68,7 +68,7 @@ fn big_album(len: u64) -> (TempDir, PathBuf) {
 fn assert_album_arrived(sent: &Path, got: &Path) {
     assert!(same_content(&sent.join("movie.bin"), &got.join("movie.bin")));
     assert_eq!(std::fs::read(got.join("notes/a.txt")).unwrap(), b"alpha");
-    let at = std::time::UNIX_EPOCH + Duration::new(1_600_000_000, 123_456_789);
+    let at = std::time::UNIX_EPOCH + Duration::new(1_600_000_000, 123_456_700);
     assert_eq!(std::fs::metadata(got.join("notes/a.txt")).unwrap().modified().unwrap(), at);
     assert!(got.join("empty").is_dir());
     #[cfg(unix)]
@@ -411,9 +411,12 @@ async fn a_sender_that_forgot_the_transfer_says_so_and_the_receiver_gives_up() {
     let (id, _) = part_way(&mut alice, &mut bob, &path).await;
     bob.shutdown().await;
     alice.shutdown().await;
-    // Alice comes back with an empty data folder: same key, but no memory of the Transfer.
+    // Alice comes back with an empty data folder: same key, but no memory of the Transfer. The
+    // folder is a new one rather than the old one emptied, as Windows will not delete files
+    // that the stopped Device still has open.
     let key = std::fs::read(alice.data_dir.join("secret.key")).unwrap();
-    std::fs::remove_dir_all(&alice.data_dir).unwrap();
+    let fresh = tempfile::tempdir().unwrap();
+    alice.data_dir = fresh.path().join("data");
     std::fs::create_dir_all(&alice.data_dir).unwrap();
     std::fs::write(alice.data_dir.join("secret.key"), key).unwrap();
     alice.restart().await;

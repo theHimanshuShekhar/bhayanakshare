@@ -28,6 +28,7 @@ fn multicast_problem() -> Option<String> {
 
         let mdns_port = udp()?;
         mdns_port.set_reuse_address(true)?;
+        #[cfg(unix)]
         mdns_port.set_reuse_port(true)?;
         mdns_port.bind(&SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, 5353).into())?;
 
@@ -38,7 +39,12 @@ fn multicast_problem() -> Option<String> {
         rx.set_read_timeout(Some(Duration::from_secs(2)))?;
         let port = rx.local_addr()?.as_socket().expect("an IP socket").port();
 
+        // The sender joins the group too, as the responder's socket does: Windows refuses
+        // (WSAENETUNREACH) a send to the group out of 127.0.0.1 from a socket that has not
+        // joined it, and a socket must be bound before it can join.
         let tx = udp()?;
+        tx.bind(&SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, 0).into())?;
+        tx.join_multicast_v4(&MDNS.0, &Ipv4Addr::LOCALHOST)?;
         tx.set_multicast_if_v4(&Ipv4Addr::LOCALHOST)?;
         tx.set_multicast_loop_v4(true)?;
         tx.send_to(b"probe", &SocketAddrV4::new(MDNS.0, port).into())?;
@@ -70,6 +76,7 @@ pub fn multicast_available() -> bool {
 pub fn mdns_socket() -> std::io::Result<tokio::net::UdpSocket> {
     let socket = Socket::new(Domain::IPV4, Type::DGRAM, Some(Protocol::UDP))?;
     socket.set_reuse_address(true)?;
+    #[cfg(unix)]
     socket.set_reuse_port(true)?;
     socket.bind(&SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, MDNS.1).into())?;
     socket.join_multicast_v4(&MDNS.0, &Ipv4Addr::LOCALHOST)?;

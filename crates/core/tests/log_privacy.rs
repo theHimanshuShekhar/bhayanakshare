@@ -132,6 +132,8 @@ async fn a_transfers_logs_hold_no_full_device_id_file_name_folder_name_or_text()
             alice.wait_for("the locked Transfer to end", |t| t.transfer_id == id && t.state.is_terminal()).await;
         }
     }
+    #[cfg(not(unix))]
+    eprintln!("SKIPPED: a file with mode 000 cannot be made here, so the log of an unreadable file was NOT checked.");
 
     // A file that changes on Alice's side after it was offered: the Sender tells the user which
     // one, and the log must not.
@@ -163,6 +165,8 @@ async fn a_transfers_logs_hold_no_full_device_id_file_name_folder_name_or_text()
         }
         std::fs::set_permissions(&readonly, std::fs::Permissions::from_mode(0o755)).unwrap();
     }
+    #[cfg(not(unix))]
+    eprintln!("SKIPPED: a folder with mode 555 cannot be made here, so the log of an unwritable folder was NOT checked.");
 
     // A stranger asking Alice's provider for content it was never given, and pushing some.
     let stranger = raw_peer().await;

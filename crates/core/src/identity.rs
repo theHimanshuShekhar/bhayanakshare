@@ -170,6 +170,11 @@ mod tests {
         }
     }
 
+    #[cfg(windows)]
+    #[test]
+    #[ignore = "Windows has no 0600 mode: the key file relies on the user profile folder's permissions"]
+    fn loose_key_file_permissions_are_tightened() {}
+
     #[cfg(unix)]
     #[test]
     fn loose_key_file_permissions_are_tightened() {

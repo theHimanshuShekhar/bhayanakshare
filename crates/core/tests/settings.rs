@@ -136,6 +136,12 @@ async fn a_folder_that_cannot_be_written_to_is_refused() {
     alice.shutdown().await;
 }
 
+/// Windows has no 0555 mode to refuse a write with, so there is nothing to test there.
+#[cfg(windows)]
+#[tokio::test]
+#[ignore = "a read-only folder can still be written to on Windows, which has no 0555 mode to refuse with"]
+async fn a_folder_that_cannot_be_written_to_is_refused() {}
+
 #[tokio::test]
 async fn the_default_save_folder_is_made_again_at_start_but_one_the_user_set_that_is_missing_is_not() {
     let mut alice = TestDevice::start("alice").await;

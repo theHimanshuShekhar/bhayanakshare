@@ -238,6 +238,11 @@ mod tests {
         assert_eq!(scan.sources[0].mtime_ns, 1_600_000_000_000_000_000);
     }
 
+    #[cfg(windows)]
+    #[test]
+    #[ignore = "makes symlinks with std::os::unix, which Windows lacks; tests/folders.rs checks the same through the Device on Windows"]
+    fn symlinks_inside_a_folder_are_skipped_and_counted_not_followed() {}
+
     #[cfg(unix)]
     #[test]
     fn symlinks_inside_a_folder_are_skipped_and_counted_not_followed() {
@@ -261,6 +266,11 @@ mod tests {
         assert_eq!(scan.skipped_links, 5);
     }
 
+    #[cfg(windows)]
+    #[test]
+    #[ignore = "makes symlinks with std::os::unix, which Windows lacks; nothing checks a chosen symlink on Windows yet"]
+    fn a_path_the_user_chose_is_followed_even_if_it_is_a_symlink() {}
+
     #[cfg(unix)]
     #[test]
     fn a_path_the_user_chose_is_followed_even_if_it_is_a_symlink() {
@@ -274,6 +284,11 @@ mod tests {
         assert_eq!(paths(&scan), ["alias/f.txt", "one.txt"]);
         assert_eq!(scan.skipped_links, 0);
     }
+
+    #[cfg(windows)]
+    #[test]
+    #[ignore = "Unix sockets and pipes do not exist on Windows"]
+    fn sockets_and_pipes_are_left_out_without_being_counted_as_links() {}
 
     #[cfg(unix)]
     #[test]
@@ -316,6 +331,11 @@ mod tests {
         let result = scan(&[tmp.path().join("a"), tmp.path().join("a")]);
         assert!(matches!(result, Err(Error::Manifest(ManifestError::Duplicate(_)))));
     }
+
+    #[cfg(windows)]
+    #[test]
+    #[ignore = "a newline, a backslash and bytes that are not UTF-8 cannot be in a file name on Windows"]
+    fn names_that_cannot_be_sent_refuse_the_selection() {}
 
     #[cfg(unix)]
     #[test]

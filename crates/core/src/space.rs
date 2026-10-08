@@ -110,6 +110,11 @@ mod tests {
         assert_eq!(probe.available(Path::new("/")).unwrap(), 7);
     }
 
+    #[cfg(windows)]
+    #[test]
+    #[ignore = "Windows has no free-space probe yet; #54 adds one and re-enables this"]
+    fn the_system_probe_reads_a_real_folder_and_fails_for_a_missing_one() {}
+
     #[cfg(unix)]
     #[test]
     fn the_system_probe_reads_a_real_folder_and_fails_for_a_missing_one() {

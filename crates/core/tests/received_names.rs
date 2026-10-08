@@ -3,7 +3,10 @@
 //! apart, an item that is already in the save folder arrives under a numbered name, and an
 //! Offer whose paths cannot be written is held back, even from a Contact on Auto-accept.
 //! The sanitiser's own rules are tested in its module; these go through the Device API.
-#![cfg(unix)]
+//!
+//! Three tests build a Sender's folder with names Windows cannot create (`:` and `?`), so they
+//! are ignored on Windows, with the reason shown in the test output; they need a hand-written
+//! Sender that offers such names to run there.
 
 mod support;
 
@@ -34,6 +37,7 @@ async fn adjusted_names_recorded(device: &TestDevice, id: TransferId) -> u32 {
 // ---- Names that are not safe ----------------------------------------------------------
 
 #[tokio::test]
+#[cfg_attr(windows, ignore = "the Sender's files are named with : or ?, which Windows cannot create")]
 async fn names_windows_would_refuse_arrive_adjusted_kept_apart_and_counted() {
     let mut alice = TestDevice::start("alice").await;
     let mut bob = TestDevice::start("bob").await;
@@ -113,6 +117,7 @@ async fn names_that_need_no_change_are_not_counted() {
 // ---- Clashes with what is already there -----------------------------------------------
 
 #[tokio::test]
+#[cfg_attr(windows, ignore = "the Sender's files are named with : or ?, which Windows cannot create")]
 async fn what_is_already_in_the_save_folder_survives_and_incoming_items_arrive_renamed() {
     let mut alice = TestDevice::start("alice").await;
     let mut bob = TestDevice::start("bob").await;
@@ -182,6 +187,7 @@ async fn an_item_named_like_the_incoming_store_never_lands_in_it_or_replaces_it(
 }
 
 #[tokio::test]
+#[cfg_attr(windows, ignore = "the Sender's files are named with : or ?, which Windows cannot create")]
 async fn adjusted_names_alone_do_not_hold_auto_accept_back() {
     let mut alice = TestDevice::start("alice").await;
     let mut bob = TestDevice::start("bob").await;
