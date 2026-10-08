@@ -23,10 +23,13 @@ use bhayanakshare_core::{
 use iroh::{Endpoint, EndpointAddr, RelayMode, TransportAddr, endpoint::presets};
 use tempfile::TempDir;
 
-/// How long a test waits for any single event before failing. It is the limit for a hang, not
-/// a speed: the 256 MB Transfers of the resume and crash tests take up to a minute on a Windows
-/// runner, where they take a few seconds on Linux.
-const EVENT_TIMEOUT: Duration = Duration::from_secs(if cfg!(windows) { 150 } else { 30 });
+/// How long a test waits for any single event before failing.
+const EVENT_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// How long `wait_state_big` waits for any single event. It is the limit for a hang, not a
+/// speed: the 256 to 512 MB Transfers of the resume and crash tests take under a minute on a
+/// Windows runner, where they take a few seconds on Linux.
+const BIG_TRANSFER_TIMEOUT: Duration = Duration::from_secs(if cfg!(windows) { 150 } else { 30 });
 
 /// How long a test lets a Device take to shut down.
 const SHUTDOWN_DEADLINE: Duration = Duration::from_secs(30);
@@ -125,6 +128,16 @@ impl TestDevice {
         what: &str,
         pred: impl Fn(&TransferEvent) -> bool,
     ) -> TransferEvent {
+        self.wait_for_within(EVENT_TIMEOUT, what, pred).await
+    }
+
+    /// Like `wait_for`, with `limit` for any single event instead of the usual.
+    async fn wait_for_within(
+        &mut self,
+        limit: Duration,
+        what: &str,
+        pred: impl Fn(&TransferEvent) -> bool,
+    ) -> TransferEvent {
         loop {
             for (i, event) in self.log.iter().enumerate() {
                 let EventKind::Transfer(t) = &event.kind else { continue };
@@ -133,7 +146,7 @@ impl TestDevice {
                     return t.clone();
                 }
             }
-            self.read_next(what).await;
+            self.read_next_within(limit, what).await;
         }
     }
 
@@ -174,7 +187,11 @@ impl TestDevice {
 
     /// Reads the next event into the log, or fails the test if none comes in time.
     async fn read_next(&mut self, what: &str) {
-        match tokio::time::timeout(EVENT_TIMEOUT, self.events.next()).await {
+        self.read_next_within(EVENT_TIMEOUT, what).await;
+    }
+
+    async fn read_next_within(&mut self, limit: Duration, what: &str) {
+        match tokio::time::timeout(limit, self.events.next()).await {
             Ok(Some(event)) => {
                 self.log.push(event);
                 self.consumed.push(false);
@@ -193,6 +210,19 @@ impl TestDevice {
             t.transfer_id == id && t.state.label() == label
         })
         .await
+    }
+
+    /// Like `wait_state`, for a Transfer of hundreds of megabytes that is still moving: allows
+    /// `BIG_TRANSFER_TIMEOUT` and says on stderr how long it took.
+    pub async fn wait_state_big(&mut self, id: TransferId, label: &str) -> TransferEvent {
+        let began = std::time::Instant::now();
+        let event = self
+            .wait_for_within(BIG_TRANSFER_TIMEOUT, &format!("{id} -> {label}"), |t| {
+                t.transfer_id == id && t.state.label() == label
+            })
+            .await;
+        eprintln!("{}: waited {:?} for {id} -> {label} (a big Transfer)", self.name, began.elapsed());
+        event
     }
 
     /// Waits for an incoming Offer and returns it.

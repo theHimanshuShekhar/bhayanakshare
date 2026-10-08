@@ -455,8 +455,8 @@ async fn clearing_history_leaves_a_transfer_that_is_running_to_finish_and_stay()
     // download is not interrupted.
     bob.device.accept(unanswered).await.unwrap();
     bob.wait_state(unanswered, "completed").await;
-    bob.wait_state(moving, "completed").await;
-    alice.wait_state(moving, "completed").await;
+    bob.wait_state_big(moving, "completed").await;
+    alice.wait_state_big(moving, "completed").await;
     assert!(bob.save_dir.join("big.bin").is_file());
     for device in [&alice, &bob] {
         assert_eq!(ids(&everything(device).await), [moving, unanswered], "and stay, now that they ended");

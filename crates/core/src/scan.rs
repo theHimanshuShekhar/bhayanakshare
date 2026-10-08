@@ -238,12 +238,27 @@ mod tests {
         assert_eq!(scan.sources[0].mtime_ns, 1_600_000_000_000_000_000);
     }
 
-    #[cfg(windows)]
-    #[test]
-    #[ignore = "makes symlinks with std::os::unix, which Windows lacks; tests/folders.rs checks the same through the Device on Windows"]
-    fn symlinks_inside_a_folder_are_skipped_and_counted_not_followed() {}
+    /// Makes a symlink at `link` to `target`.
+    fn symlink(target: &Path, link: &Path) -> std::io::Result<()> {
+        #[cfg(unix)]
+        return std::os::unix::fs::symlink(target, link);
+        #[cfg(windows)]
+        return if target.is_dir() {
+            std::os::windows::fs::symlink_dir(target, link)
+        } else {
+            std::os::windows::fs::symlink_file(target, link)
+        };
+    }
 
-    #[cfg(unix)]
+    /// Whether all of `links` were made. Windows lets only an account with a privilege make
+    /// symlinks: a test that cannot says so and returns; anywhere else a failure is one.
+    fn made(links: &[std::io::Result<()>]) -> bool {
+        let Some(e) = links.iter().find_map(|l| l.as_ref().err()) else { return true };
+        assert!(cfg!(windows), "could not make a symlink: {e}");
+        eprintln!("SKIPPED: this account cannot make symlinks ({e}). Symlinks were NOT tested.");
+        false
+    }
+
     #[test]
     fn symlinks_inside_a_folder_are_skipped_and_counted_not_followed() {
         let tmp = tempfile::tempdir().unwrap();
@@ -251,12 +266,17 @@ mod tests {
         write(&outside.join("secret.txt"), b"s");
         let root = tmp.path().join("pack");
         write(&root.join("real.txt"), b"r");
-        std::os::unix::fs::symlink(outside.join("secret.txt"), root.join("link-to-file")).unwrap();
-        std::os::unix::fs::symlink(&outside, root.join("link-to-dir")).unwrap();
-        std::os::unix::fs::symlink(&root, root.join("loop")).unwrap();
-        std::os::unix::fs::symlink("nowhere", root.join("dangling")).unwrap();
         std::fs::create_dir_all(root.join("sub")).unwrap();
-        std::os::unix::fs::symlink(outside.join("secret.txt"), root.join("sub/link")).unwrap();
+        let links = [
+            symlink(&outside.join("secret.txt"), &root.join("link-to-file")),
+            symlink(&outside, &root.join("link-to-dir")),
+            symlink(&root, &root.join("loop")),
+            symlink(Path::new("nowhere"), &root.join("dangling")),
+            symlink(&outside.join("secret.txt"), &root.join("sub/link")),
+        ];
+        if !made(&links) {
+            return;
+        }
 
         let scan = scan(&[root]).unwrap();
 
@@ -266,18 +286,17 @@ mod tests {
         assert_eq!(scan.skipped_links, 5);
     }
 
-    #[cfg(windows)]
-    #[test]
-    #[ignore = "makes symlinks with std::os::unix, which Windows lacks; nothing checks a chosen symlink on Windows yet"]
-    fn a_path_the_user_chose_is_followed_even_if_it_is_a_symlink() {}
-
-    #[cfg(unix)]
     #[test]
     fn a_path_the_user_chose_is_followed_even_if_it_is_a_symlink() {
         let tmp = tempfile::tempdir().unwrap();
         write(&tmp.path().join("real/f.txt"), b"f");
-        std::os::unix::fs::symlink(tmp.path().join("real"), tmp.path().join("alias")).unwrap();
-        std::os::unix::fs::symlink(tmp.path().join("real/f.txt"), tmp.path().join("one.txt")).unwrap();
+        let links = [
+            symlink(&tmp.path().join("real"), &tmp.path().join("alias")),
+            symlink(&tmp.path().join("real/f.txt"), &tmp.path().join("one.txt")),
+        ];
+        if !made(&links) {
+            return;
+        }
 
         let scan = scan(&[tmp.path().join("alias"), tmp.path().join("one.txt")]).unwrap();
 

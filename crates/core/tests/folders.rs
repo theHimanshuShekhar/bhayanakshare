@@ -26,6 +26,10 @@ use iroh::{
 use iroh_blobs::{BlobsProtocol, Hash, format::collection::Collection, store::mem::MemStore};
 use support::{TestDevice, dial_addr, list_dir, pseudo_random_bytes, raw_peer};
 
+/// The nanoseconds of the times these tests set. NTFS keeps times to 100 ns, so on Windows the
+/// last two digits cannot be kept.
+const NANOS: u32 = if cfg!(windows) { 123_456_700 } else { 123_456_789 };
+
 /// The reason a Sender is shown when the Receiver turns its Offer away.
 const INVALID_NAMES: &str = "Couldn't be sent: invalid file names";
 
@@ -97,8 +101,7 @@ fn write(path: &Path, bytes: &[u8]) {
 }
 
 fn set_mtime(path: &Path, secs: u64) {
-    // A multiple of 100 ns, the finest time NTFS keeps.
-    let at = UNIX_EPOCH + Duration::new(secs, 123_456_700);
+    let at = UNIX_EPOCH + Duration::new(secs, NANOS);
     std::fs::OpenOptions::new().write(true).open(path).unwrap().set_modified(at).unwrap();
 }
 
@@ -173,7 +176,7 @@ async fn a_folder_round_trips_with_nested_and_empty_folders_times_and_the_execut
     assert_eq!(tree["sub/also empty"], Node::Dir);
     let Node::File { mtime, executable, .. } = &tree["bin/run.sh"] else { panic!() };
     assert_eq!(*executable, cfg!(unix));
-    assert_eq!(*mtime, UNIX_EPOCH + Duration::new(1_600_000_000 + 4_000, 123_456_700));
+    assert_eq!(*mtime, UNIX_EPOCH + Duration::new(1_600_000_000 + 4_000, NANOS));
     let Node::File { executable, .. } = &tree["a.txt"] else { panic!() };
     assert!(!executable);
 
@@ -420,7 +423,7 @@ async fn the_offer_carries_a_manifest_of_paths_sizes_times_exec_bits_and_empty_f
     let file = |path: &str, size: u64, secs: u64, executable: bool| Entry::File {
         path: path.into(),
         size,
-        mtime_ns: ((1_600_000_000 + secs) * 1_000_000_000 + 123_456_700) as i64,
+        mtime_ns: ((1_600_000_000 + secs) * 1_000_000_000 + u64::from(NANOS)) as i64,
         executable,
     };
     let big = 300 * 1024;

@@ -1,10 +1,18 @@
 fn main() {
-    // The application manifest is embedded by the linker instead (below), so that the programs
-    // `cargo test` builds get it too; tauri-build's own copy would be a second one in the app.
-    let windows = tauri_build::WindowsAttributes::new_without_app_manifest();
+    let msvc = std::env::var("CARGO_CFG_TARGET_OS").is_ok_and(|v| v == "windows")
+        && std::env::var("CARGO_CFG_TARGET_ENV").is_ok_and(|v| v == "msvc");
+    // On MSVC the linker embeds the manifest (below), so tauri-build's own copy would be a
+    // second one in the app; any other target keeps tauri-build's.
+    let windows = if msvc {
+        tauri_build::WindowsAttributes::new_without_app_manifest()
+    } else {
+        tauri_build::WindowsAttributes::new()
+    };
     tauri_build::try_build(tauri_build::Attributes::new().windows_attributes(windows))
         .expect("failed to run tauri-build");
-    embed_manifest();
+    if msvc {
+        embed_manifest();
+    }
 }
 
 /// The dialogs and the tray need Common Controls v6, which a Windows program asks for in its
@@ -22,10 +30,6 @@ fn embed_manifest() {
   </dependency>
 </assembly>
 "#;
-    let is = |var: &str, value: &str| std::env::var(var).is_ok_and(|v| v == value);
-    if !is("CARGO_CFG_TARGET_OS", "windows") || !is("CARGO_CFG_TARGET_ENV", "msvc") {
-        return;
-    }
     let path = std::path::Path::new(&std::env::var_os("OUT_DIR").expect("cargo sets OUT_DIR")).join("app.manifest");
     std::fs::write(&path, MANIFEST).expect("write the application manifest");
     println!("cargo:rustc-link-arg=/MANIFEST:EMBED");

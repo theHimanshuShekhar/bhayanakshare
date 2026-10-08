@@ -28,6 +28,7 @@ fn multicast_problem() -> Option<String> {
 
         let mdns_port = udp()?;
         mdns_port.set_reuse_address(true)?;
+        // Unix only; SO_REUSEADDR alone shares the port on Windows.
         #[cfg(unix)]
         mdns_port.set_reuse_port(true)?;
         mdns_port.bind(&SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, 5353).into())?;
@@ -76,6 +77,7 @@ pub fn multicast_available() -> bool {
 pub fn mdns_socket() -> std::io::Result<tokio::net::UdpSocket> {
     let socket = Socket::new(Domain::IPV4, Type::DGRAM, Some(Protocol::UDP))?;
     socket.set_reuse_address(true)?;
+    // Unix only; SO_REUSEADDR alone shares the port on Windows.
     #[cfg(unix)]
     socket.set_reuse_port(true)?;
     socket.bind(&SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, MDNS.1).into())?;

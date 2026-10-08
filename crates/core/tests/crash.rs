@@ -1,7 +1,8 @@
 //! Crash tests: a Receiver Device in a child process is killed (SIGKILL; TerminateProcess on
-//! Windows, which gives it no more chance to clean up) part-way through a fetch, and a fresh Device on the same folders carries on from what the dead one had
-//! stored. The child is this test binary run again for `child_receiver`, with the folder it
-//! is to use in `BHS_CRASH_CHILD_DIR`.
+//! Windows, which gives it no more chance to clean up) part-way through a fetch, and a fresh
+//! Device on the same folders carries on from what the dead one had stored. The child is this
+//! test binary run again for `child_receiver`, with the folder it is to use in
+//! `BHS_CRASH_CHILD_DIR`.
 //!
 //! What a kill -9 loses is decided by iroh-blobs' store, which commits what it has received
 //! in batches about a second apart (research/bench, `results/FINDINGS.md`). After the first
@@ -207,8 +208,8 @@ async fn crash_and_resume(
     bob.device.note_address(alice.addr());
     bob.wait_state(transfer, "reconnecting").await;
     bob.wait_state(transfer, "transferring").await;
-    bob.wait_state(transfer, "completed").await;
-    alice.wait_state(transfer, "completed").await;
+    bob.wait_state_big(transfer, "completed").await;
+    alice.wait_state_big(transfer, "completed").await;
 
     let (saved, sent) = match shape {
         Shape::File => (bob.save_dir.join("movie.bin"), path.clone()),

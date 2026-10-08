@@ -4,9 +4,8 @@
 //! Offer whose paths cannot be written is held back, even from a Contact on Auto-accept.
 //! The sanitiser's own rules are tested in its module; these go through the Device API.
 //!
-//! Three tests build a Sender's folder with names Windows cannot create (`:` and `?`), so they
-//! are ignored on Windows, with the reason shown in the test output; they need a hand-written
-//! Sender that offers such names to run there.
+//! Names Windows cannot create (`:` and `?`) are offered by a hand-written Sender, which has no
+//! files on disk to name, so these tests run on Windows too.
 
 mod support;
 
@@ -17,7 +16,12 @@ use bhayanakshare_core::{
     manifest::{Entry, Manifest},
     protocol::{self, Hello, Message, Offer, read_frame, write_frame},
 };
-use iroh::Endpoint;
+use iroh::{
+    Endpoint,
+    endpoint::{Connection, RecvStream, SendStream},
+    protocol::Router,
+};
+use iroh_blobs::{BlobsProtocol, api::TempTag, format::collection::Collection, store::mem::MemStore};
 use support::{TestDevice, dial_addr, list_dir, raw_peer};
 
 fn write(path: &Path, bytes: &[u8]) {
@@ -34,25 +38,92 @@ async fn adjusted_names_recorded(device: &TestDevice, id: TransferId) -> u32 {
     records.iter().find(|r| r.id == id).expect("a record of the Transfer").adjusted_names
 }
 
+
+/// A Sender written by hand, which offers `files` (relative path and content) under exactly
+/// those names and serves them from memory. It makes no files on disk, so it can offer names
+/// that the platform running the test could not create.
+struct HandSender {
+    endpoint: Endpoint,
+    root: [u8; 32],
+    manifest: Manifest,
+    session: Option<(Connection, SendStream, RecvStream)>,
+    _router: Router,
+    _tags: Vec<TempTag>,
+}
+
+impl HandSender {
+    async fn new(files: &[(&str, &[u8])]) -> Self {
+        // The Sender lists a manifest, and its Collection, by path.
+        let mut files = files.to_vec();
+        files.sort_by_key(|(path, _)| *path);
+        let store = MemStore::new();
+        let mut tags = Vec::new();
+        let mut named = Vec::new();
+        for (path, bytes) in &files {
+            let tag = store.blobs().add_bytes(bytes.to_vec()).temp_tag().await.unwrap();
+            named.push((path.to_string(), tag.hash()));
+            tags.push(tag);
+        }
+        let root = Collection::from_iter(named).store(&store).await.unwrap();
+        let hash = *root.hash().as_bytes();
+        tags.push(root);
+        let endpoint = raw_peer().await;
+        let router = Router::builder(endpoint.clone())
+            .accept(iroh_blobs::ALPN, BlobsProtocol::new(&store, None))
+            .spawn();
+        let entries = files.iter().map(|(path, bytes)| Entry::file(*path, bytes.len() as u64)).collect();
+        Self { endpoint, root: hash, manifest: Manifest { entries }, session: None, _router: router, _tags: tags }
+    }
+
+    fn device_id(&self) -> DeviceId {
+        data_encoding::BASE32_NOPAD.encode(self.endpoint.id().as_bytes()).parse().unwrap()
+    }
+
+    /// Says Hello to `bob` and sends the Offer.
+    async fn offer(&mut self, bob: &TestDevice, id: TransferId) {
+        let conn = self.endpoint.connect(dial_addr(bob), protocol::ALPN).await.unwrap();
+        let (mut send, mut recv) = conn.open_bi().await.unwrap();
+        write_frame(&mut send, &Message::Hello(Hello::current())).await.unwrap();
+        assert!(matches!(read_frame(&mut recv).await.unwrap(), Message::Hello(_)));
+        let offer = Offer::new(*id.as_bytes(), self.manifest.clone(), 0);
+        write_frame(&mut send, &Message::Offer(offer)).await.unwrap();
+        self.session = Some((conn, send, recv));
+    }
+
+    /// Once Bob has accepted: lets him fetch, and waits until he says it is saved.
+    async fn serve_until_saved(&mut self) {
+        let (_conn, send, recv) = self.session.as_mut().expect("an Offer was made");
+        assert!(matches!(read_frame(recv).await.unwrap(), Message::Accept));
+        write_frame(send, &Message::HashReady { collection_hash: self.root }).await.unwrap();
+        loop {
+            match read_frame(recv).await.unwrap() {
+                Message::Completed => break,
+                Message::Progress { .. } => {}
+                other => panic!("expected Completed, got {other:?}"),
+            }
+        }
+    }
+}
+
 // ---- Names that are not safe ----------------------------------------------------------
 
 #[tokio::test]
-#[cfg_attr(windows, ignore = "the Sender's files are named with : or ?, which Windows cannot create")]
 async fn names_windows_would_refuse_arrive_adjusted_kept_apart_and_counted() {
-    let mut alice = TestDevice::start("alice").await;
     let mut bob = TestDevice::start("bob").await;
-    let src = tempfile::tempdir().unwrap();
-    let trip = src.path().join("trip:2024");
-    write(&trip.join("README.md"), b"upper");
-    write(&trip.join("Readme.md"), b"mixed");
-    write(&trip.join("a:b"), b"colon");
-    write(&trip.join("a_b"), b"underscore");
-    write(&trip.join("end."), b"dot");
-    write(&trip.join("why?.txt"), b"question");
-    write(&trip.join("fine.txt"), b"fine");
-    write(&src.path().join("CON.txt"), b"device");
+    let mut sender = HandSender::new(&[
+        ("trip:2024/README.md", b"upper"),
+        ("trip:2024/Readme.md", b"mixed"),
+        ("trip:2024/a:b", b"colon"),
+        ("trip:2024/a_b", b"underscore"),
+        ("trip:2024/end.", b"dot"),
+        ("trip:2024/why?.txt", b"question"),
+        ("trip:2024/fine.txt", b"fine"),
+        ("CON.txt", b"device"),
+    ])
+    .await;
 
-    let id = alice.device.send(bob.addr(), &[src.path().join("CON.txt"), trip]).await.unwrap();
+    let id = TransferId::from_bytes([1; 16]);
+    sender.offer(&bob, id).await;
     // What the Offer sheet shows: the Sender's names as they were, and how many will change.
     let offer = bob.wait_offer().await;
     assert_eq!(offer.items, ["CON.txt", "trip:2024"]);
@@ -60,8 +131,8 @@ async fn names_windows_would_refuse_arrive_adjusted_kept_apart_and_counted() {
     // end., why?.txt
     assert_eq!(offer.adjusted_names, 7);
     bob.device.accept(id).await.unwrap();
+    sender.serve_until_saved().await;
     let done = bob.wait_state(id, "completed").await;
-    alice.wait_state(id, "completed").await;
 
     assert_eq!(list_dir(&bob.save_dir), [INCOMING_DIR, "CON_.txt", "trip_2024"]);
     assert_eq!(read(bob.save_dir.join("CON_.txt")), b"device");
@@ -80,10 +151,31 @@ async fn names_windows_would_refuse_arrive_adjusted_kept_apart_and_counted() {
         assert_eq!(read(trip.join(name)), bytes, "{name}");
     }
 
-    // The count is on every event of the Transfer here, and in its record; the Sender, which
-    // changed nothing, has none.
+    // The count is on every event of the Transfer here, and in its record.
     assert_eq!(done.adjusted_names, 7);
     assert_eq!(adjusted_names_recorded(&bob, id).await, 7);
+    bob.shutdown().await;
+}
+
+/// The Sender changes no name: it offers the names as they are on its disk, and counts none as
+/// adjusted. Needs names that only Unix can create.
+#[cfg(unix)]
+#[tokio::test]
+async fn a_sender_offers_its_names_as_they_were_and_counts_no_adjusted_names() {
+    let mut alice = TestDevice::start("alice").await;
+    let mut bob = TestDevice::start("bob").await;
+    let src = tempfile::tempdir().unwrap();
+    let trip = src.path().join("trip:2024");
+    write(&trip.join("a:b"), b"colon");
+    write(&trip.join("why?.txt"), b"question");
+    write(&src.path().join("CON.txt"), b"device");
+
+    let id = alice.device.send(bob.addr(), &[src.path().join("CON.txt"), trip]).await.unwrap();
+    assert_eq!(bob.wait_offer().await.items, ["CON.txt", "trip:2024"]);
+    bob.device.accept(id).await.unwrap();
+    bob.wait_state(id, "completed").await;
+    alice.wait_state(id, "completed").await;
+
     assert_eq!(adjusted_names_recorded(&alice, id).await, 0);
     assert!(alice.log.iter().all(|e| match &e.kind {
         bhayanakshare_core::EventKind::Transfer(t) => t.adjusted_names == 0,
@@ -117,28 +209,28 @@ async fn names_that_need_no_change_are_not_counted() {
 // ---- Clashes with what is already there -----------------------------------------------
 
 #[tokio::test]
-#[cfg_attr(windows, ignore = "the Sender's files are named with : or ?, which Windows cannot create")]
 async fn what_is_already_in_the_save_folder_survives_and_incoming_items_arrive_renamed() {
-    let mut alice = TestDevice::start("alice").await;
     let mut bob = TestDevice::start("bob").await;
     write(&bob.save_dir.join("photos/old.jpg"), b"mine");
     write(&bob.save_dir.join("a.txt"), b"mine");
     write(&bob.save_dir.join("a (1).txt"), b"mine too");
     write(&bob.save_dir.join("x_y.txt"), b"mine as well");
-    let src = tempfile::tempdir().unwrap();
-    write(&src.path().join("photos/new.jpg"), b"theirs");
-    write(&src.path().join("photos/old.jpg"), b"theirs, same name");
-    write(&src.path().join("a.txt"), b"theirs");
-    // Adjusted to a name that is taken: the numbering applies to what it became.
-    write(&src.path().join("x:y.txt"), b"theirs, adjusted");
+    let mut sender = HandSender::new(&[
+        ("photos/new.jpg", b"theirs"),
+        ("photos/old.jpg", b"theirs, same name"),
+        ("a.txt", b"theirs"),
+        // Adjusted to a name that is taken: the numbering applies to what it became.
+        ("x:y.txt", b"theirs, adjusted"),
+    ])
+    .await;
 
-    let paths = ["photos", "a.txt", "x:y.txt"].map(|name| src.path().join(name));
-    let id = alice.device.send(bob.addr(), &paths).await.unwrap();
+    let id = TransferId::from_bytes([2; 16]);
+    sender.offer(&bob, id).await;
     // A clash with the save folder is not an adjusted name: only x:y.txt changed.
     assert_eq!(bob.wait_offer().await.adjusted_names, 1);
     bob.device.accept(id).await.unwrap();
+    sender.serve_until_saved().await;
     bob.wait_state(id, "completed").await;
-    alice.wait_state(id, "completed").await;
 
     assert_eq!(
         list_dir(&bob.save_dir),
@@ -156,7 +248,6 @@ async fn what_is_already_in_the_save_folder_survives_and_incoming_items_arrive_r
     assert_eq!(read(bob.save_dir.join("photos (1)/old.jpg")), b"theirs, same name");
     assert_eq!(read(bob.save_dir.join("a (2).txt")), b"theirs");
     assert_eq!(read(bob.save_dir.join("x_y (1).txt")), b"theirs, adjusted");
-    alice.shutdown().await;
     bob.shutdown().await;
 }
 
@@ -187,26 +278,23 @@ async fn an_item_named_like_the_incoming_store_never_lands_in_it_or_replaces_it(
 }
 
 #[tokio::test]
-#[cfg_attr(windows, ignore = "the Sender's files are named with : or ?, which Windows cannot create")]
 async fn adjusted_names_alone_do_not_hold_auto_accept_back() {
-    let mut alice = TestDevice::start("alice").await;
     let mut bob = TestDevice::start("bob").await;
-    bob.device.add_contact(alice.device.device_id(), None).await.unwrap();
-    bob.device.set_auto_accept(alice.device.device_id(), true).await.unwrap();
-    let src = tempfile::tempdir().unwrap();
-    write(&src.path().join("a:b.txt"), b"adjusted");
+    let mut sender = HandSender::new(&[("a:b.txt", b"adjusted")]).await;
+    bob.device.add_contact(sender.device_id(), None).await.unwrap();
+    bob.device.set_auto_accept(sender.device_id(), true).await.unwrap();
 
-    let id = alice.device.send(bob.addr(), &[src.path().join("a:b.txt")]).await.unwrap();
+    let id = TransferId::from_bytes([3; 16]);
+    sender.offer(&bob, id).await;
     // No prompt: the Transfer starts out accepted, and carries its count.
     let first = bob.wait_for("the Offer", |t| t.transfer_id == id).await;
     assert_eq!(first.state.label(), "accepted");
     assert_eq!(first.adjusted_names, 1);
+    sender.serve_until_saved().await;
     bob.wait_state(id, "completed").await;
-    alice.wait_state(id, "completed").await;
 
     assert_eq!(bob.history(id)[0], "accepted");
     assert_eq!(read(bob.save_dir.join("a_b.txt")), b"adjusted");
-    alice.shutdown().await;
     bob.shutdown().await;
 }
 

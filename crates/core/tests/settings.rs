@@ -136,7 +136,6 @@ async fn a_folder_that_cannot_be_written_to_is_refused() {
     alice.shutdown().await;
 }
 
-/// Windows has no 0555 mode to refuse a write with, so there is nothing to test there.
 #[cfg(windows)]
 #[tokio::test]
 #[ignore = "a read-only folder can still be written to on Windows, which has no 0555 mode to refuse with"]

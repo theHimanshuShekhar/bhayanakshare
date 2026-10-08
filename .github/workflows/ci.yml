@@ -73,9 +73,6 @@ jobs:
 
       - run: pnpm install --frozen-lockfile
 
-      - run: cargo test -p bhayanakshare-core --test zz_handles -- --nocapture --test-threads=1 # TEMP-DEBUG
-        continue-on-error: true
-
       - run: pnpm typecheck
 
       # BHAYANAKSHARE_REQUIRE_MULTICAST is left unset here too: multicast worked on this runner
