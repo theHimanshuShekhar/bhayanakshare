@@ -105,7 +105,7 @@ async fn part_way(alice: &mut TestDevice, bob: &mut TestDevice, path: &Path) -> 
     let id = alice.device.send_file(bob.addr(), path).await.unwrap();
     bob.wait_offer().await;
     bob.device.accept(id).await.unwrap();
-    bob.wait_progress(id, PART).await;
+    bob.wait_progress_big(id, PART).await;
     let received = bob.progress(id).last().unwrap().bytes;
     (id, received)
 }

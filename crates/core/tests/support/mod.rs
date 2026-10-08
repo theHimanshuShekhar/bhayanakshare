@@ -237,7 +237,20 @@ impl TestDevice {
     /// returns that report. Progress reports are paced by the Device's clock, which a test
     /// holds still, so this moves the clock along while it waits.
     pub async fn wait_progress(&mut self, id: TransferId, bytes: u64) -> ProgressEvent {
-        let give_up = tokio::time::Instant::now() + EVENT_TIMEOUT;
+        self.wait_progress_within(EVENT_TIMEOUT, id, bytes).await
+    }
+
+    /// Like `wait_progress`, for a Transfer of hundreds of megabytes, which the Sender has to
+    /// hash before any of it moves: allows `BIG_TRANSFER_TIMEOUT` and says how long it took.
+    pub async fn wait_progress_big(&mut self, id: TransferId, bytes: u64) -> ProgressEvent {
+        let began = std::time::Instant::now();
+        let progress = self.wait_progress_within(BIG_TRANSFER_TIMEOUT, id, bytes).await;
+        eprintln!("{}: waited {:?} for {bytes} bytes of {id} (a big Transfer)", self.name, began.elapsed());
+        progress
+    }
+
+    async fn wait_progress_within(&mut self, limit: Duration, id: TransferId, bytes: u64) -> ProgressEvent {
+        let give_up = tokio::time::Instant::now() + limit;
         loop {
             let reached = self.log.iter().find_map(|e| match &e.kind {
                 EventKind::Progress(p) if p.transfer_id == id && p.bytes >= bytes => Some(p.clone()),
