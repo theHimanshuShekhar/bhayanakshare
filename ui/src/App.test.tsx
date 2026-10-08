@@ -1,7 +1,7 @@
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { App } from "./App";
-import type { Api, UpdateAction } from "./api";
+import type { Api, DiscoveryStatus, UpdateAction } from "./api";
 import type { HistoryEntry, TransferRecord, TransferState } from "./bindings";
 import { NEARBY_WAIT_MS } from "./nearby";
 import { BATCH, EXPIRES_AT, MY_ID, PEER_ID, TRANSFER, contact, fakeApi } from "./testApi";
@@ -1277,6 +1277,125 @@ describe("the firewall hint", () => {
     expect(screen.queryByText(HINT)).toBeNull();
     await device.nearby();
     expect(screen.getByText(HINT)).toBeTruthy();
+  });
+});
+
+describe("the hint that local discovery could not start", () => {
+  const FIREWALL = /No Devices found on this network yet/;
+  const HIDDEN = "You're Hidden, so Nearby Devices aren't shown.";
+  const DOCS = "https://github.com/theHimanshuShekhar/bhayanakshare/blob/main/docs/firewall.md";
+  const DOWN = /Local discovery could not start, so Nearby Devices can't be found\./;
+  const DOWN_HIDDEN = /Local discovery could not start, so people who have your ID can't find this Device/;
+  const PORT = /UDP 5353/;
+  const PORT_IN_USE: DiscoveryStatus = { state: "unavailable", reason: "port_in_use" };
+  const WORKING: DiscoveryStatus = { state: "working" };
+
+  /** Lets the 30-second wait run out at once, as the firewall hint's tests do. */
+  function skipTheWait() {
+    const real = globalThis.setTimeout;
+    vi.spyOn(globalThis, "setTimeout").mockImplementation(((
+      fn: () => void,
+      ms?: number,
+      ...args: unknown[]
+    ) => real(fn, ms === NEARBY_WAIT_MS ? 0 : ms, ...args)) as unknown as typeof setTimeout);
+  }
+
+  afterEach(() => vi.restoreAllMocks());
+
+  it("names the problem and the reason at once, and links to the firewall docs", async () => {
+    const device = await start();
+    expect(screen.queryByText(DOWN)).toBeNull();
+    await device.discoveryChanges(PORT_IN_USE);
+    // No 30-second wait: it is known, not guessed.
+    expect(screen.getByText(DOWN, { exact: false })).toBeTruthy();
+    expect(screen.getByText(PORT, { exact: false })).toBeTruthy();
+
+    const link = screen.getByRole("link", { name: "How to allow local discovery" });
+    expect(link.getAttribute("href")).toBe(DOCS);
+    fireEvent.click(link);
+    expect(device.api.openUrl).toHaveBeenCalledWith(DOCS);
+  });
+
+  it("gives each reason its own words", async () => {
+    const device = await start();
+    await device.discoveryChanges({ state: "unavailable", reason: "no_interface" });
+    expect(screen.getByText(/No network connection that can use it was found/)).toBeTruthy();
+    await device.discoveryChanges({ state: "unavailable", reason: "other" });
+    expect(screen.getByText(/The system reported an error/)).toBeTruthy();
+    expect(screen.queryByText(/No network connection that can use it was found/)).toBeNull();
+  });
+
+  it("goes away when discovery recovers", async () => {
+    const device = await start();
+    await device.discoveryChanges(PORT_IN_USE);
+    expect(screen.getByText(DOWN, { exact: false })).toBeTruthy();
+    await device.discoveryChanges(WORKING);
+    expect(screen.queryByText(DOWN, { exact: false })).toBeNull();
+    expect(screen.queryByText(PORT, { exact: false })).toBeNull();
+  });
+
+  it("is there after a reload, from what the Device says, without an event", async () => {
+    const device = fakeApi();
+    device.setDiscovery(PORT_IN_USE);
+    await start(device);
+    expect(await screen.findByText(DOWN, { exact: false })).toBeTruthy();
+  });
+
+  it("is not undone by a status read that comes after a newer event", async () => {
+    let answer: (status: DiscoveryStatus) => void = () => {};
+    const device = fakeApi({ discoveryStatus: () => new Promise((resolve) => (answer = resolve)) });
+    await start(device);
+    await device.discoveryChanges(PORT_IN_USE);
+    await act(async () => answer(WORKING));
+    expect(screen.getByText(DOWN, { exact: false })).toBeTruthy();
+  });
+
+  it("replaces the firewall hint, which says nothing of why", async () => {
+    skipTheWait();
+    const device = await start();
+    expect(await screen.findByText(FIREWALL)).toBeTruthy();
+    await device.discoveryChanges(PORT_IN_USE);
+    expect(screen.queryByText(FIREWALL)).toBeNull();
+    expect(screen.getAllByRole("link", { name: "How to allow local discovery" })).toHaveLength(1);
+    // And gives it back, once the wait is over, if the status recovers with nobody Nearby.
+    await device.discoveryChanges(WORKING);
+    expect(await screen.findByText(FIREWALL)).toBeTruthy();
+  });
+
+  it("is announced the way the firewall hint is: as one status, not a second live region", async () => {
+    skipTheWait();
+    const device = await start();
+    await screen.findByText(FIREWALL);
+    const before = screen.getAllByRole("status").filter((el) => el.textContent !== "").length;
+    await device.discoveryChanges(PORT_IN_USE);
+    const hint = screen.getByText(DOWN, { exact: false });
+    expect(hint.closest("[role=status]")).toBe(hint);
+    expect(screen.getAllByRole("status").filter((el) => el.textContent !== "").length).toBe(before);
+  });
+
+  it("is not shown while a Device is Nearby, as the other hints are not", async () => {
+    const device = await start();
+    await device.nearby({ id: PEER_ID, name: "Dad's PC" });
+    await device.discoveryChanges(PORT_IN_USE);
+    expect(screen.queryByText(DOWN, { exact: false })).toBeNull();
+  });
+
+  it("shows the Hidden hint for a Hidden Device whose discovery is fine, and this one when its responder is down", async () => {
+    const device = fakeApi();
+    await device.api.setVisibility("hidden");
+    await start(device);
+    expect(await screen.findByText(HIDDEN)).toBeTruthy();
+
+    // Hidden lists nobody, but ID holders cannot reach a Device that cannot answer them.
+    await device.discoveryChanges(PORT_IN_USE);
+    expect(screen.getByText(DOWN_HIDDEN, { exact: false })).toBeTruthy();
+    expect(screen.queryByText(DOWN)).toBeNull();
+    expect(screen.queryByText(HIDDEN)).toBeNull();
+    expect(screen.getByRole("link", { name: "How to allow local discovery" })).toBeTruthy();
+
+    await device.discoveryChanges(WORKING);
+    expect(screen.getByText(HIDDEN)).toBeTruthy();
+    expect(screen.queryByText(DOWN_HIDDEN, { exact: false })).toBeNull();
   });
 });
 

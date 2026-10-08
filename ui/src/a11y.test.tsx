@@ -212,6 +212,21 @@ describe("accessibility: Home", () => {
   });
 });
 
+describe("accessibility: the hint that local discovery could not start", () => {
+  it("has no violations on Home, for a Device that looks for others and for a Hidden one", async () => {
+    const device = await start(fakeApi({}, contacts()));
+    await device.discoveryChanges({ state: "unavailable", reason: "port_in_use" });
+    await screen.findByText(/Local discovery could not start, so Nearby Devices/);
+    await expectNoViolations();
+
+    cleanup();
+    const hidden = await start(fakeApi({ visibility: () => Promise.resolve("hidden") }, contacts()));
+    await hidden.discoveryChanges({ state: "unavailable", reason: "no_interface" });
+    await screen.findByText(/people who have your ID can't find this Device/);
+    await expectNoViolations();
+  });
+});
+
 describe("accessibility: the Offer sheet", () => {
   it("has no violations for files, with room to save them", async () => {
     const device = await start(fakeApi({}, contacts()));

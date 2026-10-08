@@ -22,6 +22,17 @@
 //! swarm-discovery says no goodbye when a Device stops announcing or is dropped: the others
 //! drop it from their lists when they have not heard it for three of its turns, a few seconds.
 //!
+//! Discovery may not be able to start: the mDNS port (UDP 5353) is held by a program that does
+//! not share it or is refused, or no network interface can join the group. The Device works
+//! without it, and says so in its [`DiscoveryStatus`], reported on the event stream when it
+//! changes and readable through [`Discovery::status`], so a UI that reloaded is right too. It
+//! covers what has to run: the `Discoverer`, or the responder while Hidden. A [`LanLookup`] that
+//! cannot bind when sending to an ID fails that one dial and is not a status. A start that failed
+//! is recovered, not left for a restart: [`Discovery::refresh`] tries it again (as it does on every
+//! new epoch, setting change or address change) and so does a tick every [`DISCOVERY_CHECK`], which
+//! also starts a responder that has stopped. The status goes back to working as soon as a try
+//! binds.
+//!
 //! What is heard is kept as a table of Nearby Devices, reported on the event stream whenever it
 //! changes, and its addresses are handed to iroh, so dialling a Nearby Device by its ID alone
 //! reaches it. `UserData` is never set on the endpoint: the Device Name stays on the LAN and

@@ -1,8 +1,9 @@
 // What the UI knows about Nearby Devices, built up from the Device's event stream. Pure functions
 // only: the React side just feeds events in and renders the result.
 
-import type { Contact, DeviceEvent, NearbyDevice } from "./bindings";
+import type { Contact, DeviceEvent, DiscoveryStatus, NearbyDevice } from "./bindings";
 import { findContact } from "./contacts";
+import type { MessageKey } from "./i18n";
 
 /** How long Home waits for a Nearby Device before it suggests the firewall may be in the way. */
 export const NEARBY_WAIT_MS = 30_000;
@@ -22,4 +23,30 @@ export function applyNearby(devices: NearbyDevice[], event: DeviceEvent): Nearby
 /** The Nearby Devices that are not Contacts: the ones shown by what they announce. */
 export function nearbyStrangers(devices: NearbyDevice[], contacts: Contact[]): NearbyDevice[] {
   return devices.filter((d) => findContact(contacts, d.id) === undefined);
+}
+
+/** Applies one event: a `discovery_status` event holds the status as it is then. */
+export function applyDiscovery(status: DiscoveryStatus, event: DeviceEvent): DiscoveryStatus {
+  return event.type === "discovery_status" ? event.status : status;
+}
+
+/**
+ * What to tell the user when local discovery could not start: the words (i18n keys) for what
+ * happened and for why, or `null` while it works. A Hidden Device looks for nobody, so what it
+ * loses is that Devices holding its ID cannot reach it.
+ */
+export function discoveryHint(
+  status: DiscoveryStatus,
+  hidden: boolean,
+): { summary: MessageKey; reason: MessageKey } | null {
+  if (status.state === "working") return null;
+  const reasons = {
+    port_in_use: "home.discoveryDownPort",
+    no_interface: "home.discoveryDownInterface",
+    other: "home.discoveryDownOther",
+  } as const;
+  return {
+    summary: hidden ? "home.discoveryDownHidden" : "home.discoveryDown",
+    reason: reasons[status.reason],
+  };
 }
