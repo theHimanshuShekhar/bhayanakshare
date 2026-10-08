@@ -1,6 +1,6 @@
 import { act } from "@testing-library/react";
 import { vi } from "vitest";
-import type { Api, Contact, DeviceEvent, Role, ShellEvent, UpdateAction, Visibility } from "./api";
+import type { Api, Contact, DeviceEvent, DiscoveryStatus, Role, ShellEvent, UpdateAction, Visibility } from "./api";
 import type { HistoryEntry, NearbyDevice, TransferState } from "./bindings";
 
 // The stand-in for the Rust shell that the UI tests share (App.test.tsx, a11y.test.tsx).
@@ -47,6 +47,7 @@ export function fakeApi(overrides: Partial<Api> = {}, initialContacts: Contact[]
   let seq = 0;
   let contacts = initialContacts;
   let visibility: Visibility = "id_holders";
+  let discovery: DiscoveryStatus = { state: "working" };
   let historyEntries: HistoryEntry[] = [];
   /** What each read of History asked for: the Device, the direction and the search. */
   const historyReads: [string | null, Role | null, string | null][] = [];
@@ -92,6 +93,7 @@ export function fakeApi(overrides: Partial<Api> = {}, initialContacts: Contact[]
       visibility = v;
       return Promise.resolve(null);
     }),
+    discoveryStatus: vi.fn(() => Promise.resolve(discovery)),
     publicDht: vi.fn(() => Promise.resolve(publicDht)),
     setPublicDht: vi.fn((on: boolean) => {
       publicDht = on;
@@ -208,9 +210,19 @@ export function fakeApi(overrides: Partial<Api> = {}, initialContacts: Contact[]
     });
   /** The Device reports the Nearby Devices as they are now. */
   const nearby = (...devices: NearbyDevice[]) => push({ type: "nearby", devices });
+  /** Local discovery changes status: the getter has it from now on and an event says so. */
+  const discoveryChanges = (status: DiscoveryStatus) => {
+    discovery = status;
+    return push({ type: "discovery_status", status });
+  };
+  /** Local discovery has this status from the start, as the getter says, with no event: as
+   * after a reload of the UI. */
+  const setDiscovery = (status: DiscoveryStatus) => {
+    discovery = status;
+  };
   /** What the Device's History holds from now on, newest first. */
   const setHistory = (entries: HistoryEntry[]) => {
     historyEntries = entries;
   };
-  return { api, push, transfer, nearby, shell, openLink, setHistory, historyReads };
+  return { api, push, transfer, nearby, discoveryChanges, setDiscovery, shell, openLink, setHistory, historyReads };
 }

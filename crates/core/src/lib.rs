@@ -37,10 +37,10 @@ pub use clock::{Clock, ManualClock, SystemClock, UnixMillis};
 pub use contacts::{Contact, KnownAddress, MAX_NAME_CHARS};
 pub use db::{DbError, TransferRecord};
 pub use device::{Device, DeviceAddr, DeviceConfig, Network, SentBatch};
-pub use discovery::{NearbyDevice, Visibility};
+pub use discovery::{DiscoveryStatus, NearbyDevice, UnavailableReason, Visibility};
 pub use error::Error;
 pub use event::{
-    Event, EventKind, EventStream, NearbyEvent, Outdated, PreparingEvent, ProgressEvent, TransferEvent,
+    DiscoveryStatusEvent, Event, EventKind, EventStream, NearbyEvent, Outdated, PreparingEvent, ProgressEvent, TransferEvent,
     VersionMismatchEvent,
 };
 pub use history::{HistoryEntry, HistoryQuery, HistoryTransfer};

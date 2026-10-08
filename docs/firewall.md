@@ -1,6 +1,6 @@
 # Allowing local discovery through a firewall
 
-BhayanakShare finds Nearby Devices with mDNS: Devices send small multicast packets to `224.0.0.251` (and `ff02::fb`) on **UDP port 5353**. If a firewall drops those packets, no Nearby Devices appear, and Home suggests this page after 30 seconds. Sending to a Device by its Device ID still works over the internet.
+BhayanakShare finds Nearby Devices with mDNS: Devices send small multicast packets to `224.0.0.251` (and `ff02::fb`) on **UDP port 5353**. If a firewall drops those packets, no Nearby Devices appear, and Home suggests this page after 30 seconds. If BhayanakShare cannot use the port at all, Home says so at once instead: see [When Home says local discovery could not start](#when-home-says-local-discovery-could-not-start). Sending to a Device by its Device ID still works over the internet.
 
 A Device shows up for others according to its Visibility (Settings): to everyone on **Everyone**, only to Devices that already have its Device ID on **People who have my ID** (the default), and to nobody on **Hidden**, which announces nothing, does not look for Devices either (so it lists none), and only answers a Device that asks for it by its Device ID. The question and the answer are both mDNS multicast, so the rule for mDNS below is all it needs. Check that on the Device you expect to see, and that this Device has the other's ID saved as a Contact if it is not on Everyone, before changing a firewall.
 
@@ -12,6 +12,16 @@ Two things must be allowed:
 BhayanakShare never changes firewall rules itself, and neither do its packages: the AppImage, deb and rpm run no install, update or removal scripts, so installing, updating or removing it leaves your firewall as it was. Allowing the two things above is always something you do yourself.
 
 The steps below come from each system's documentation. The project tests on Linux only, and they have not been run on every system listed.
+
+## When Home says local discovery could not start
+
+This is not the firewall guess above: BhayanakShare tried to open the mDNS port and could not, on Windows and on Linux alike. Home says why, in one of three ways:
+
+- **The port is in use or refused.** Another program holds UDP port 5353 and does not share it (most mDNS software shares it, as Windows' own mDNS, browsers and Avahi do), or the system or security software refused the program. Close the other program or stop its mDNS, or allow BhayanakShare in the security software, and check the two firewall steps below.
+- **No network connection can use it.** No network interface is up, or none supports multicast. Connect to a network. A VPN that takes over all traffic can leave nothing else (see Other causes below).
+- **The system reported an error.** The line in the log says which: Settings, Diagnostics, Export diagnostics.
+
+Nothing needs a restart: BhayanakShare tries again every 15 seconds, and also whenever the Visibility, the Device Name or the network address changes, each time looking at the network connections as they are then (so one that came up since is used), and the hint goes away by itself when it works. Home reports a problem only when local discovery cannot run at all: if the port can be used on IPv6 but not on IPv4, discovery runs on IPv6 and BhayanakShare keeps trying for IPv4. Until then the Device finds nobody Nearby and nobody finds it. A **Hidden** Device also cannot answer a Device that asks for it by its Device ID, so people who have its ID cannot reach it on the local network; sending to it over the internet still works. Sending to a Device by its Device ID works whatever happens here.
 
 ## Linux
 

@@ -54,6 +54,11 @@ zip = { version = "8", default-features = false, features = ["deflate"] }
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
 
+[target.'cfg(windows)'.dev-dependencies]
+# tests/support/multicast.rs holds the mDNS port exclusively (SO_EXCLUSIVEADDRUSE), which socket2
+# does not expose and Windows needs: a socket without it can be bound over by one that shares.
+windows-sys = { version = "0.61", features = ["Win32_Networking_WinSock"] }
+
 [dev-dependencies]
 serde_json = "1"
 tempfile = "3"

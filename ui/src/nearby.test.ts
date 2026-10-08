@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import type { Contact, DeviceEvent, NearbyDevice } from "./bindings";
-import { applyNearby, nearbyStrangers } from "./nearby";
+import type { Contact, DeviceEvent, DiscoveryStatus, NearbyDevice } from "./bindings";
+import { applyDiscovery, applyNearby, discoveryHint, nearbyStrangers, settleDiscovery } from "./nearby";
 
 const A = "A".repeat(52);
 const B = "B".repeat(52);
@@ -52,5 +52,53 @@ describe("nearbyStrangers", () => {
     expect(nearbyStrangers(list, [contact(A)])).toEqual([{ id: B, name: "Bob" }]);
     expect(nearbyStrangers(list, [])).toEqual(list);
     expect(nearbyStrangers(list, [contact(A), contact(B)])).toEqual([]);
+  });
+});
+
+const discovery = (status: DiscoveryStatus): DeviceEvent => ({
+  seq: 0,
+  at: 0,
+  type: "discovery_status",
+  status,
+});
+
+const WORKING: DiscoveryStatus = { state: "working" };
+const NO_PORT: DiscoveryStatus = { state: "unavailable", reason: "port_in_use" };
+
+describe("applyDiscovery", () => {
+  it("takes the status from each discovery_status event", () => {
+    expect(applyDiscovery(WORKING, discovery(NO_PORT))).toEqual(NO_PORT);
+    expect(applyDiscovery(NO_PORT, discovery(WORKING))).toEqual(WORKING);
+  });
+
+  it("ignores events that are not about discovery", () => {
+    expect(applyDiscovery(NO_PORT, nearby())).toBe(NO_PORT);
+  });
+
+  it("keeps the status it has when the event says the same, so nothing renders again", () => {
+    expect(applyDiscovery(NO_PORT, discovery({ ...NO_PORT }))).toBe(NO_PORT);
+    expect(applyDiscovery(WORKING, discovery({ state: "working" }))).toBe(WORKING);
+    const other: DiscoveryStatus = { state: "unavailable", reason: "other" };
+    expect(settleDiscovery(NO_PORT, other)).toBe(other);
+    expect(settleDiscovery(WORKING, NO_PORT)).toBe(NO_PORT);
+  });
+});
+
+describe("discoveryHint", () => {
+  it("says nothing while discovery works", () => {
+    expect(discoveryHint(WORKING, false)).toBeNull();
+    expect(discoveryHint(WORKING, true)).toBeNull();
+  });
+
+  it("gives each reason its own words", () => {
+    const reasons = (["port_in_use", "no_interface", "other"] as const).map(
+      (reason) => discoveryHint({ state: "unavailable", reason }, false)?.reason,
+    );
+    expect(new Set(reasons).size).toBe(3);
+    expect(reasons).not.toContain(undefined);
+  });
+
+  it("says that ID holders cannot reach a Hidden Device, which a Device that looks for others does not", () => {
+    expect(discoveryHint(NO_PORT, true)?.summary).not.toBe(discoveryHint(NO_PORT, false)?.summary);
   });
 });

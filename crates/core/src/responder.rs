@@ -54,7 +54,7 @@ use crate::{
     beacon::{self, Epoch, Index},
     clock::Clock,
     device::direct_addrs,
-    discovery::{SERVICE_NAME, dialable, port_of},
+    discovery::{SERVICE_NAME, UnavailableReason, dialable, port_of},
     identity::DeviceId,
 };
 
@@ -216,7 +216,7 @@ impl Responder {
         clock: Arc<dyn Clock>,
         interfaces: &[Ipv4Addr],
         loopback_ok: bool,
-    ) -> io::Result<Self> {
+    ) -> Result<Self, MdnsError> {
         let socket = bind_mdns(interfaces)?;
         let interfaces = or_default(interfaces).to_vec();
         let task = tokio::spawn(respond(own, endpoint, clock, socket, interfaces, loopback_ok));
@@ -271,16 +271,47 @@ async fn respond(
     }
 }
 
+/// The mDNS port could not be used, and why.
+#[derive(Debug)]
+pub(crate) struct MdnsError {
+    pub(crate) reason: UnavailableReason,
+    source: io::Error,
+}
+
+impl MdnsError {
+    pub(crate) fn new(reason: UnavailableReason, source: io::Error) -> Self {
+        Self { reason, source }
+    }
+}
+
+impl std::fmt::Display for MdnsError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        std::fmt::Display::fmt(&self.source, f)
+    }
+}
+
+impl std::error::Error for MdnsError {}
+
+impl From<MdnsError> for io::Error {
+    fn from(e: MdnsError) -> Self {
+        e.source
+    }
+}
+
 /// Port 5353, shared with every other mDNS listener on the machine, joined to the group on each
 /// of `interfaces`, and hearing what this socket sends too (a Device on this machine is on the
-/// LAN as well).
-fn bind_mdns(interfaces: &[Ipv4Addr]) -> io::Result<UdpSocket> {
-    let socket = Socket::new(Domain::IPV4, Type::DGRAM, Some(Protocol::UDP))?;
-    socket.set_reuse_address(true)?;
+/// LAN as well). A failure says which of the two things discovery needs was missing: the port, or
+/// an interface to join the group on.
+pub(crate) fn bind_mdns(interfaces: &[Ipv4Addr]) -> Result<UdpSocket, MdnsError> {
+    let other = |e| MdnsError::new(UnavailableReason::Other, e);
+    let socket = Socket::new(Domain::IPV4, Type::DGRAM, Some(Protocol::UDP)).map_err(other)?;
+    socket.set_reuse_address(true).map_err(other)?;
     #[cfg(unix)]
-    socket.set_reuse_port(true)?;
-    socket.bind(&SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, PORT).into())?;
-    socket.set_multicast_loop_v4(true)?;
+    socket.set_reuse_port(true).map_err(other)?;
+    socket
+        .bind(&SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, PORT).into())
+        .map_err(|e| MdnsError::new(UnavailableReason::PortInUse, e))?;
+    socket.set_multicast_loop_v4(true).map_err(other)?;
     let mut joined = Err(io::Error::other("no interface to listen on"));
     for interface in or_default(interfaces) {
         match socket.join_multicast_v4(&GROUP, interface) {
@@ -289,9 +320,9 @@ fn bind_mdns(interfaces: &[Ipv4Addr]) -> io::Result<UdpSocket> {
             Err(_) => {}
         }
     }
-    joined?;
-    socket.set_nonblocking(true)?;
-    UdpSocket::from_std(socket.into())
+    joined.map_err(|e| MdnsError::new(UnavailableReason::NoInterface, e))?;
+    socket.set_nonblocking(true).map_err(other)?;
+    UdpSocket::from_std(socket.into()).map_err(other)
 }
 
 /// Sends `packet` to the mDNS group out of each of `interfaces`. An interface that cannot be
@@ -518,6 +549,14 @@ mod tests {
         assert_eq!(granted, MAX_ANSWERS_PER_SECOND as usize);
         assert!(!limit.allow(start + Duration::from_millis(999)));
         assert!(limit.allow(start + Duration::from_secs(1)), "a new second, a new allowance");
+    }
+
+    #[tokio::test]
+    async fn an_interface_that_is_not_there_is_not_taken_for_a_port_in_use() {
+        // 192.0.2.0/24 (TEST-NET-1) is assigned to nobody, so no interface has it.
+        let result = bind_mdns(&[Ipv4Addr::new(192, 0, 2, 1)]);
+        let reason = result.err().map(|e| e.reason);
+        assert_eq!(reason, Some(UnavailableReason::NoInterface));
     }
 
     #[tokio::test]

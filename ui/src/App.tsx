@@ -1,7 +1,15 @@
 import { useCallback, useEffect, useReducer, useRef, useState } from "react";
 import { AddContactDialog } from "./AddContactDialog";
 import { Announcer, TransferAnnouncements } from "./Announcer";
-import { tauriApi, type Api, type Contact, type TransferId, type UpdateAction, type Visibility } from "./api";
+import {
+  tauriApi,
+  type Api,
+  type Contact,
+  type DiscoveryStatus,
+  type TransferId,
+  type UpdateAction,
+  type Visibility,
+} from "./api";
 import { ClearHistoryDialog } from "./ClearHistoryDialog";
 import { ContactsScreen } from "./ContactsScreen";
 import { FirstRunScreen } from "./FirstRunScreen";
@@ -20,7 +28,16 @@ import { UpdateBanner, UpdateStatus } from "./UpdateBanner";
 import { VersionNotices } from "./VersionNotices";
 import { peerName, sortedContacts } from "./contacts";
 import { t, type MessageKey } from "./i18n";
-import { FIREWALL_DOCS_URL, NEARBY_WAIT_MS, applyNearby, nearbyStrangers } from "./nearby";
+import {
+  DISCOVERY_DOCS_URL,
+  FIREWALL_DOCS_URL,
+  NEARBY_WAIT_MS,
+  applyDiscovery,
+  applyNearby,
+  discoveryHint,
+  nearbyStrangers,
+  settleDiscovery,
+} from "./nearby";
 import { parseShareLink, type Shared } from "./shareLink";
 import { applyEvent, baseName, fingerprint, listItems, noTransfers, pendingOffer } from "./transfers";
 import { offeredVersion, useUpdater } from "./updates";
@@ -28,6 +45,9 @@ import { applyVersionNotices } from "./versions";
 
 /** Gives focus to a heading that is there for it (`tabIndex={-1}`). */
 const focusHeading = (id: string) => document.getElementById(id)?.focus();
+
+/** Local discovery until the Device says otherwise. */
+const WORKING: DiscoveryStatus = { state: "working" };
 
 const TABS = [
   { id: "home", label: "tab.home", placeholder: "home.placeholder" },
@@ -82,6 +102,8 @@ function Screens({ api }: { api: Api }) {
   const [cleared, setCleared] = useState(0);
   const [transfers, dispatch] = useReducer(applyEvent, noTransfers);
   const [nearby, dispatchNearby] = useReducer(applyNearby, []);
+  // Whether local discovery could start. It is working until the Device says it is not.
+  const [discovery, setDiscovery] = useState<DiscoveryStatus>(WORKING);
   // Devices that were refused for their version, until the user dismisses the notice.
   const [versionNotices, dispatchVersion] = useReducer(applyVersionNotices, []);
   // A newer release the shell found, and the version of it the user dismissed.
@@ -122,6 +144,10 @@ function Screens({ api }: { api: Api }) {
   const loadContacts = useCallback(() => api.contacts().then(setContacts, () => {}), [api]);
 
   const strangers = nearbyStrangers(nearby, contacts);
+  // Nobody is listed Nearby, and the Device knows why when discovery could not start.
+  const down = nearby.length === 0 ? discoveryHint(discovery, visibility === "hidden") : null;
+  // The guess points at the page; what is known, at the section for it.
+  const docs = down === null ? FIREWALL_DOCS_URL : DISCOVERY_DOCS_URL;
   // A Device that has gone from Home cannot stay chosen: there is no tile to untick.
   const shown = new Set([...contacts.map((c) => c.id), ...strangers.map((d) => d.id)]);
   const chosen = selected.filter((id) => shown.has(id));
@@ -131,13 +157,26 @@ function Screens({ api }: { api: Api }) {
   useEffect(() => {
     let live = true;
     let unlisten: (() => void) | undefined;
+    // Events say when it changes; the Device says how it is now, for a reload that missed them.
+    // An event that comes first is newer than the answer.
+    let heard = false;
     api
       .onDeviceEvent((event) => {
         dispatch(event);
         dispatchNearby(event);
         dispatchVersion(event);
+        if (event.type === "discovery_status") heard = true;
+        setDiscovery((now) => applyDiscovery(now, event));
       })
-      .then((stop) => (live ? (unlisten = stop) : stop()));
+      .then((stop) => {
+        if (!live) return stop();
+        unlisten = stop;
+        // Read once listening, so a change between the two cannot be missed.
+        api.discoveryStatus().then(
+          (status) => live && !heard && setDiscovery((now) => settleDiscovery(now, status)),
+          () => {},
+        );
+      });
     return () => {
       live = false;
       unlisten?.();
@@ -383,7 +422,7 @@ function Screens({ api }: { api: Api }) {
                   onFilesSent={() => setQueued([])}
                 />
               )}
-              {visibility === "hidden" && nearby.length === 0 && (
+              {down === null && visibility === "hidden" && nearby.length === 0 && (
                 // Not a live region: it is a state that is there on arriving, not news.
                 <p className="hint">
                   {t("home.hiddenHint")}{" "}
@@ -392,15 +431,23 @@ function Screens({ api }: { api: Api }) {
                   </button>
                 </p>
               )}
-              {visibility !== "hidden" && waited && nearby.length === 0 && (
+              {(down !== null || (visibility !== "hidden" && waited && nearby.length === 0)) && (
+                // One hint in one place: what is known (discovery could not start) takes the place
+                // of the guess (a firewall may be in the way), and both are announced the same way.
                 <p role="status" className="hint">
-                  {t("home.firewallHint")}{" "}
+                  {down === null ? (
+                    t("home.firewallHint")
+                  ) : (
+                    <>
+                      {t(down.summary)} {t(down.reason)}
+                    </>
+                  )}{" "}
                   <a
-                    href={FIREWALL_DOCS_URL}
+                    href={docs}
                     onClick={(e) => {
                       // The webview must not navigate away from the app.
                       e.preventDefault();
-                      api.openUrl(FIREWALL_DOCS_URL).catch(() => {});
+                      api.openUrl(docs).catch(() => {});
                     }}
                   >
                     {t("home.firewallDocs")}

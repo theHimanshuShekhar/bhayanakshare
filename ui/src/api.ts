@@ -13,6 +13,7 @@ import {
   type BatchId,
   type Contact,
   type DeviceEvent,
+  type DiscoveryStatus,
   type HistoryEntry,
   type IdentityError,
   type IdentityOwner,
@@ -22,6 +23,7 @@ import {
   type ShellEvent,
   type SpaceCheck,
   type TransferId,
+  type UnavailableReason,
   type UpdateAction,
   type UpdateError,
   type Visibility,
@@ -31,6 +33,7 @@ export type {
   BatchId,
   Contact,
   DeviceEvent,
+  DiscoveryStatus,
   HistoryEntry,
   IdentityError,
   IdentityOwner,
@@ -40,6 +43,7 @@ export type {
   ShellEvent,
   SpaceCheck,
   TransferId,
+  UnavailableReason,
   UpdateAction,
   UpdateError,
   Visibility,
@@ -89,6 +93,9 @@ export interface Api {
   visibility(): Promise<Visibility>;
   /** Changes who can see this Device as a Nearby Device; it takes effect at once. */
   setVisibility(visibility: Visibility): Promise<unknown>;
+  /** Whether local discovery is working. Changes arrive as `discovery_status` events; this is for
+   * a UI that was not listening for the last. */
+  discoveryStatus(): Promise<DiscoveryStatus>;
   /** Whether this Device uses the public DHT, besides n0's servers, to publish its address and
    * find its Contacts'. */
   publicDht(): Promise<boolean>;
@@ -214,6 +221,7 @@ export const tauriApi: Api = {
   setDeviceName: commands.setDeviceName,
   visibility: commands.visibility,
   setVisibility: commands.setVisibility,
+  discoveryStatus: commands.discoveryStatus,
   publicDht: commands.publicDht,
   setPublicDht: commands.setPublicDht,
   autostartEnabled: commands.autostartEnabled,

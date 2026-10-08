@@ -14,7 +14,7 @@ use std::{
 };
 
 use bhayanakshare_core::{
-    Clock, Device, DeviceAddr, DeviceConfig, Event, EventKind, EventStream, FreeSpace, KeySource,
+    Clock, Device, DeviceAddr, DeviceConfig, DiscoveryStatus, Event, EventKind, EventStream, FreeSpace, KeySource,
     ManualClock, NearbyDevice, Network, ProgressEvent, SystemFreeSpace, TransferEvent, TransferId,
     TransferState, VersionMismatchEvent,
     manifest::{Entry, Manifest},
@@ -171,6 +171,21 @@ impl TestDevice {
         }
     }
 
+    /// Waits until LAN discovery is reported as `status`, reading the events from the last
+    /// report of it back to that one. `limit` is how long any single event may take.
+    pub async fn wait_discovery_status(&mut self, limit: Duration, status: DiscoveryStatus) {
+        loop {
+            let latest = self.log.iter().rev().find_map(|e| match &e.kind {
+                EventKind::DiscoveryStatus(s) => Some(s.status),
+                _ => None,
+            });
+            if latest == Some(status) {
+                return;
+            }
+            self.read_next_within(limit, &format!("discovery to be {status:?}")).await;
+        }
+    }
+
     /// Waits for the Device to report a refused connection for the versions of BhayanakShare.
     pub async fn wait_version_mismatch(&mut self) -> VersionMismatchEvent {
         loop {
@@ -294,6 +309,7 @@ impl TestDevice {
                 EventKind::Progress(_)
                 | EventKind::Preparing(_)
                 | EventKind::Nearby(_)
+                | EventKind::DiscoveryStatus(_)
                 | EventKind::VersionMismatch(_) => None,
             })
             .filter(|t| t.transfer_id == id)

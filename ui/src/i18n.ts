@@ -20,6 +20,14 @@ const en = {
   "home.firewallHint":
     "No Devices found on this network yet. If you expect some, a firewall may be blocking local discovery.",
   "home.firewallDocs": "How to allow local discovery",
+  "home.discoveryDown": "Local discovery could not start, so Nearby Devices can't be found.",
+  "home.discoveryDownHidden":
+    "Local discovery could not start, so people who have your ID can't find this Device on the network.",
+  "home.discoveryDownPort":
+    "Another program may be using the port it needs (UDP 5353), or security software blocked it. BhayanakShare keeps trying.",
+  "home.discoveryDownInterface":
+    "No network connection that can use it was found. BhayanakShare keeps trying.",
+  "home.discoveryDownOther": "The system reported an error. BhayanakShare keeps trying.",
   "home.hiddenHint": "You're Hidden, so Nearby Devices aren't shown.",
   "home.hiddenChange": "Change Visibility",
   "version.thisOlder":

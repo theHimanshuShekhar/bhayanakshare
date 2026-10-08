@@ -19,8 +19,11 @@ use std::{
     time::Duration,
 };
 
-use bhayanakshare_core::{DeviceId, NearbyDevice, Visibility};
-use support::{TestDevice, multicast::multicast_available};
+use bhayanakshare_core::{DeviceId, DiscoveryStatus, NearbyDevice, UnavailableReason, Visibility};
+use support::{
+    TestDevice,
+    multicast::{hold_mdns_port, multicast_available},
+};
 use swarm_discovery::{Discoverer, DropGuard};
 
 /// The tests run one at a time. Every Device here shares one multicast group (and the machine's
@@ -31,6 +34,13 @@ static ONE_AT_A_TIME: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(())
 
 /// How long to wait to be sure a Device is not heard. The announcements come about every second.
 const SILENCE: Duration = Duration::from_secs(4);
+
+/// How long a Device that could not start discovery is given to notice that it can: it tries
+/// again every 15 seconds.
+const RECOVERY: Duration = Duration::from_secs(40);
+
+const PORT_IN_USE: DiscoveryStatus =
+    DiscoveryStatus::Unavailable { reason: UnavailableReason::PortInUse };
 
 /// How long a beacon label lasts (`beacon::EPOCH_MS`), which is part of the design.
 const EPOCH_MS: i64 = 10 * 60 * 1000;
@@ -499,4 +509,71 @@ async fn removing_a_contact_takes_its_beacon_out_of_the_nearby_list() {
 
     alice.shutdown().await;
     bob.shutdown().await;
+}
+
+#[tokio::test]
+async fn a_device_that_cannot_bind_the_mdns_port_says_so_and_recovers_when_it_can() {
+    let _alone = ONE_AT_A_TIME.lock().await;
+    if !multicast_available() {
+        return;
+    }
+    // A program that holds the port without sharing it, as one that is not an mDNS responder might.
+    let Some(holder) = hold_mdns_port() else { return };
+    let mut alice = TestDevice::start_discovering("alice").await;
+    alice.wait_discovery_status(RECOVERY, PORT_IN_USE).await;
+    assert_eq!(alice.device.discovery_status(), PORT_IN_USE, "for a listener that missed the event");
+
+    // The Device works without it: Contacts and sending by ID need no discovery.
+    assert!(alice.device.nearby().is_empty());
+
+    // Its next try finds the port free, and discovery works: it hears a Device that announces.
+    drop(holder);
+    alice.wait_discovery_status(RECOVERY, DiscoveryStatus::Working).await;
+    assert_eq!(alice.device.discovery_status(), DiscoveryStatus::Working);
+    let mut bob = everyone("bob", "Bob's PC").await;
+    alice.wait_nearby("Bob nearby", is(bob.device.device_id(), Some("Bob's PC"))).await;
+
+    alice.shutdown().await;
+    bob.shutdown().await;
+}
+
+#[tokio::test]
+async fn a_hidden_device_that_cannot_bind_the_mdns_port_says_so_and_recovers_when_it_can() {
+    let _alone = ONE_AT_A_TIME.lock().await;
+    if !multicast_available() {
+        return;
+    }
+    let Some(holder) = hold_mdns_port() else { return };
+    let mut alice = TestDevice::start_discovering("alice").await;
+    alice.wait_discovery_status(RECOVERY, PORT_IN_USE).await;
+
+    // Hidden has no Discoverer, only the responder, which fails on the same port: ID holders
+    // cannot reach this Device, so it is still unavailable.
+    alice.device.set_visibility(Visibility::Hidden).await.unwrap();
+    assert_eq!(alice.device.discovery_status(), PORT_IN_USE);
+
+    drop(holder);
+    alice.wait_discovery_status(RECOVERY, DiscoveryStatus::Working).await;
+    assert_eq!(alice.device.discovery_status(), DiscoveryStatus::Working);
+
+    alice.shutdown().await;
+}
+
+#[tokio::test]
+async fn discovery_that_starts_fine_reports_nothing() {
+    let _alone = ONE_AT_A_TIME.lock().await;
+    if !multicast_available() {
+        return;
+    }
+    let mut alice = TestDevice::start_discovering("alice").await;
+    alice.device.set_visibility(Visibility::Hidden).await.unwrap();
+    alice.device.set_visibility(Visibility::Everyone).await.unwrap();
+    alice.quiet_for(SILENCE).await;
+    assert_eq!(alice.device.discovery_status(), DiscoveryStatus::Working);
+    assert!(
+        alice.log.iter().all(|e| !matches!(e.kind, bhayanakshare_core::EventKind::DiscoveryStatus(_))),
+        "{:#?}",
+        alice.log
+    );
+    alice.shutdown().await;
 }
