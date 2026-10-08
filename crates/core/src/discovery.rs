@@ -35,6 +35,7 @@
 
 use std::{
     collections::{BTreeMap, BTreeSet, HashMap, HashSet},
+    fmt, io,
     net::{IpAddr, Ipv4Addr, SocketAddr},
     sync::{
         Arc, Mutex,
@@ -54,9 +55,9 @@ use crate::{
     db::{Db, DbError},
     device::{Network, Shared, direct_addrs},
     device_name,
-    event::{EventKind, NearbyEvent},
+    event::{DiscoveryStatusEvent, EventKind, NearbyEvent},
     identity::DeviceId,
-    responder::{LanLookup, Responder},
+    responder::{self, LanLookup, Responder},
 };
 
 /// Our mDNS service name (`_bhayanakshare._udp.local.`). At most 15 characters (RFC 6335).
@@ -133,6 +134,58 @@ pub struct NearbyDevice {
     /// What the Device calls itself, as it announced. Untrusted text: show it next to the
     /// Fingerprint. Absent if it announced none.
     pub name: Option<String>,
+}
+
+/// Whether LAN discovery is running, as the user needs to know it. While Hidden it is the
+/// responder that has to run, since there is no `Discoverer`. A failing lookup when sending to
+/// an ID ([`LanLookup`]) is not a status: it happens per dial, and a Device that is not there is
+/// the usual reason.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, specta::Type)]
+#[serde(tag = "state", rename_all = "snake_case")]
+pub enum DiscoveryStatus {
+    Working,
+    /// Discovery could not start, and is tried again every [`DISCOVERY_CHECK`].
+    Unavailable { reason: UnavailableReason },
+}
+
+/// Why LAN discovery could not start, in the terms the UI words differently.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, specta::Type)]
+#[serde(rename_all = "snake_case")]
+pub enum UnavailableReason {
+    /// The mDNS port (UDP 5353) could not be bound: another program holds it without sharing it,
+    /// or the system or a firewall refused.
+    PortInUse,
+    /// The mDNS group could not be joined on any network interface: none is up, or none supports
+    /// multicast.
+    NoInterface,
+    Other,
+}
+
+/// The mDNS port could not be used, and why.
+#[derive(Debug)]
+pub(crate) struct MdnsError {
+    pub(crate) reason: UnavailableReason,
+    source: io::Error,
+}
+
+impl MdnsError {
+    pub(crate) fn new(reason: UnavailableReason, source: io::Error) -> Self {
+        Self { reason, source }
+    }
+}
+
+impl fmt::Display for MdnsError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.source.fmt(f)
+    }
+}
+
+impl std::error::Error for MdnsError {}
+
+impl From<MdnsError> for io::Error {
+    fn from(e: MdnsError) -> Self {
+        e.source
+    }
 }
 
 /// What this Device says on the LAN.
@@ -340,6 +393,9 @@ impl Table {
 struct Running {
     /// `None` if it could not start, which the next [`Discovery::refresh`] tries again.
     guard: Option<DropGuard>,
+    /// Why what has to run (the `Discoverer`, or the responder while Hidden) could not start, as
+    /// of the last try. `None` while it runs.
+    problem: Option<UnavailableReason>,
     /// The instance label `guard` was started with.
     label: String,
     tx: mpsc::UnboundedSender<Instance>,
@@ -347,8 +403,16 @@ struct Running {
     /// Whether the Visibility is Hidden: no `Discoverer`, and a responder instead.
     hidden: bool,
     /// Answers lookups, while the Visibility is Hidden and only then. Stopped or failed ones are
-    /// started again by [`Discovery::revive_responder`].
+    /// started again by [`Discovery::revive`].
     responder: Option<Responder>,
+}
+
+impl Running {
+    /// Whether what has to run is running: nothing to start again.
+    fn working(&self) -> bool {
+        self.problem.is_none()
+            && (!self.hidden || self.responder.as_ref().is_some_and(|r| !r.is_finished()))
+    }
 }
 
 /// A Device's LAN discovery, owned by [`Shared`].
@@ -363,6 +427,8 @@ pub(crate) struct Discovery {
     /// Whether a `Discoverer` is running, so heard instances mean something: it is not while
     /// Hidden, and what it said before then must not fill the list again.
     listening: AtomicBool,
+    /// Whether discovery works, as last reported.
+    status: Mutex<DiscoveryStatus>,
     /// Set when Contacts are added or removed: the beacons to recognise are those of the
     /// Devices whose IDs this Device holds.
     contacts_changed: AtomicBool,
@@ -383,13 +449,14 @@ impl Discovery {
             table: Mutex::default(),
             lookup,
             listening: AtomicBool::new(false),
+            status: Mutex::new(DiscoveryStatus::Working),
             contacts_changed: AtomicBool::new(false),
         }
     }
 
     /// Starts listening, and announcing as the Visibility says. Discovery is a convenience: if it
     /// cannot start (no multicast-capable network, port 5353 refused) the Device works without
-    /// it, and the Nearby area shows the firewall hint.
+    /// it, says so in its [`DiscoveryStatus`], and tries again every [`DISCOVERY_CHECK`].
     pub(crate) async fn start(&self, sh: &Arc<Shared>) {
         let (tx, rx) = mpsc::unbounded_channel();
         let interfaces: Vec<Ipv4Addr> = self.interfaces().await.into_iter().collect();
@@ -402,6 +469,7 @@ impl Discovery {
         }
         *self.running.lock().await = Some(Running {
             guard: None,
+            problem: None,
             label: String::new(),
             tx,
             interfaces,
@@ -412,7 +480,7 @@ impl Discovery {
         sh.tasks.spawn(ingest(sh.clone(), rx));
         sh.tasks.spawn(follow_addresses(sh.clone()));
         sh.tasks.spawn(rotate_beacon(sh.clone()));
-        sh.tasks.spawn(keep_responding(sh.clone()));
+        sh.tasks.spawn(keep_trying(sh.clone()));
     }
 
     /// Whether this Device is on the loopback test network, where loopback addresses are real.
@@ -423,6 +491,11 @@ impl Discovery {
     /// The Devices heard so far.
     pub(crate) fn nearby(&self) -> Vec<NearbyDevice> {
         self.table.lock().unwrap_or_else(|e| e.into_inner()).snapshot()
+    }
+
+    /// Whether discovery is working.
+    pub(crate) fn status(&self) -> DiscoveryStatus {
+        *self.status.lock().unwrap_or_else(|e| e.into_inner())
     }
 
     /// Notes that a Contact was added or removed.
@@ -448,6 +521,7 @@ impl Discovery {
             running.label.clear();
             self.forget_all(sh);
             self.start_responder(sh, running);
+            self.report(sh, running);
             return;
         }
         running.responder = None;
@@ -457,10 +531,21 @@ impl Discovery {
         if running.guard.is_none() || wanted.is_some_and(|label| label != running.label) {
             let label = wanted.map_or_else(|| plain_label(sh.id), str::to_owned);
             running.guard = None;
-            running.guard = self.spawn(sh.id, &label, &running.tx, &running.interfaces);
+            match self.spawn(&label, &running.tx, &running.interfaces) {
+                Ok(guard) => {
+                    running.guard = Some(guard);
+                    running.problem = None;
+                }
+                Err(e) => {
+                    let repeat = running.problem.replace(e.reason).is_some();
+                    let what = format!("LAN discovery could not start for {}", sh.id.fingerprint());
+                    log_failure(repeat, &what, &e);
+                }
+            }
             running.label = label;
             self.listening.store(running.guard.is_some(), Ordering::Release);
         }
+        self.report(sh, running);
         let Some(guard) = &running.guard else { return };
 
         // Removing everything also drops the TXT attributes, so they are set again below.
@@ -477,38 +562,60 @@ impl Discovery {
     }
 
     /// Starts the responder if there is none running. A failure is logged and left for
-    /// [`Discovery::revive_responder`] to try again.
+    /// [`Discovery::revive`] to try again.
     fn start_responder(&self, sh: &Shared, running: &mut Running) {
         if running.responder.as_ref().is_some_and(|r| !r.is_finished()) {
             return;
         }
         let (endpoint, clock) = (sh.endpoint.clone(), sh.clock.clone());
-        running.responder =
-            match Responder::start(sh.id, endpoint, clock, &running.interfaces, self.loopback_ok()) {
-                Ok(responder) => Some(responder),
-                Err(e) => {
-                    tracing::error!("this Device cannot answer lookups while Hidden: {e}");
-                    None
-                }
-            };
+        match Responder::start(sh.id, endpoint, clock, &running.interfaces, self.loopback_ok()) {
+            Ok(responder) => {
+                running.responder = Some(responder);
+                running.problem = None;
+            }
+            Err(e) => {
+                running.responder = None;
+                let repeat = running.problem.replace(e.reason).is_some();
+                log_failure(repeat, "this Device cannot answer lookups while Hidden", &e);
+            }
+        }
     }
 
-    /// Starts the responder again if this Device is Hidden and it has stopped or never started.
-    async fn revive_responder(&self, sh: &Shared) {
-        let mut running = self.running.lock().await;
-        if let Some(running) = running.as_mut().filter(|r| r.hidden) {
-            self.start_responder(sh, running);
+    /// Reports the status if it has changed since it was last reported.
+    fn report(&self, sh: &Shared, running: &Running) {
+        let status = match running.problem {
+            None => DiscoveryStatus::Working,
+            Some(reason) => DiscoveryStatus::Unavailable { reason },
+        };
+        let mut current = self.status.lock().unwrap_or_else(|e| e.into_inner());
+        if *current != status {
+            *current = status;
+            drop(current);
+            sh.events.emit(sh.now(), EventKind::DiscoveryStatus(DiscoveryStatusEvent { status }));
+        }
+    }
+
+    /// Tries again whatever could not start: the `Discoverer`, or the responder while Hidden, or
+    /// one that has stopped.
+    async fn revive(&self, sh: &Shared) {
+        let stuck = self.running.lock().await.as_ref().is_some_and(|r| !r.working());
+        if stuck {
+            self.refresh(sh).await;
         }
     }
 
     /// Starts a `Discoverer` that announces under `label` and reports what it hears to `tx`.
     fn spawn(
         &self,
-        own: DeviceId,
         label: &str,
         tx: &mpsc::UnboundedSender<Instance>,
         interfaces: &[Ipv4Addr],
-    ) -> Option<DropGuard> {
+    ) -> Result<DropGuard, MdnsError> {
+        // swarm-discovery starts with whichever of IPv4 and IPv6 it can bind and, when it can
+        // bind neither, says only that (`CannotBind`), not why. IPv4 is what the interfaces, the
+        // announcement and a Hidden Device's responder use, so it is tried first here, where the
+        // reason is known, and a Device that cannot use the port on it is not discoverable.
+        drop(responder::bind_mdns(interfaces)?);
         let tx = tx.clone();
         let spawned = Discoverer::new_interactive(SERVICE_NAME.to_owned(), label.to_owned())
             .with_multicast_interfaces_v4(interfaces.to_vec())
@@ -523,13 +630,7 @@ impl Discovery {
                 let _ = tx.send(instance);
             })
             .spawn(&tokio::runtime::Handle::current());
-        match spawned {
-            Ok(guard) => Some(guard),
-            Err(e) => {
-                tracing::warn!("LAN discovery could not start for {}: {e}", own.fingerprint());
-                None
-            }
-        }
+        spawned.map_err(|e| MdnsError::new(UnavailableReason::Other, io::Error::other(e)))
     }
 
     /// Stops announcing and listening.
@@ -712,17 +813,28 @@ async fn rotate_beacon(sh: Arc<Shared>) {
     }
 }
 
-/// How often a responder that has stopped is started again.
-const RESPONDER_CHECK: std::time::Duration = std::time::Duration::from_secs(15);
+/// How often discovery that could not start, or a responder that has stopped, is started again.
+const DISCOVERY_CHECK: std::time::Duration = std::time::Duration::from_secs(15);
 
-/// Starts the responder of a Hidden Device again if it has stopped or could not start.
-async fn keep_responding(sh: Arc<Shared>) {
+/// Logs why something could not start. Once for each time it starts failing: a try that fails
+/// again every [`DISCOVERY_CHECK`] would fill the log.
+fn log_failure(repeat: bool, what: &str, e: &MdnsError) {
+    if repeat {
+        tracing::debug!("{what}: {e}");
+    } else {
+        tracing::warn!("{what}: {e}");
+    }
+}
+
+/// Starts discovery, or the responder of a Hidden Device, again if it could not start or has
+/// stopped.
+async fn keep_trying(sh: Arc<Shared>) {
     loop {
         tokio::select! {
             () = sh.cancel.cancelled() => return,
-            () = tokio::time::sleep(RESPONDER_CHECK) => {}
+            () = tokio::time::sleep(DISCOVERY_CHECK) => {}
         }
-        sh.discovery.revive_responder(&sh).await;
+        sh.discovery.revive(&sh).await;
     }
 }
 

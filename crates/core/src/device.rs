@@ -32,7 +32,7 @@ use crate::{
     db::{Db, Scope, TransferRecord, Unfinished},
     device_name,
     dht::{self, PublicDht},
-    discovery::{Discovery, NearbyDevice, Visibility},
+    discovery::{Discovery, DiscoveryStatus, NearbyDevice, Visibility},
     error::Error,
     event::{EventKind, EventSink, EventStream, PreparingEvent, ProgressEvent, TransferEvent},
     first_run,
@@ -1022,6 +1022,14 @@ impl Device {
     /// arrive on the event stream as `Nearby` events, each holding the whole list.
     pub fn nearby(&self) -> Vec<NearbyDevice> {
         self.inner.shared.discovery.nearby()
+    }
+
+    /// Whether LAN discovery is working. When it could not start (the mDNS port is held by
+    /// another program, say) the Device still works, but finds and is found by nobody Nearby,
+    /// and it is tried again every 15 seconds. Changes arrive on the event stream as
+    /// `DiscoveryStatus` events.
+    pub fn discovery_status(&self) -> DiscoveryStatus {
+        self.inner.shared.discovery.status()
     }
 
     /// Saves the Device with ID `id` as a Contact. `device_name` is the name it goes by, as far

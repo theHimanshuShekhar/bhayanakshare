@@ -72,6 +72,55 @@ pub fn multicast_available() -> bool {
     false
 }
 
+/// Holds the mDNS port exclusively, as a program that does not share it would, so that a Device
+/// cannot bind it until this is dropped. `None` if it cannot be held here (something else has
+/// the port, shared or not), which is said on stderr, or fails the test if multicast was
+/// required, as `multicast_available` does.
+pub fn hold_mdns_port() -> Option<Socket> {
+    let hold = || -> std::io::Result<Socket> {
+        let socket = Socket::new(Domain::IPV4, Type::DGRAM, Some(Protocol::UDP))?;
+        // No SO_REUSEADDR or SO_REUSEPORT, which is all that keeps Linux from sharing it.
+        #[cfg(windows)]
+        exclusive(&socket)?;
+        socket.bind(&SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, MDNS.1).into())?;
+        Ok(socket)
+    };
+    match hold() {
+        Ok(socket) => Some(socket),
+        Err(e) => {
+            assert!(
+                std::env::var_os("BHAYANAKSHARE_REQUIRE_MULTICAST").is_none(),
+                "the mDNS port must be free to be held exclusively, but is not: {e}"
+            );
+            eprintln!(
+                "SKIPPED: this test needs to hold UDP port 5353 exclusively, which cannot be done \
+                 here ({e}). A Device that cannot bind the mDNS port was NOT tested."
+            );
+            None
+        }
+    }
+}
+
+/// Windows lets a socket that shares the port bind over one that was bound without sharing,
+/// unless that one asked for SO_EXCLUSIVEADDRUSE before it bound.
+#[cfg(windows)]
+fn exclusive(socket: &Socket) -> std::io::Result<()> {
+    use std::os::windows::io::AsRawSocket;
+    use windows_sys::Win32::Networking::WinSock::{SO_EXCLUSIVEADDRUSE, SOL_SOCKET, setsockopt};
+    let on: i32 = 1;
+    // SAFETY: the socket is open, and `on` is a live i32 of the length given.
+    let rc = unsafe {
+        setsockopt(
+            socket.as_raw_socket() as usize,
+            SOL_SOCKET,
+            SO_EXCLUSIVEADDRUSE,
+            (&raw const on).cast(),
+            std::mem::size_of::<i32>() as i32,
+        )
+    };
+    if rc == 0 { Ok(()) } else { Err(std::io::Error::last_os_error()) }
+}
+
 /// A socket on port 5353, shared, joined to the group on the loopback interface: it hears what
 /// anyone sends to the group and can send to it.
 pub fn mdns_socket() -> std::io::Result<tokio::net::UdpSocket> {

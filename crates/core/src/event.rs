@@ -7,7 +7,7 @@ use tokio::sync::mpsc;
 
 use crate::{
     clock::UnixMillis,
-    discovery::NearbyDevice,
+    discovery::{DiscoveryStatus, NearbyDevice},
     identity::DeviceId,
     transfer::{BatchId, Role, TransferId, TransferKind, TransferState},
 };
@@ -33,6 +33,8 @@ pub enum EventKind {
     Preparing(PreparingEvent),
     /// The list of Nearby Devices changed.
     Nearby(NearbyEvent),
+    /// LAN discovery started working or stopped being able to.
+    DiscoveryStatus(DiscoveryStatusEvent),
     /// Another Device runs a version of BhayanakShare that cannot exchange Transfers with this
     /// one, and was refused before any Offer.
     VersionMismatch(VersionMismatchEvent),
@@ -78,6 +80,16 @@ pub struct PreparingEvent {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, specta::Type)]
 pub struct NearbyEvent {
     pub devices: Vec<NearbyDevice>,
+}
+
+/// Whether LAN discovery is working, after a change. Not sent while it stays as it is, so a
+/// Device whose discovery works never sends one; [`Device::discovery_status`] has the current
+/// state for a listener that was not there for the last.
+///
+/// [`Device::discovery_status`]: crate::Device::discovery_status
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, specta::Type)]
+pub struct DiscoveryStatusEvent {
+    pub status: DiscoveryStatus,
 }
 
 /// Download progress of an accepted Transfer, reported by its Receiver while it is

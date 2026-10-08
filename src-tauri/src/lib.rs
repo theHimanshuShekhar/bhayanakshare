@@ -21,7 +21,7 @@ use std::{
 };
 
 use bhayanakshare_core::{
-    BatchId, Contact, Device, DeviceAddr, DeviceConfig, DeviceId, Error, Event, HistoryEntry,
+    BatchId, Contact, Device, DeviceAddr, DeviceConfig, DeviceId, DiscoveryStatus, Error, Event, HistoryEntry,
     HistoryQuery, IdentityFileError, KeyError, KeySource, Network, Role, SaveFolderProblem, SpaceCheck,
     SystemClock,
     SystemFreeSpace, TransferId, Visibility,
@@ -365,6 +365,13 @@ async fn visibility(device: State<'_, Device>) -> Result<Visibility, String> {
     Ok(device.visibility().await)
 }
 
+/// Whether LAN discovery is working, for a UI that was not listening when it last changed.
+#[tauri::command]
+#[specta::specta]
+fn discovery_status(device: State<'_, Device>) -> DiscoveryStatus {
+    device.discovery_status()
+}
+
 /// Changes who can see this Device as a Nearby Device; it takes effect at once.
 #[tauri::command]
 #[specta::specta]
@@ -670,6 +677,7 @@ pub fn specta_builder<R: Runtime>() -> Builder<R> {
             set_device_name,
             visibility,
             set_visibility::<tauri::Wry>,
+            discovery_status,
             public_dht,
             set_public_dht,
             autostart_enabled,

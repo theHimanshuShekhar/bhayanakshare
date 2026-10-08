@@ -58,6 +58,8 @@ export const commands = {
 	visibility: () => __TAURI_INVOKE<Visibility>("visibility"),
 	/**  Changes who can see this Device as a Nearby Device; it takes effect at once. */
 	setVisibility: (visibility: Visibility) => __TAURI_INVOKE<null>("set_visibility", { visibility }),
+	/**  Whether LAN discovery is working, for a UI that was not listening when it last changed. */
+	discoveryStatus: () => __TAURI_INVOKE<DiscoveryStatus>("discovery_status"),
 	/**
 	 *  Whether this Device uses the public Mainline DHT, besides n0 DNS, to publish its address and
 	 *  find its Contacts'.
@@ -178,6 +180,27 @@ export type DeviceEvent = Event;
  */
 export type DeviceId = string;
 
+/**
+ *  Whether LAN discovery is running, as the user needs to know it. While Hidden it is the
+ *  responder that has to run, since there is no `Discoverer`. A failing lookup when sending to
+ *  an ID ([`LanLookup`]) is not a status: it happens per dial, and a Device that is not there is
+ *  the usual reason.
+ */
+export type DiscoveryStatus = { state: "working" } | 
+/**  Discovery could not start, and is tried again every [`DISCOVERY_CHECK`]. */
+{ state: "unavailable"; reason: UnavailableReason };
+
+/**
+ *  Whether LAN discovery is working, after a change. Not sent while it stays as it is, so a
+ *  Device whose discovery works never sends one; [`Device::discovery_status`] has the current
+ *  state for a listener that was not there for the last.
+ * 
+ *  [`Device::discovery_status`]: crate::Device::discovery_status
+ */
+export type DiscoveryStatusEvent = {
+	status: DiscoveryStatus,
+};
+
 export type Event = {
 	/**  Position in the stream, counting from 0 with no gaps. */
 	seq: number,
@@ -202,6 +225,10 @@ export type EventKind =
 {
 	type: "nearby",
 } & NearbyEvent | 
+/**  LAN discovery started working or stopped being able to. */
+{
+	type: "discovery_status",
+} & DiscoveryStatusEvent | 
 /**
  *  Another Device runs a version of BhayanakShare that cannot exchange Transfers with this
  *  one, and was refused before any Offer.
@@ -515,6 +542,19 @@ export type TransferState = { kind: "offered" } | { kind: "accepted" } | { kind:
 { kind: "expired" } | 
 /**  One side stopped the Transfer before it completed; `by` is which. */
 { kind: "cancelled"; by: Role };
+
+/**  Why LAN discovery could not start, in the terms the UI words differently. */
+export type UnavailableReason = 
+/**
+ *  The mDNS port (UDP 5353) could not be bound: another program holds it without sharing it,
+ *  or the system or a firewall refused.
+ */
+"port_in_use" | 
+/**
+ *  The mDNS group could not be joined on any network interface: none is up, or none supports
+ *  multicast.
+ */
+"no_interface" | "other";
 
 /**  What to do about the latest release. */
 export type UpdateAction = 
