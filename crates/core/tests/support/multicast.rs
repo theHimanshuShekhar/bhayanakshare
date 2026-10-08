@@ -77,15 +77,20 @@ pub fn multicast_available() -> bool {
 /// the port, shared or not), which is said on stderr, or fails the test if multicast was
 /// required, as `multicast_available` does.
 pub fn hold_mdns_port() -> Option<Socket> {
-    let hold = || -> std::io::Result<Socket> {
+    let hold = |address: Ipv4Addr| -> std::io::Result<Socket> {
         let socket = Socket::new(Domain::IPV4, Type::DGRAM, Some(Protocol::UDP))?;
         // No SO_REUSEADDR or SO_REUSEPORT, which is all that keeps Linux from sharing it.
         #[cfg(windows)]
         exclusive(&socket)?;
-        socket.bind(&SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, MDNS.1).into())?;
+        socket.bind(&SocketAddrV4::new(address, MDNS.1).into())?;
         Ok(socket)
     };
-    match hold() {
+    // The wildcard address is what a Device binds. On a Windows runner another program (the DNS
+    // client) already shares the port on it, which an exclusive socket cannot join, so the
+    // loopback address is held instead: it overlaps the wildcard, and a Device on the loopback
+    // test network binds and joins there.
+    let held = hold(Ipv4Addr::UNSPECIFIED).or_else(|first| hold(Ipv4Addr::LOCALHOST).map_err(|_| first));
+    match held {
         Ok(socket) => Some(socket),
         Err(e) => {
             assert!(
