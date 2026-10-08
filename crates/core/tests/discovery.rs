@@ -23,6 +23,12 @@ use bhayanakshare_core::{DeviceId, NearbyDevice, Visibility};
 use support::{TestDevice, multicast::multicast_available};
 use swarm_discovery::{Discoverer, DropGuard};
 
+/// The tests run one at a time. Every Device here shares one multicast group (and the machine's
+/// own, port 5353 included), and mDNS answers a Device less often the more Devices are on the
+/// group: a name change that reaches a Contact in 3 seconds when the test is alone took over 30
+/// on a busy Windows runner with the other twelve tests running.
+static ONE_AT_A_TIME: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
 /// How long to wait to be sure a Device is not heard. The announcements come about every second.
 const SILENCE: Duration = Duration::from_secs(4);
 
@@ -46,6 +52,7 @@ async fn everyone(name: &str, device_name: &str) -> TestDevice {
 
 #[tokio::test]
 async fn two_everyone_devices_see_each_other_with_their_names() {
+    let _alone = ONE_AT_A_TIME.lock().await;
     if !multicast_available() {
         return;
     }
@@ -68,6 +75,7 @@ async fn two_everyone_devices_see_each_other_with_their_names() {
 
 #[tokio::test]
 async fn a_nearby_device_can_be_sent_to_by_its_id_alone() {
+    let _alone = ONE_AT_A_TIME.lock().await;
     if !multicast_available() {
         return;
     }
@@ -94,6 +102,7 @@ async fn a_nearby_device_can_be_sent_to_by_its_id_alone() {
 
 #[tokio::test]
 async fn only_everyone_is_announced_in_the_clear() {
+    let _alone = ONE_AT_A_TIME.lock().await;
     if !multicast_available() {
         return;
     }
@@ -124,6 +133,7 @@ async fn only_everyone_is_announced_in_the_clear() {
 
 #[tokio::test]
 async fn changing_the_visibility_takes_effect_at_once() {
+    let _alone = ONE_AT_A_TIME.lock().await;
     if !multicast_available() {
         return;
     }
@@ -156,6 +166,7 @@ const RENAME_WITHIN: Duration = Duration::from_secs(30);
 
 #[tokio::test]
 async fn a_new_device_name_is_announced_at_once() {
+    let _alone = ONE_AT_A_TIME.lock().await;
     if !multicast_available() {
         return;
     }
@@ -188,6 +199,7 @@ async fn a_new_device_name_is_announced_at_once() {
 
 #[tokio::test]
 async fn an_announced_name_is_never_stored_in_a_contact() {
+    let _alone = ONE_AT_A_TIME.lock().await;
     if !multicast_available() {
         return;
     }
@@ -213,6 +225,7 @@ async fn an_announced_name_is_never_stored_in_a_contact() {
 /// Needs no multicast: the setting is kept whether or not anything is discovered.
 #[tokio::test]
 async fn the_visibility_defaults_to_people_who_have_my_id_and_is_kept() {
+    let _alone = ONE_AT_A_TIME.lock().await;
     let mut alice = TestDevice::start("alice").await;
     assert_eq!(alice.device.visibility().await, Visibility::IdHolders);
     for v in [Visibility::Everyone, Visibility::Hidden, Visibility::IdHolders] {
@@ -293,6 +306,7 @@ async fn wait_contact_name(bob: &TestDevice, id: DeviceId, name: &str) {
 
 #[tokio::test]
 async fn a_device_that_holds_the_id_sees_the_device_nearby_with_its_name() {
+    let _alone = ONE_AT_A_TIME.lock().await;
     if !multicast_available() {
         return;
     }
@@ -321,6 +335,7 @@ async fn a_device_that_holds_the_id_sees_the_device_nearby_with_its_name() {
 
 #[tokio::test]
 async fn a_device_found_by_its_beacon_can_be_sent_to_by_its_id_alone() {
+    let _alone = ONE_AT_A_TIME.lock().await;
     if !multicast_available() {
         return;
     }
@@ -348,6 +363,7 @@ async fn a_device_found_by_its_beacon_can_be_sent_to_by_its_id_alone() {
 
 #[tokio::test]
 async fn a_device_without_the_id_sees_nothing_identifying() {
+    let _alone = ONE_AT_A_TIME.lock().await;
     if !multicast_available() {
         return;
     }
@@ -392,6 +408,7 @@ async fn a_device_without_the_id_sees_nothing_identifying() {
 
 #[tokio::test]
 async fn the_beacon_changes_with_the_epoch_and_the_id_holder_follows_it() {
+    let _alone = ONE_AT_A_TIME.lock().await;
     if !multicast_available() {
         return;
     }
@@ -436,6 +453,7 @@ fn is_nearby_without(event: &bhayanakshare_core::Event, id: DeviceId) -> bool {
 
 #[tokio::test]
 async fn a_contacts_device_name_refreshes_from_its_beacon_and_the_nickname_stays() {
+    let _alone = ONE_AT_A_TIME.lock().await;
     if !multicast_available() {
         return;
     }
@@ -462,6 +480,7 @@ async fn a_contacts_device_name_refreshes_from_its_beacon_and_the_nickname_stays
 
 #[tokio::test]
 async fn removing_a_contact_takes_its_beacon_out_of_the_nearby_list() {
+    let _alone = ONE_AT_A_TIME.lock().await;
     if !multicast_available() {
         return;
     }
