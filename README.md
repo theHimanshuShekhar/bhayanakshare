@@ -44,7 +44,7 @@ The packages register the `bhayanakshare://` scheme (the desktop file, `src-taur
 
 The release workflow is the one that sees the signing key, so its actions are pinned to commits (the tag is in a comment beside each), it caches nothing, and only its job has write permission. Update the pins by hand, checking the new tag.
 
-`.github/workflows/ci.yml` runs `pnpm typecheck` and `pnpm test` on every push and pull request (without `BHAYANAKSHARE_REQUIRE_MULTICAST`, as multicast may not work on a runner).
+`.github/workflows/ci.yml` runs `pnpm typecheck` and `pnpm test` on every push and pull request, on Ubuntu and on Windows (without `BHAYANAKSHARE_REQUIRE_MULTICAST`, as multicast may not work on a runner). A test that cannot run on Windows is `#[ignore]`d there with its reason, or prints `SKIPPED: ...` and says what it did not test; the Windows job runs with `RUST_TEST_NOCAPTURE` so that line is in its log.
 
 ### The update-signing key
 
@@ -130,7 +130,7 @@ First run and the save folder, as settings of the Device, are `crates/core/tests
 
 Identity export and import is `crates/core/tests/identity.rs`, with `KeySource::File`. Where the key lives (store, file, marker) is unit-tested in `crates/core/src/keystore.rs` against a fake secret store; no test touches the real one, as it would be the developer's own key.
 
-`TestDevice::restart` shuts a Device down and starts another on the same folders, to test resume after a clean restart. A Device that is killed instead is a separate seam: `crates/core/tests/crash.rs` runs a Receiver in a child process (this test binary again), kills it with SIGKILL part-way through a fetch, and starts a Device on its folders. A restarted Device is told where to find another with `Device::note_address`, as discovery would on a real network.
+`TestDevice::restart` shuts a Device down and starts another on the same folders, to test resume after a clean restart. A Device that is killed instead is a separate seam: `crates/core/tests/crash.rs` runs a Receiver in a child process (this test binary again), kills it (SIGKILL; `TerminateProcess` on Windows) part-way through a fetch, and starts a Device on its folders. A restarted Device is told where to find another with `Device::note_address`, as discovery would on a real network.
 
 The log's privacy is `crates/core/tests/log_privacy.rs`, a test binary of its own because it installs a global `tracing` subscriber (a subscriber scoped to the test's thread would miss the tasks iroh starts on its own); Settings → Diagnostics through the Device API is `crates/core/tests/diagnostics.rs`; the rolling files and the zip are unit-tested in `crates/core/src/logs.rs`, and the installed subscriber in `src-tauri/tests/logging.rs` (also its own binary, for the global subscriber and panic hook).
 
