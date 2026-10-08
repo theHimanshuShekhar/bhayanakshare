@@ -3323,8 +3323,9 @@ describe("Identity", () => {
       for (const label of ["Password", "Type the password again"]) {
         expect(screen.getByLabelText(label).getAttribute("type")).toBe("password");
       }
-      // The first field has focus, so typing can start at once.
-      expect(document.activeElement).toBe(screen.getByLabelText("Password"));
+      // The first field has focus, so typing can start at once. An effect moves it, which can
+      // run after the field is found.
+      await waitFor(() => expect(document.activeElement).toBe(screen.getByLabelText("Password")));
     });
 
     it("suggests a file name with the Fingerprint, writes the file there and says where", async () => {
@@ -3336,7 +3337,7 @@ describe("Identity", () => {
       await waitFor(() => expect(device.api.exportIdentity).toHaveBeenCalledWith("/home/me/id.bhid", PASSWORD));
       expect((await findStatus()).textContent).toContain("Saved to /home/me/id.bhid");
       const close = screen.getByRole("button", { name: "Close" });
-      expect(document.activeElement).toBe(close);
+      await waitFor(() => expect(document.activeElement).toBe(close));
       // The password does not outlive its use.
       expect(screen.queryByLabelText("Password")).toBeNull();
       fireEvent.click(close);
@@ -3389,7 +3390,7 @@ describe("Identity", () => {
       await startImport();
       expect(screen.getByText("File: old-laptop.bhid")).toBeTruthy();
       expect(screen.getByLabelText("Password of this file").getAttribute("type")).toBe("password");
-      expect(document.activeElement).toBe(screen.getByLabelText("Password of this file"));
+      await waitFor(() => expect(document.activeElement).toBe(screen.getByLabelText("Password of this file")));
     });
 
     it("warns before replacing, showing the Fingerprint being replaced, and changes nothing yet", async () => {
