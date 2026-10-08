@@ -205,7 +205,11 @@ async fn a_folder_of_hundreds_of_small_files_arrives_whole() {
     }
 
     let began = std::time::Instant::now();
-    send_and_accept(&mut alice, &mut bob, &[many.clone()]).await;
+    let id = alice.device.send(bob.addr(), &[many.clone()]).await.unwrap();
+    bob.wait_offer().await;
+    bob.device.accept(id).await.unwrap();
+    bob.wait_state_big(id, "completed").await;
+    alice.wait_state_big(id, "completed").await;
     eprintln!("600 files sent and received in {:?}", began.elapsed());
 
     assert_eq!(snapshot(&bob.save_dir.join("many")), snapshot(&many));

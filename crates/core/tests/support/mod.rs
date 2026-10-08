@@ -27,8 +27,8 @@ use tempfile::TempDir;
 const EVENT_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// How long `wait_state_big` waits for any single event. It is the limit for a hang, not a
-/// speed: the 256 to 512 MB Transfers of the resume and crash tests take under a minute on a
-/// Windows runner, where they take a few seconds on Linux.
+/// speed: the 256 to 512 MB Transfers of the resume and crash tests, and the 600 small files of
+/// the folder test, take up to a minute on a Windows runner, where they take seconds on Linux.
 const BIG_TRANSFER_TIMEOUT: Duration = Duration::from_secs(if cfg!(windows) { 150 } else { 30 });
 
 /// How long a test lets a Device take to shut down.
@@ -212,7 +212,7 @@ impl TestDevice {
         .await
     }
 
-    /// Like `wait_state`, for a Transfer of hundreds of megabytes that is still moving: allows
+    /// Like `wait_state`, for a Transfer of hundreds of megabytes or files that is still moving: allows
     /// `BIG_TRANSFER_TIMEOUT` and says on stderr how long it took.
     pub async fn wait_state_big(&mut self, id: TransferId, label: &str) -> TransferEvent {
         let began = std::time::Instant::now();
