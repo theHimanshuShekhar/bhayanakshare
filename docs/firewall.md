@@ -21,7 +21,7 @@ This is not the firewall guess above: BhayanakShare tried to open the mDNS port 
 - **No network connection can use it.** No network interface is up, or none supports multicast. Connect to a network. A VPN that takes over all traffic can leave nothing else (see Other causes below).
 - **The system reported an error.** The line in the log says which: Settings, Diagnostics, Export diagnostics.
 
-Nothing needs a restart: BhayanakShare tries again every 15 seconds, and also whenever the Visibility, the Device Name or the network address changes, and the hint goes away by itself when it works. Until then the Device finds nobody Nearby and nobody finds it. A **Hidden** Device also cannot answer a Device that asks for it by its Device ID, so people who have its ID cannot reach it on the local network; sending to it over the internet still works. Sending to a Device by its Device ID works whatever happens here.
+Nothing needs a restart: BhayanakShare tries again every 15 seconds, and also whenever the Visibility, the Device Name or the network address changes, each time looking at the network connections as they are then (so one that came up since is used), and the hint goes away by itself when it works. Home reports a problem only when local discovery cannot run at all: if the port can be used on IPv6 but not on IPv4, discovery runs on IPv6 and BhayanakShare keeps trying for IPv4. Until then the Device finds nobody Nearby and nobody finds it. A **Hidden** Device also cannot answer a Device that asks for it by its Device ID, so people who have its ID cannot reach it on the local network; sending to it over the internet still works. Sending to a Device by its Device ID works whatever happens here.
 
 ## Linux
 

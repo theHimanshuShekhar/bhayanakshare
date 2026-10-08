@@ -30,8 +30,13 @@
 //! cannot bind when sending to an ID fails that one dial and is not a status. A start that failed
 //! is recovered, not left for a restart: [`Discovery::refresh`] tries it again (as it does on every
 //! new epoch, setting change or address change) and so does a tick every [`DISCOVERY_CHECK`], which
-//! also starts a responder that has stopped. The status goes back to working as soon as a try
-//! binds.
+//! also starts a responder that has stopped. Each such try looks at the network interfaces as they
+//! are then, not as they were at start, so an interface that came up since is used. The status goes
+//! back to working as soon as a try binds. swarm-discovery runs on IPv4, IPv6 or both, whichever it
+//! can bind, and the `Discoverer` is started first as it decides that: a Device that can bind only
+//! IPv6 is discovering and says so (working), and is started again on both once the tick finds IPv4
+//! can be bound. Only a Device on which neither can be bound is unavailable, and the reason is
+//! found by trying IPv4 then (see [`judge`]).
 //!
 //! What is heard is kept as a table of Nearby Devices, reported on the event stream whenever it
 //! changes, and its addresses are handed to iroh, so dialling a Nearby Device by its ID alone
@@ -46,7 +51,7 @@
 
 use std::{
     collections::{BTreeMap, BTreeSet, HashMap, HashSet},
-    fmt, io,
+    io,
     net::{IpAddr, Ipv4Addr, SocketAddr},
     sync::{
         Arc, Mutex,
@@ -68,7 +73,7 @@ use crate::{
     device_name,
     event::{DiscoveryStatusEvent, EventKind, NearbyEvent},
     identity::DeviceId,
-    responder::{self, LanLookup, Responder},
+    responder::{self, LanLookup, MdnsError, Responder},
 };
 
 /// Our mDNS service name (`_bhayanakshare._udp.local.`). At most 15 characters (RFC 6335).
@@ -164,39 +169,12 @@ pub enum DiscoveryStatus {
 #[serde(rename_all = "snake_case")]
 pub enum UnavailableReason {
     /// The mDNS port (UDP 5353) could not be bound: another program holds it without sharing it,
-    /// or the system or a firewall refused.
+    /// or the system or security software refused.
     PortInUse,
     /// The mDNS group could not be joined on any network interface: none is up, or none supports
     /// multicast.
     NoInterface,
     Other,
-}
-
-/// The mDNS port could not be used, and why.
-#[derive(Debug)]
-pub(crate) struct MdnsError {
-    pub(crate) reason: UnavailableReason,
-    source: io::Error,
-}
-
-impl MdnsError {
-    pub(crate) fn new(reason: UnavailableReason, source: io::Error) -> Self {
-        Self { reason, source }
-    }
-}
-
-impl fmt::Display for MdnsError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        self.source.fmt(f)
-    }
-}
-
-impl std::error::Error for MdnsError {}
-
-impl From<MdnsError> for io::Error {
-    fn from(e: MdnsError) -> Self {
-        e.source
-    }
 }
 
 /// What this Device says on the LAN.
@@ -404,9 +382,12 @@ impl Table {
 struct Running {
     /// `None` if it could not start, which the next [`Discovery::refresh`] tries again.
     guard: Option<DropGuard>,
-    /// Why what has to run (the `Discoverer`, or the responder while Hidden) could not start, as
-    /// of the last try. `None` while it runs.
-    problem: Option<UnavailableReason>,
+    /// What could not start, and why, as of the last try: the `Discoverer`, or the responder
+    /// while Hidden. `None` while both run.
+    problem: Option<(Part, UnavailableReason)>,
+    /// The `Discoverer` runs on IPv6 alone, as IPv4 could not be bound. Discovery works, so it is
+    /// not a problem to report, but the next [`Discovery::revive`] tries IPv4 again.
+    v4_missing: bool,
     /// The instance label `guard` was started with.
     label: String,
     tx: mpsc::UnboundedSender<Instance>,
@@ -418,11 +399,61 @@ struct Running {
     responder: Option<Responder>,
 }
 
+/// The two things that may fail to start.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Part {
+    Discoverer,
+    Responder,
+}
+
 impl Running {
-    /// Whether what has to run is running: nothing to start again.
+    /// Whether what has to run is running, on every address family it can: nothing to start
+    /// again.
     fn working(&self) -> bool {
         self.problem.is_none()
+            && !self.v4_missing
             && (!self.hidden || self.responder.as_ref().is_some_and(|r| !r.is_finished()))
+    }
+
+    /// Notes how starting `part` went. A failure is logged as a warning when it is new, and in
+    /// debug when it is the same part failing again (a try every [`DISCOVERY_CHECK`] would fill
+    /// the log); a start that works after a failure is logged as the recovery.
+    fn record(&mut self, part: Part, own: DeviceId, started: Result<(), MdnsError>) {
+        let what = match part {
+            Part::Discoverer => format!("LAN discovery could not start for {}", own.fingerprint()),
+            Part::Responder => "this Device cannot answer lookups while Hidden".to_owned(),
+        };
+        match started {
+            Ok(()) => {
+                if self.problem.take().is_some() {
+                    tracing::info!("LAN discovery works again for {}", own.fingerprint());
+                }
+            }
+            Err(e) => {
+                let before = self.problem.replace((part, e.reason));
+                if before.is_some_and(|(was, _)| was == part) {
+                    tracing::debug!("{what}: {e}");
+                } else {
+                    tracing::warn!("{what}: {e}");
+                }
+            }
+        }
+    }
+}
+
+/// What starting the `Discoverer` came to, given what swarm-discovery said and whether IPv4 (the
+/// family the interfaces, the Hidden responder and the probe use) could be bound when probed
+/// after. swarm-discovery runs on whichever family it can bind and, when it can bind neither,
+/// says only that (`CannotBind`), not why: the probe supplies the reason. `Ok` holds the guard
+/// and whether IPv4 is missing.
+fn judge<G, E: Into<Box<dyn std::error::Error + Send + Sync>>>(
+    spawned: Result<G, E>,
+    v4: Option<MdnsError>,
+) -> Result<(G, bool), MdnsError> {
+    match (spawned, v4) {
+        (Ok(guard), v4) => Ok((guard, v4.is_some())),
+        (Err(_), Some(probe)) => Err(probe),
+        (Err(e), None) => Err(MdnsError::new(UnavailableReason::Other, io::Error::other(e))),
     }
 }
 
@@ -481,6 +512,7 @@ impl Discovery {
         *self.running.lock().await = Some(Running {
             guard: None,
             problem: None,
+            v4_missing: false,
             label: String::new(),
             tx,
             interfaces,
@@ -523,12 +555,24 @@ impl Discovery {
         let addrs = self.announced_addrs(&sh.endpoint);
         let announce = announcement(visibility, sh.id, &name, beacon::epoch_of(sh.now()), &addrs);
 
+        // Whatever is not running is about to be started again, perhaps after the network changed
+        // (an interface came up, a VPN went away): look at the interfaces as they are now, not as
+        // they were when the Device started. The interfaces of a running one are left alone.
+        if !running.working() {
+            running.interfaces = self.interfaces().await.into_iter().collect();
+            // The Discoverer that lacks IPv4 is started again only once IPv4 can be bound.
+            if running.v4_missing && responder::bind_mdns(&running.interfaces).is_ok() {
+                running.guard = None;
+            }
+        }
+
         running.hidden = visibility == Visibility::Hidden;
         if running.hidden {
             // Nothing is sent, so no `Discoverer`: it would query for the service all the time.
             // What it had heard goes with it.
             self.listening.store(false, Ordering::Release);
             running.guard = None;
+            running.v4_missing = false;
             running.label.clear();
             self.forget_all(sh);
             self.start_responder(sh, running);
@@ -542,17 +586,16 @@ impl Discovery {
         if running.guard.is_none() || wanted.is_some_and(|label| label != running.label) {
             let label = wanted.map_or_else(|| plain_label(sh.id), str::to_owned);
             running.guard = None;
-            match self.spawn(&label, &running.tx, &running.interfaces) {
-                Ok(guard) => {
+            running.v4_missing = false;
+            let started = match self.spawn(&label, &running.tx, &running.interfaces) {
+                Ok((guard, v4_missing)) => {
                     running.guard = Some(guard);
-                    running.problem = None;
+                    running.v4_missing = v4_missing;
+                    Ok(())
                 }
-                Err(e) => {
-                    let repeat = running.problem.replace(e.reason).is_some();
-                    let what = format!("LAN discovery could not start for {}", sh.id.fingerprint());
-                    log_failure(repeat, &what, &e);
-                }
-            }
+                Err(e) => Err(e),
+            };
+            running.record(Part::Discoverer, sh.id, started);
             running.label = label;
             self.listening.store(running.guard.is_some(), Ordering::Release);
         }
@@ -579,24 +622,18 @@ impl Discovery {
             return;
         }
         let (endpoint, clock) = (sh.endpoint.clone(), sh.clock.clone());
-        match Responder::start(sh.id, endpoint, clock, &running.interfaces, self.loopback_ok()) {
-            Ok(responder) => {
-                running.responder = Some(responder);
-                running.problem = None;
-            }
-            Err(e) => {
-                running.responder = None;
-                let repeat = running.problem.replace(e.reason).is_some();
-                log_failure(repeat, "this Device cannot answer lookups while Hidden", &e);
-            }
-        }
+        let started =
+            Responder::start(sh.id, endpoint, clock, &running.interfaces, self.loopback_ok());
+        running.responder = None;
+        let started = started.map(|responder| running.responder = Some(responder));
+        running.record(Part::Responder, sh.id, started);
     }
 
     /// Reports the status if it has changed since it was last reported.
     fn report(&self, sh: &Shared, running: &Running) {
         let status = match running.problem {
             None => DiscoveryStatus::Working,
-            Some(reason) => DiscoveryStatus::Unavailable { reason },
+            Some((_, reason)) => DiscoveryStatus::Unavailable { reason },
         };
         let mut current = self.status.lock().unwrap_or_else(|e| e.into_inner());
         if *current != status {
@@ -615,18 +652,14 @@ impl Discovery {
         }
     }
 
-    /// Starts a `Discoverer` that announces under `label` and reports what it hears to `tx`.
+    /// Starts a `Discoverer` that announces under `label` and reports what it hears to `tx`, and
+    /// whether it runs without IPv4. See [`judge`].
     fn spawn(
         &self,
         label: &str,
         tx: &mpsc::UnboundedSender<Instance>,
         interfaces: &[Ipv4Addr],
-    ) -> Result<DropGuard, MdnsError> {
-        // swarm-discovery starts with whichever of IPv4 and IPv6 it can bind and, when it can
-        // bind neither, says only that (`CannotBind`), not why. IPv4 is what the interfaces, the
-        // announcement and a Hidden Device's responder use, so it is tried first here, where the
-        // reason is known, and a Device that cannot use the port on it is not discoverable.
-        drop(responder::bind_mdns(interfaces)?);
+    ) -> Result<(DropGuard, bool), MdnsError> {
         let tx = tx.clone();
         let spawned = Discoverer::new_interactive(SERVICE_NAME.to_owned(), label.to_owned())
             .with_multicast_interfaces_v4(interfaces.to_vec())
@@ -641,7 +674,9 @@ impl Discovery {
                 let _ = tx.send(instance);
             })
             .spawn(&tokio::runtime::Handle::current());
-        spawned.map_err(|e| MdnsError::new(UnavailableReason::Other, io::Error::other(e)))
+        // After it, not before: swarm-discovery decides whether it runs, and this only says why
+        // it does not, or that IPv4 is missing.
+        judge(spawned, responder::bind_mdns(interfaces).err())
     }
 
     /// Stops announcing and listening.
@@ -827,16 +862,6 @@ async fn rotate_beacon(sh: Arc<Shared>) {
 /// How often discovery that could not start, or a responder that has stopped, is started again.
 const DISCOVERY_CHECK: std::time::Duration = std::time::Duration::from_secs(15);
 
-/// Logs why something could not start. Once for each time it starts failing: a try that fails
-/// again every [`DISCOVERY_CHECK`] would fill the log.
-fn log_failure(repeat: bool, what: &str, e: &MdnsError) {
-    if repeat {
-        tracing::debug!("{what}: {e}");
-    } else {
-        tracing::warn!("{what}: {e}");
-    }
-}
-
 /// Starts discovery, or the responder of a Hidden Device, again if it could not start or has
 /// stopped.
 async fn keep_trying(sh: Arc<Shared>) {
@@ -889,6 +914,75 @@ mod tests {
             name: None,
             beacon: Some(a.txt[0].1.clone()),
         }
+    }
+
+    fn failure(reason: UnavailableReason) -> MdnsError {
+        MdnsError::new(reason, io::Error::other("it failed"))
+    }
+
+    #[test]
+    fn a_discoverer_that_runs_is_working_and_says_whether_it_lacks_ipv4() {
+        let both = judge(Ok::<_, io::Error>(()), None);
+        assert!(matches!(both, Ok(((), false))));
+        // Only IPv6 could be bound: swarm-discovery runs, which is the decision, not the probe's.
+        let v6_only = judge(Ok::<_, io::Error>(()), Some(failure(UnavailableReason::PortInUse)));
+        assert!(matches!(v6_only, Ok(((), true))));
+    }
+
+    #[test]
+    fn a_discoverer_that_does_not_run_gets_the_reason_the_ipv4_probe_found() {
+        let e = io::Error::other("Cannot bind to IPv4 or IPv6");
+        let port = judge::<(), _>(Err(e), Some(failure(UnavailableReason::PortInUse)));
+        assert_eq!(port.err().map(|e| e.reason), Some(UnavailableReason::PortInUse));
+        let e = io::Error::other("Cannot bind to IPv4 or IPv6");
+        let interface = judge::<(), _>(Err(e), Some(failure(UnavailableReason::NoInterface)));
+        assert_eq!(interface.err().map(|e| e.reason), Some(UnavailableReason::NoInterface));
+        // IPv4 binds, yet it did not run: nothing says why.
+        let e = io::Error::other("Cannot bind to IPv4 or IPv6");
+        let unknown = judge::<(), _>(Err(e), None);
+        assert_eq!(unknown.err().map(|e| e.reason), Some(UnavailableReason::Other));
+    }
+
+    fn running(hidden: bool) -> Running {
+        Running {
+            guard: None,
+            problem: None,
+            v4_missing: false,
+            label: String::new(),
+            tx: mpsc::unbounded_channel().0,
+            interfaces: Vec::new(),
+            hidden,
+            responder: None,
+        }
+    }
+
+    #[test]
+    fn what_is_not_running_is_started_again_with_the_interfaces_as_they_are() {
+        // `refresh` reads the interfaces anew exactly when this is false.
+        assert!(running(false).working());
+
+        let mut failed = running(false);
+        failed.record(Part::Discoverer, id(1), Err(failure(UnavailableReason::NoInterface)));
+        assert!(!failed.working());
+
+        let mut v6_only = running(false);
+        v6_only.v4_missing = true;
+        assert!(!v6_only.working(), "IPv4 is tried again");
+
+        // Hidden is working only with a responder; there is none here.
+        assert!(!running(true).working());
+    }
+
+    #[test]
+    fn a_failure_is_kept_by_the_part_that_failed_and_cleared_by_a_start_that_works() {
+        let mut r = running(false);
+        r.record(Part::Discoverer, id(1), Err(failure(UnavailableReason::PortInUse)));
+        assert_eq!(r.problem, Some((Part::Discoverer, UnavailableReason::PortInUse)));
+        // The responder failing while the Discoverer already was is a new failure of its own.
+        r.record(Part::Responder, id(1), Err(failure(UnavailableReason::PortInUse)));
+        assert_eq!(r.problem, Some((Part::Responder, UnavailableReason::PortInUse)));
+        r.record(Part::Responder, id(1), Ok(()));
+        assert_eq!(r.problem, None);
     }
 
     #[test]

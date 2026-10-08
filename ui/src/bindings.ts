@@ -547,7 +547,7 @@ export type TransferState = { kind: "offered" } | { kind: "accepted" } | { kind:
 export type UnavailableReason = 
 /**
  *  The mDNS port (UDP 5353) could not be bound: another program holds it without sharing it,
- *  or the system or a firewall refused.
+ *  or the system or security software refused.
  */
 "port_in_use" | 
 /**

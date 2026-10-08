@@ -54,7 +54,7 @@ use crate::{
     beacon::{self, Epoch, Index},
     clock::Clock,
     device::direct_addrs,
-    discovery::{MdnsError, SERVICE_NAME, UnavailableReason, dialable, port_of},
+    discovery::{SERVICE_NAME, UnavailableReason, dialable, port_of},
     identity::DeviceId,
 };
 
@@ -268,6 +268,33 @@ async fn respond(
             port_of(&addrs, SocketAddr::is_ipv6),
         );
         send_to_group(&socket, &answer(&label, &sealed), &interfaces).await;
+    }
+}
+
+/// The mDNS port could not be used, and why.
+#[derive(Debug)]
+pub(crate) struct MdnsError {
+    pub(crate) reason: UnavailableReason,
+    source: io::Error,
+}
+
+impl MdnsError {
+    pub(crate) fn new(reason: UnavailableReason, source: io::Error) -> Self {
+        Self { reason, source }
+    }
+}
+
+impl std::fmt::Display for MdnsError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        std::fmt::Display::fmt(&self.source, f)
+    }
+}
+
+impl std::error::Error for MdnsError {}
+
+impl From<MdnsError> for io::Error {
+    fn from(e: MdnsError) -> Self {
+        e.source
     }
 }
 

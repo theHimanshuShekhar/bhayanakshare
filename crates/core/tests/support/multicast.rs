@@ -4,13 +4,13 @@
 
 use std::{
     mem::MaybeUninit,
-    net::{Ipv4Addr, SocketAddrV4},
+    net::{Ipv4Addr, Ipv6Addr, SocketAddrV4, SocketAddrV6},
     sync::{Arc, Mutex, OnceLock},
     time::Duration,
 };
 
 use bhayanakshare_core::DeviceId;
-use socket2::{Domain, Protocol, Socket, Type};
+use socket2::{Domain, Protocol, SockAddr, Socket, Type};
 
 /// The mDNS group and port, which is where a Device asks for a Hidden one.
 pub const MDNS: (Ipv4Addr, u16) = (Ipv4Addr::new(224, 0, 0, 251), 5353);
@@ -72,6 +72,11 @@ pub fn multicast_available() -> bool {
     false
 }
 
+/// The mDNS port, held exclusively on IPv4 and, where it can be, on IPv6: swarm-discovery runs on
+/// whichever family it binds, so a test that wants a Device to be unable to start discovery must
+/// keep both. Dropped, it frees them.
+pub struct HeldPort(#[allow(dead_code)] Vec<Socket>);
+
 /// Holds the mDNS port exclusively, as a program that does not share it would, so that a Device
 /// cannot bind it until this is dropped. `None` if it cannot be held here (something else has
 /// the port, shared or not), which is said on stderr, or fails the test if multicast was
@@ -79,17 +84,25 @@ pub fn multicast_available() -> bool {
 /// already shares the port, which an exclusive socket cannot join (WSAEADDRINUSE, also when the
 /// loopback address alone is tried), so the tests of a Device that cannot bind it are skipped
 /// there.
-pub fn hold_mdns_port() -> Option<Socket> {
-    let hold = || -> std::io::Result<Socket> {
-        let socket = Socket::new(Domain::IPV4, Type::DGRAM, Some(Protocol::UDP))?;
+pub fn hold_mdns_port() -> Option<HeldPort> {
+    let hold = |domain: Domain, address: SockAddr| -> std::io::Result<Socket> {
+        let socket = Socket::new(domain, Type::DGRAM, Some(Protocol::UDP))?;
         // No SO_REUSEADDR or SO_REUSEPORT, which is all that keeps Linux from sharing it.
         #[cfg(windows)]
         exclusive(&socket)?;
-        socket.bind(&SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, MDNS.1).into())?;
+        if domain == Domain::IPV6 {
+            socket.set_only_v6(true)?;
+        }
+        socket.bind(&address)?;
         Ok(socket)
     };
-    match hold() {
-        Ok(socket) => Some(socket),
+    let v4 = hold(Domain::IPV4, SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, MDNS.1).into());
+    match v4 {
+        Ok(v4) => {
+            // Where there is no IPv6, or it is held already, a Device cannot use it either.
+            let v6 = hold(Domain::IPV6, SocketAddrV6::new(Ipv6Addr::UNSPECIFIED, MDNS.1, 0, 0).into());
+            Some(HeldPort([Some(v4), v6.ok()].into_iter().flatten().collect()))
+        }
         Err(e) => {
             assert!(
                 std::env::var_os("BHAYANAKSHARE_REQUIRE_MULTICAST").is_none(),
