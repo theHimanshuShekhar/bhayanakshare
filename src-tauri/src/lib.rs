@@ -5,6 +5,7 @@
 //! the TypeScript for both is generated from the Rust types into `ui/src/bindings.ts`
 //! (`pnpm bindings`; a test fails when the file is stale).
 
+mod autostart;
 mod background;
 pub mod logging;
 mod notice;
@@ -20,6 +21,7 @@ use std::{
     time::Duration,
 };
 
+use autostart::Autostart;
 use bhayanakshare_core::{
     BatchId, Contact, Device, DeviceAddr, DeviceConfig, DeviceId, DiscoveryStatus, Error, Event, HistoryEntry,
     HistoryQuery, IdentityFileError, KeyError, KeySource, Network, Role, SaveFolderProblem, SpaceCheck,
@@ -30,7 +32,6 @@ use logging::Logging;
 use serde::Serialize;
 use specta::Type;
 use tauri::{AppHandle, Manager, Runtime, State};
-use tauri_plugin_autostart::AutoLaunchManager;
 use tauri_plugin_dialog::{DialogExt as _, MessageDialogKind};
 use tauri_specta::{Builder, ErrorHandlingMode, Event as _, collect_commands, collect_events};
 
@@ -445,7 +446,7 @@ async fn export_diagnostics(
 /// Whether this Device starts when the user logs in.
 #[tauri::command]
 #[specta::specta]
-fn autostart_enabled(autostart: State<'_, AutoLaunchManager>) -> Result<bool, String> {
+fn autostart_enabled(autostart: State<'_, Autostart>) -> Result<bool, String> {
     autostart.is_enabled().map_err(|e| e.to_string())
 }
 
@@ -455,7 +456,7 @@ fn autostart_enabled(autostart: State<'_, AutoLaunchManager>) -> Result<bool, St
 #[tauri::command]
 #[specta::specta]
 async fn set_autostart(
-    autostart: State<'_, AutoLaunchManager>,
+    autostart: State<'_, Autostart>,
     device: State<'_, Device>,
     on: bool,
 ) -> Result<(), String> {
@@ -822,13 +823,21 @@ pub fn run() {
     if !separate {
         // Registered first, as the plugin asks: a second launch ends in its setup, handing
         // its arguments to the running instance.
+        //
+        // This is also how a `bhayanakshare://` link reaches a running app on Windows and
+        // Linux: the desktop starts the program with the link as its only argument (the
+        // installer's `"…\bhayanakshare.exe" "%1"` on Windows). Before the callback runs, the
+        // plugin (its `deep-link` feature) gives the arguments to the deep-link plugin, which
+        // takes a lone argument whose scheme is in `tauri.conf.json`, keeps it for the UI's
+        // `getCurrent` and fires `deep-link://new-url`: the UI's `onOpenUrl` opens Add Contact,
+        // and `background::show_on_link` brings the window forward. The callback then does the
+        // same for files, and finds none in a link (`background::files_in`).
         app = app.plugin(tauri_plugin_single_instance::init(|app, argv, cwd| {
             background::second_launch(app, &argv, &cwd)
         }));
     }
     app = app
         .plugin(tauri_plugin_deep_link::init())
-        .plugin(tauri_plugin_autostart::Builder::new().arg(background::BACKGROUND_FLAG).build())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_updater::Builder::new().build());
@@ -844,6 +853,7 @@ pub fn run() {
             app.manage(notice::Notifier::default());
             app.manage(Relaunch::default());
             app.manage(updates::Updates::default());
+            app.manage(Autostart::new(app.handle(), &[background::BACKGROUND_FLAG])?);
             let config = default_config(app);
             // Before anything else that could have something to say: the log is in the data
             // folder, which is the Device's to say where.

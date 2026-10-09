@@ -56,7 +56,8 @@ async fn the_export_holds_the_logs_and_an_about_file_with_the_fingerprint_and_no
     assert!(about.contains("Debug logging: on"), "{about}");
     assert!(about.contains("Visibility: IdHolders"), "{about}");
     assert!(about.contains("Network: Localhost"), "{about}");
-    assert!(about.contains(&format!("System: {}", std::env::consts::OS)), "{about}");
+    let system = if cfg!(windows) { "Windows" } else { std::env::consts::OS };
+    assert!(about.contains(&format!("System: {system}")), "{about}");
     // Not the whole ID, in either spelling, anywhere in the zip.
     let hex: String = id.as_bytes().iter().map(|b| format!("{b:02x}")).collect();
     let z32 = iroh::EndpointId::from_bytes(id.as_bytes()).unwrap().to_z32();

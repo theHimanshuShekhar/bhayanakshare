@@ -45,6 +45,8 @@ The Linux packages register the `bhayanakshare://` scheme (the desktop file, `sr
 
 Download the installer from the releases page and run it. It installs for the current user only, under `%LOCALAPPDATA%`, with no administrator rights and no UAC prompt, and adds BhayanakShare to the Start menu and to Settings, Apps. Windows 11 already has WebView2, which the app needs; the installer downloads it only on a PC that lacks it.
 
+Start at login is the `BhayanakShare` value under `HKCU\Software\Microsoft\Windows\CurrentVersion\Run`, the program's path in quotes and then `--background` (`src-tauri/src/autostart.rs`; the path needs the quotes, as the profile folder, and with it `%LOCALAPPDATA%`, can have a space). The uninstaller removes that value (Tauri's installer script deletes the value named after the product, and not when it is updating). The `bhayanakshare://` scheme is registered for the user by the installer; a copy of the exe that was not installed does not register it, so it does not take links from the installed one. Export diagnostics names Windows and its build in `about.txt`, such as `Windows 11 (build 26100), x86_64`.
+
 The installer is **not code-signed in version 1**, so Windows warns about it:
 
 - **SmartScreen** shows "Windows protected your PC". Choose **More info**, then **Run anyway**.

@@ -527,6 +527,7 @@ checksum = "2af50177e190e07a26ab74f8b1efbfe2ef87da2116221318cb1c2e82baf7de06"
 name = "bhayanakshare"
 version = "0.1.0"
 dependencies = [
+ "auto-launch",
  "bhayanakshare-core",
  "notify-rust",
  "semver",
@@ -536,7 +537,6 @@ dependencies = [
  "specta-typescript",
  "tauri",
  "tauri-build",
- "tauri-plugin-autostart",
  "tauri-plugin-deep-link",
  "tauri-plugin-dialog",
  "tauri-plugin-notification",
@@ -549,6 +549,7 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "webkit2gtk",
+ "windows-registry",
  "zip 8.6.0",
 ]
 
@@ -6727,20 +6728,6 @@ dependencies = [
  "serde_json",
  "tauri-utils",
  "walkdir",
-]
-
-[[package]]
-name = "tauri-plugin-autostart"
-version = "2.7.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "bce56ceb0a99b8ab5eebc977ba9ffc62391b862648cb9ab76fc8bc7231b8f7e2"
-dependencies = [
- "auto-launch",
- "serde",
- "serde_json",
- "tauri",
- "tauri-plugin",
- "thiserror 2.0.21",
 ]
 
 [[package]]

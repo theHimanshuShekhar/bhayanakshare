@@ -397,10 +397,15 @@ pub(crate) fn write_diagnostics_zip(logs: Option<&Path>, dest: &Path, about: &st
     result
 }
 
-/// The operating system and its version, as one line for `about.txt`.
+/// The operating system, its version and the architecture, as one line for `about.txt`.
 pub(crate) fn os_description() -> String {
+    format!("{}, {}", os_name(), std::env::consts::ARCH)
+}
+
+#[cfg(not(windows))]
+fn os_name() -> String {
     let version = os_version().unwrap_or_else(|| "unknown version".to_owned());
-    format!("{} ({version}), {}", std::env::consts::OS, std::env::consts::ARCH)
+    format!("{} ({version})", std::env::consts::OS)
 }
 
 #[cfg(target_os = "linux")]
@@ -419,24 +424,51 @@ fn os_version() -> Option<String> {
 
 #[cfg(target_os = "macos")]
 fn os_version() -> Option<String> {
-    command_output("sw_vers", &["-productVersion"])
+    let out = std::process::Command::new("sw_vers").arg("-productVersion").output().ok()?;
+    let text = String::from_utf8_lossy(&out.stdout).trim().to_owned();
+    (out.status.success() && !text.is_empty()).then_some(text)
 }
 
-#[cfg(target_os = "windows")]
-fn os_version() -> Option<String> {
-    command_output("cmd", &["/C", "ver"])
-}
-
-#[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
+#[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
 fn os_version() -> Option<String> {
     None
 }
 
-#[cfg(any(target_os = "macos", target_os = "windows"))]
-fn command_output(program: &str, args: &[&str]) -> Option<String> {
-    let out = std::process::Command::new(program).args(args).output().ok()?;
-    let text = String::from_utf8_lossy(&out.stdout).trim().to_owned();
-    (out.status.success() && !text.is_empty()).then_some(text)
+/// The Windows name and build, such as "Windows 11 (build 26100)". The version comes from
+/// `RtlGetVersion`, which reports the real one: `GetVersionEx` reports what the program's manifest
+/// says it was made for, and a program that does not list Windows 10 and 11 is told it is on 8.1.
+#[cfg(windows)]
+fn os_name() -> String {
+    use std::mem;
+
+    use windows_sys::Wdk::System::SystemServices::RtlGetVersion;
+    use windows_sys::Win32::System::SystemInformation::{OSVERSIONINFOEXW, OSVERSIONINFOW};
+
+    let mut info = OSVERSIONINFOEXW::default();
+    info.dwOSVersionInfoSize = mem::size_of::<OSVERSIONINFOEXW>() as u32;
+    // SAFETY: `info` is valid for writes and its size field says how much of it there is; the
+    // extended struct starts with the basic one, so the cast is what the function expects.
+    let status = unsafe { RtlGetVersion(&mut info as *mut OSVERSIONINFOEXW as *mut OSVERSIONINFOW) };
+    if status < 0 {
+        return "Windows (unknown version)".to_owned();
+    }
+    windows_name(info.dwMajorVersion, info.dwMinorVersion, info.dwBuildNumber, info.wProductType == VER_NT_WORKSTATION)
+}
+
+/// `wProductType` of a desktop Windows (a server or a domain controller has another).
+#[cfg(windows)]
+const VER_NT_WORKSTATION: u8 = 1;
+
+/// The name for a Windows version. Windows 11 still says 10.0; its builds start at 22000.
+#[cfg(any(windows, test))]
+fn windows_name(major: u32, minor: u32, build: u32, workstation: bool) -> String {
+    let name = match (major, workstation) {
+        (10, true) if build >= 22000 => "Windows 11".to_owned(),
+        (10, true) => "Windows 10".to_owned(),
+        (10, false) => "Windows Server".to_owned(),
+        _ => format!("Windows {major}.{minor}"),
+    };
+    format!("{name} (build {build})")
 }
 
 #[cfg(test)]
@@ -846,7 +878,28 @@ mod tests {
     #[test]
     fn the_os_description_names_the_system_and_architecture() {
         let text = os_description();
-        assert!(text.starts_with(std::env::consts::OS), "{text}");
+        let name = if cfg!(windows) { "Windows" } else { std::env::consts::OS };
+        assert!(text.starts_with(name), "{text}");
         assert!(text.ends_with(std::env::consts::ARCH), "{text}");
+    }
+
+    #[test]
+    fn windows_is_named_from_its_version_and_build() {
+        assert_eq!(windows_name(10, 0, 26100, true), "Windows 11 (build 26100)");
+        assert_eq!(windows_name(10, 0, 22000, true), "Windows 11 (build 22000)");
+        assert_eq!(windows_name(10, 0, 19045, true), "Windows 10 (build 19045)");
+        assert_eq!(windows_name(10, 0, 20348, false), "Windows Server (build 20348)");
+        assert_eq!(windows_name(6, 3, 9600, true), "Windows 6.3 (build 9600)");
+    }
+
+    /// On the Windows runner: the real call. The line is printed so that the log shows it.
+    #[cfg(windows)]
+    #[test]
+    fn the_windows_description_has_the_name_and_a_build_number() {
+        let text = os_description();
+        println!("about.txt names the system as: {text}");
+        let build = text.split("(build ").nth(1).and_then(|rest| rest.split(')').next()).unwrap_or_default();
+        assert!(text.starts_with("Windows"), "{text}");
+        assert!(build.parse::<u32>().is_ok_and(|build| build >= 10_000), "{text}");
     }
 }

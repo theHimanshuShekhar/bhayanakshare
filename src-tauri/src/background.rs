@@ -16,12 +16,11 @@ use tauri::{
     menu::{CheckMenuItem, Menu, MenuItem, PredefinedMenuItem, Submenu},
     tray::TrayIconBuilder,
 };
-use tauri_plugin_autostart::ManagerExt as _;
 use tauri_plugin_deep_link::DeepLinkExt as _;
 use tauri_plugin_dialog::DialogExt as _;
 use tauri_specta::Event as _;
 
-use crate::{Logging, QUIT_DEADLINE, notice, updates::UpdateAction};
+use crate::{Logging, QUIT_DEADLINE, autostart::Autostart, notice, updates::UpdateAction};
 
 /// Passed by the login entry, so that starting at login leaves the window closed.
 pub const BACKGROUND_FLAG: &str = "--background";
@@ -108,7 +107,9 @@ pub fn show_on_link<R: Runtime>(app: &AppHandle<R>) {
 
 /// Registers the `bhayanakshare://` scheme with the desktop at every start, so that an AppImage
 /// that was moved, or never installed, still gets its links. The bundles of the other platforms
-/// register it when they are installed.
+/// register it when they are installed: the Windows installer does so per user, under HKCU, and
+/// a portable copy of the exe is left unregistered on purpose, as it would take the links from
+/// the installed one.
 #[cfg(target_os = "linux")]
 pub fn register_links<R: Runtime>(app: &AppHandle<R>) {
     if let Err(e) = app.deep_link().register_all() {
@@ -234,7 +235,8 @@ pub fn default_autostart<R: Runtime>(app: &AppHandle<R>) {
         if !matches!(device.setting(AUTOSTART_SETTING).await, Ok(None)) {
             return;
         }
-        match app.autolaunch().enable() {
+        let Some(autostart) = app.try_state::<Autostart>() else { return };
+        match autostart.enable() {
             Ok(()) => {
                 let _ = device.set_setting(AUTOSTART_SETTING, "1").await;
             }
@@ -335,5 +337,42 @@ mod tests {
         assert!(files_in(&args(&["bhayanakshare", &link]), &dir).is_empty());
 
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// What a second launch from the desktop's link handler hands over, on Windows: the exe's
+    /// path first, then the link as the only argument. The single instance plugin gives these
+    /// arguments to the deep-link plugin before `second_launch` runs.
+    #[test]
+    fn a_link_handed_over_by_a_second_launch_reaches_the_listeners_and_is_not_a_file() {
+        use std::sync::{Arc, Mutex};
+
+        use tauri::test::{mock_builder, mock_context, noop_assets};
+
+        let link = format!("bhayanakshare://add/{}?name=Test%20PC", "A".repeat(52));
+        let mut context = mock_context(noop_assets());
+        context.config_mut().plugins.0.insert(
+            "deep-link".into(),
+            serde_json::json!({ "desktop": { "schemes": ["bhayanakshare"] } }),
+        );
+        let app = mock_builder().plugin(tauri_plugin_deep_link::init()).build(context).unwrap();
+        let handle = app.handle();
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let sink = seen.clone();
+        handle.deep_link().on_open_url(move |event| {
+            sink.lock().unwrap().extend(event.urls().iter().map(|url| url.to_string()));
+        });
+        show_on_link(handle);
+
+        let exe = r"C:\Users\Test User\AppData\Local\BhayanakShare\bhayanakshare.exe";
+        // A launch with other arguments, such as files to send, is not a link.
+        handle.deep_link().handle_cli_arguments([exe, "--background", "a.txt"].iter());
+        assert!(seen.lock().unwrap().is_empty());
+
+        let argv = args(&[exe, &link]);
+        handle.deep_link().handle_cli_arguments(argv.iter());
+        second_launch(handle, &argv, r"C:\Users\Test User");
+        assert_eq!(*seen.lock().unwrap(), [link.clone()]);
+        let current = handle.deep_link().get_current().unwrap().unwrap();
+        assert_eq!(current.iter().map(|url| url.to_string()).collect::<Vec<_>>(), [link]);
     }
 }
