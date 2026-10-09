@@ -27,8 +27,8 @@ where
     }
 }
 
-/// Asks the operating system (`statvfs`; other platforms cannot say yet, so they never block
-/// an Offer on space).
+/// Asks the operating system (`statvfs` on Unix, `GetDiskFreeSpaceExW` on Windows; other
+/// platforms cannot say, so they never block an Offer on space).
 #[derive(Debug, Default, Clone, Copy)]
 pub struct SystemFreeSpace;
 
@@ -50,7 +50,30 @@ impl FreeSpace for SystemFreeSpace {
         Ok((stat.f_bavail as u64).saturating_mul(stat.f_frsize as u64))
     }
 
-    #[cfg(not(unix))]
+    #[cfg(windows)]
+    fn available(&self, dir: &Path) -> io::Result<u64> {
+        use std::{os::windows::ffi::OsStrExt, ptr};
+
+        use windows_sys::Win32::Storage::FileSystem::GetDiskFreeSpaceExW;
+
+        let mut path: Vec<u16> = dir.as_os_str().encode_wide().collect();
+        if path.contains(&0) {
+            return Err(io::Error::new(io::ErrorKind::InvalidInput, "the path holds a NUL"));
+        }
+        path.push(0);
+        let mut available = 0u64;
+        // SAFETY: `path` is a NUL-terminated UTF-16 string and `available` is a valid out
+        // pointer; the other two out parameters are optional.
+        let ok = unsafe { GetDiskFreeSpaceExW(path.as_ptr(), &mut available, ptr::null_mut(), ptr::null_mut()) };
+        if ok == 0 {
+            return Err(io::Error::last_os_error());
+        }
+        // The first out value is the free bytes available to the calling user, which honours a
+        // per-user quota; the third would be the volume's free bytes whoever may use them.
+        Ok(available)
+    }
+
+    #[cfg(not(any(unix, windows)))]
     fn available(&self, _dir: &Path) -> io::Result<u64> {
         Err(io::ErrorKind::Unsupported.into())
     }
@@ -110,12 +133,7 @@ mod tests {
         assert_eq!(probe.available(Path::new("/")).unwrap(), 7);
     }
 
-    #[cfg(windows)]
-    #[test]
-    #[ignore = "Windows has no free-space probe yet; #54 adds one and re-enables this"]
-    fn the_system_probe_reads_a_real_folder_and_fails_for_a_missing_one() {}
-
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     #[test]
     fn the_system_probe_reads_a_real_folder_and_fails_for_a_missing_one() {
         let tmp = tempfile::tempdir().unwrap();
