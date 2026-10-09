@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import type { Api } from "./api";
-import { diagnosticsFileName } from "./diagnostics";
+import { BUG_REPORT_URL, diagnosticsFileName } from "./diagnostics";
 import { t } from "./i18n";
 
 const reasonOf = (e: unknown) => (e instanceof Error ? e.message : String(e));
@@ -78,6 +78,22 @@ export function DiagnosticsSettings({ api }: { api: Api }) {
       </p>
       {savedTo !== null && <p role="status">{t("diagnostics.exported", { path: savedTo })}</p>}
       {exportError !== null && <p role="alert">{exportError}</p>}
+      <p>
+        <a
+          href={BUG_REPORT_URL}
+          aria-describedby="report-hint"
+          onClick={(e) => {
+            // The webview must not navigate away from the app.
+            e.preventDefault();
+            api.openUrl(BUG_REPORT_URL).catch(() => {});
+          }}
+        >
+          {t("diagnostics.report")}
+        </a>
+        <span id="report-hint" className="note">
+          {t("diagnostics.reportHint")}
+        </span>
+      </p>
     </section>
   );
 }

@@ -2335,6 +2335,18 @@ describe("Diagnostics", () => {
     expect((await screen.findByRole("alert")).textContent).toContain("disk full");
     expect(saying()).toHaveLength(0);
   });
+
+  it("links to the bug-report template, opened in the browser", async () => {
+    const REPORT = "https://github.com/theHimanshuShekhar/bhayanakshare/issues/new?template=bug_report.yml";
+    const device = await open();
+    const link = within(screen.getByRole("region", { name: "Diagnostics" })).getByRole("link", {
+      name: "Report a problem",
+    });
+    expect(link.getAttribute("href")).toBe(REPORT);
+    fireEvent.click(link);
+    // Opened in the browser, not in the app's own window.
+    expect(device.api.openUrl).toHaveBeenCalledWith(REPORT);
+  });
 });
 
 describe("files from a second launch or the tray", () => {

@@ -265,6 +265,9 @@ const en = {
   "diagnostics.exported": "Saved to {path}.",
   "diagnostics.exportFailed": "Could not export diagnostics. {reason}",
   "diagnostics.fileType": "Zip archive",
+  "diagnostics.report": "Report a problem",
+  "diagnostics.reportHint":
+    "Opens a form on GitHub in your browser. Export diagnostics first and attach the zip: it holds no file names, text or full Device IDs.",
 
   "quit.heading": "Quit BhayanakShare?",
   "quit.inProgressOne": "A Transfer is in progress.",

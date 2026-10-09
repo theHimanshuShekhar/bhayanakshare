@@ -1,0 +1,84 @@
+name: Bug report
+description: Something in BhayanakShare did not work as it should.
+title: "[Bug]: "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting a problem. Please fill in what you can; the more of it, the faster it can be fixed.
+
+        **Before you start:** in BhayanakShare, open Settings, then Diagnostics, switch on "Debug logging", repeat the problem, and press "Export diagnostics…". That saves a zip you can attach below.
+
+        **What is in the zip.** The app's log files from the last week (at most 7 days) and an `about.txt` with the app version, the operating system, your Visibility setting, whether debug logging is on, the network, and your Device's Fingerprint (a short form, not the whole ID). It holds no full Device IDs, no file names and no text of anything you sent. Nothing is sent anywhere by the app; the zip is yours to look at and to attach. The one rare exception to check for: a log line about an incoming store that could not be opened can carry the path of your save folder.
+  - type: input
+    id: app-version
+    attributes:
+      label: App version
+      description: Settings, then Updates, shows it (for example 0.1.0).
+      placeholder: "0.1.0"
+    validations:
+      required: true
+  - type: dropdown
+    id: os
+    attributes:
+      label: Operating system
+      options:
+        - Windows 11
+        - Ubuntu
+        - Fedora
+        - Other Linux
+    validations:
+      required: true
+  - type: input
+    id: os-version
+    attributes:
+      label: Operating system version
+      description: For example 24H2 on Windows 11, 24.04 on Ubuntu, 41 on Fedora, or the distribution and version for another Linux.
+    validations:
+      required: true
+  - type: dropdown
+    id: install-kind
+    attributes:
+      label: How BhayanakShare was installed
+      options:
+        - Windows installer
+        - AppImage
+        - deb
+        - rpm
+    validations:
+      required: true
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened
+      description: In a sentence or two.
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      value: |
+        1.
+        2.
+        3.
+    validations:
+      required: true
+  - type: textarea
+    id: expected-vs-actual
+    attributes:
+      label: Expected and actual behaviour
+      description: What you expected to happen, and what happened instead.
+      value: |
+        Expected:
+
+        Actual:
+    validations:
+      required: true
+  - type: upload
+    id: diagnostics
+    attributes:
+      label: Diagnostics zip
+      description: Attach the zip from Settings, then Diagnostics, then "Export diagnostics…". It holds no full Device IDs, file names or text. If the app cannot start or export, say so under "What happened" and leave this empty.
+      accept: ".zip"
