@@ -470,6 +470,52 @@ mod tests {
     }
 
     #[test]
+    fn linux_builds_the_appimage_deb_and_rpm() {
+        // Each platform names its own targets in its own file; the base has none, so no platform
+        // gets the MSI or anything else by default.
+        let linux: Value = serde_json::from_str(include_str!("../tauri.linux.conf.json")).unwrap();
+        assert_eq!(linux["bundle"]["targets"], serde_json::json!(["appimage", "deb", "rpm"]));
+        assert!(tauri_conf()["bundle"].get("targets").is_none());
+    }
+
+    fn tauri_windows_conf() -> Value {
+        serde_json::from_str(include_str!("../tauri.windows.conf.json")).unwrap()
+    }
+
+    #[test]
+    fn windows_builds_a_per_user_nsis_installer_and_nothing_else() {
+        let bundle = &tauri_windows_conf()["bundle"];
+        // Not the MSI: Tauri's is per-machine, and it asks for administrator rights.
+        assert_eq!(bundle["targets"], serde_json::json!(["nsis"]));
+        let nsis = &bundle["windows"]["nsis"];
+        // Per user: under %LOCALAPPDATA%, no UAC prompt, the scheme and the uninstall entry in HKCU.
+        assert_eq!(nsis["installMode"], "currentUser");
+        assert_eq!(bundle["windows"]["webviewInstallMode"], serde_json::json!({"type": "downloadBootstrapper"}));
+        assert!(bundle["windows"].get("wix").is_none());
+        // The stock installer script only: no template of our own and no hooks, which are where a
+        // firewall rule or any other install step would go.
+        for key in ["template", "installerHooks"] {
+            assert!(nsis.get(key).is_none(), "the NSIS config has a {key}");
+        }
+        // The installer is not code-signed in version 1, and nothing is run to sign it.
+        assert!(bundle["windows"].get("signCommand").is_none() && bundle["windows"].get("certificateThumbprint").is_none());
+    }
+
+    #[test]
+    fn neither_config_touches_the_firewall_and_both_platforms_make_updater_artifacts() {
+        for (name, text) in [
+            ("tauri.conf.json", include_str!("../tauri.conf.json")),
+            ("tauri.windows.conf.json", include_str!("../tauri.windows.conf.json")),
+        ] {
+            let text = text.to_lowercase();
+            assert!(!text.contains("firewall") && !text.contains("netsh"), "{name} touches the firewall");
+        }
+        // Updater artifacts stay on for both platforms: Windows does not turn them off.
+        assert!(tauri_windows_conf()["bundle"].get("createUpdaterArtifacts").is_none());
+        assert_eq!(tauri_conf()["bundle"]["createUpdaterArtifacts"], true);
+    }
+
+    #[test]
     fn an_update_key_that_is_not_a_key_does_not_stop_the_updater_from_starting() {
         // A build whose config has a broken key must still start, and only fail to install.
         let mut updater = tauri_conf()["plugins"]["updater"].clone();

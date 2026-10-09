@@ -2,8 +2,9 @@ name: release
 
 # Cutting a release (see "Install and update" in the README): bump the version in
 # src-tauri/tauri.conf.json and Cargo.toml, commit, tag it `vX.Y.Z` and push the tag. This builds
-# the AppImage, deb and rpm, and puts them, their signatures and `latest.json` in a draft
-# GitHub Release. Publishing the draft is what makes the AppImage updater see the release.
+# the AppImage, deb and rpm on Linux and the NSIS installer on Windows, and puts them, their
+# signatures and one `latest.json` in one draft GitHub Release. Publishing the draft is what
+# makes the updater see the release.
 
 on:
   push:
@@ -17,16 +18,16 @@ permissions:
   contents: read
 
 jobs:
-  release:
+  # Runs once, before anything that sees the signing key: the tag must be the app's version.
+  check-tag:
     runs-on: ubuntu-22.04
-    permissions:
-      contents: write
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
 
       - name: Check that the tag is the app's version
+        shell: bash
         run: |
           tauri_version=$(jq -r .version src-tauri/tauri.conf.json)
           cargo_version=$(sed -n '/^\[workspace.package\]/,/^\[/{s/^version = "\(.*\)"/\1/p}' Cargo.toml)
@@ -35,9 +36,32 @@ jobs:
             exit 1
           fi
 
+  release:
+    needs: check-tag
+    strategy:
+      # One leg at a time, for two reasons. Both legs name the same draft: the first creates it
+      # and the second finds it by its tag, which two legs at once could not do without each
+      # creating one. And each leg adds its platforms to `latest.json` by downloading the
+      # release's copy, merging into it and uploading it again, so two at once could lose one
+      # platform. If a leg fails the other is cancelled, and the draft is not to be published.
+      max-parallel: 1
+      matrix:
+        os: [ubuntu-22.04, windows-latest]
+    runs-on: ${{ matrix.os }}
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
       # What building the Tauri shell and its bundles needs
-      # (https://v2.tauri.app/start/prerequisites/#linux and the GitHub pipeline guide).
+      # (https://v2.tauri.app/start/prerequisites/#linux and the GitHub pipeline guide). The
+      # Windows runner has Rust, Node, the MSVC build tools and WebView2 already, and Tauri
+      # fetches NSIS itself.
       - name: Install system libraries
+        if: runner.os == 'Linux'
+        shell: bash
         run: |
           sudo apt-get update
           sudo apt-get install -y libwebkit2gtk-4.1-dev build-essential curl wget file libxdo-dev \
@@ -54,6 +78,8 @@ jobs:
 
       - run: pnpm install --frozen-lockfile
 
+      # Which bundles each platform builds is in src-tauri/tauri.linux.conf.json and
+      # tauri.windows.conf.json.
       - uses: tauri-apps/tauri-action@1deb371b0cd8bd54025b384f1cd735e725c4060f # v1.0.0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -66,3 +92,5 @@ jobs:
           releaseBody: See the assets to download this version and install it.
           releaseDraft: true
           prerelease: false
+          # latest.json's windows-x86_64 entry is the NSIS installer (the only Windows bundle).
+          updaterJsonPreferNsis: true
