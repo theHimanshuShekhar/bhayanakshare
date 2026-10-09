@@ -1,3 +1,5 @@
+// Nothing here needs a document, so no jsdom: building one costs seconds of CPU on the Windows runner.
+// @vitest-environment node
 import { describe, expect, it } from "vitest";
 import { PROGRESS_MIN_GAP_MS, announcements, type ProgressMemory } from "./announce";
 import type { DeviceEvent, TransferState } from "./bindings";

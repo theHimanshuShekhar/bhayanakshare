@@ -154,6 +154,8 @@ LAN discovery is its own seam, `crates/core/tests/discovery.rs`: Devices started
 
 The UI's accessibility is tested in `ui/src/a11y.test.tsx` (axe on every screen and dialog), `keyboard.test.tsx` (the main flows with the keyboard alone) and `announce.test.ts` / `announcer.test.tsx` (what is said to a screen reader); [`docs/accessibility.md`](docs/accessibility.md) says how it is built, what is not covered, and the checklist to run by hand before a release.
 
+The UI tests that render the whole App many times (`App.test.tsx`, `a11y.test.tsx`, `keyboard.test.tsx`) import `ui/src/heavyTests.ts`, which gives them a 30 s test timeout and a 5 s `findBy` timeout because the Windows CI runner is several times slower than Linux and sometimes stalls; every other test file keeps the defaults, and the files that need no document (`*.test.ts`) run in the `node` environment. In `keyboard.test.tsx` user-event is set up with `delay: null`, as its 0 ms wait between key presses costs about 9 ms each on Windows.
+
 First run and the save folder, as settings of the Device, are `crates/core/tests/settings.rs`; a rename reaching a Nearby Device without a restart is in `tests/discovery.rs`.
 
 Identity export and import is `crates/core/tests/identity.rs`, with `KeySource::File`. Where the key lives (store, file, marker) is unit-tested in `crates/core/src/keystore.rs` against a fake secret store; no test touches the real one, as it would be the developer's own key.

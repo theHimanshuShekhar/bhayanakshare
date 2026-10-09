@@ -2,6 +2,7 @@ import { cleanup, render, screen, waitFor, within } from "@testing-library/react
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { App } from "./App";
+import "./heavyTests";
 import type { Contact } from "./api";
 import type { HistoryEntry, TransferRecord, TransferState } from "./bindings";
 import { BATCH, EXPIRES_AT, MY_ID, PEER_ID, TRANSFER, contact, fakeApi } from "./testApi";
@@ -32,7 +33,7 @@ const contacts = (): Contact[] => [
 
 /** Renders the app and waits until it shows My ID, or first run. */
 async function start(device: Device = fakeApi({}, contacts())) {
-  const user = userEvent.setup();
+  const user = userEvent.setup({ delay: null });
   render(<App api={device.api} />);
   await screen.findByRole("heading", { name: /^(My ID|Welcome to BhayanakShare)$/ });
   return { user, device };
