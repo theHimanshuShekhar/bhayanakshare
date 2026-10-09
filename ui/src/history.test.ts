@@ -1,3 +1,5 @@
+// Nothing here needs a document, so no jsdom: building one costs seconds of CPU on the Windows runner.
+// @vitest-environment node
 import { describe, expect, it } from "vitest";
 import type { Contact, HistoryEntry, HistoryTransfer, TransferState } from "./bindings";
 import {

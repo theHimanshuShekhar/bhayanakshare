@@ -1,3 +1,5 @@
+// Nothing here needs a document, so no jsdom: building one costs seconds of CPU on the Windows runner.
+// @vitest-environment node
 import { describe, expect, it } from "vitest";
 import { parseIdOrLink, parseShareLink, shareLink } from "./shareLink";
 

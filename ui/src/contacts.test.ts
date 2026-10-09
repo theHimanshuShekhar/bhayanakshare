@@ -1,3 +1,5 @@
+// Nothing here needs a document, so no jsdom: building one costs seconds of CPU on the Windows runner.
+// @vitest-environment node
 import { describe, expect, it } from "vitest";
 import type { Contact } from "./bindings";
 import { contactName, isDeviceId, peerName, sortedContacts } from "./contacts";

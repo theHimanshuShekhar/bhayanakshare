@@ -2,6 +2,7 @@ import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testi
 import axe from "axe-core";
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { App } from "./App";
+import "./heavyTests";
 import type { Contact } from "./api";
 import type { HistoryEntry, TransferRecord, TransferState } from "./bindings";
 import { BATCH, EXPIRES_AT, PEER_ID, TRANSFER, contact, fakeApi } from "./testApi";
