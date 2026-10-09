@@ -73,18 +73,18 @@ The first time BhayanakShare listens on the network, which is when it starts, Wi
 1. Tick **Private networks** (a home or office network you trust). Leave **Public networks** unticked unless this network is marked Public and you trust it.
 2. Choose **Allow access**.
 
-Only an administrator can allow it: a standard user is asked for an administrator's password, and a user who cannot give one cannot allow the app themselves. **Cancelling the prompt, or answering it as a standard user, makes Windows create persistent block rules for the program** (one for TCP and one for UDP), and **the prompt never comes back**, so the app stays blocked without saying so. Block rules win over allow rules. Symptoms are the ones in the first section: no Nearby Devices, and Transfers that take the relay or fail offline.
+Only an administrator can allow it. **Cancelling the prompt, or answering it as a standard user, makes Windows create persistent block rules for the program** (one for TCP and one for UDP), and **the prompt never comes back**, so the app stays blocked without saying so. Block rules win over allow rules. Symptoms are the ones in the first section: no Nearby Devices, and Transfers that take the relay or fail offline.
 
 **To undo a block**, as an administrator:
 
-1. Open Windows Security, **Firewall & network protection**, **Advanced settings**, then **Inbound Rules**. Remove the rules for BhayanakShare: they are named after the program (BhayanakShare or bhayanakshare), their Action is Block and their Program column shows the path of `bhayanakshare.exe`. There are usually two, TCP and UDP. (Or run `wf.msc`.)
-2. Start BhayanakShare again. Windows asks again, as no rule exists: answer as above. Or allow it yourself: Windows Security, Firewall & network protection, **Allow an app through firewall**, **Change settings**, **Allow another app**, choose `bhayanakshare.exe`, **Add**, and tick **Private**.
+1. Open Windows Security, **Firewall & network protection**, **Advanced settings**, then **Inbound Rules**. Remove the rules for BhayanakShare: look for rules whose Action is Block and whose Program is BhayanakShare's program file (sort by Name or Program). There are usually two, one for TCP and one for UDP. (Or run `wf.msc`.)
+2. Start BhayanakShare again. Windows asks again, as no rule exists: answer as above. Or allow it yourself: Windows Security, Firewall & network protection, **Allow an app through firewall**, **Change settings**, **Allow another app**, choose BhayanakShare's program file (the installer put it in a folder under `%LOCALAPPDATA%` unless you chose another), **Add**, and tick **Private**.
 
 If the network is marked **Public**, Windows treats it as untrusted and the rule for Private networks does not apply. Set the network to Private (Settings, Network and internet, your network, Network profile type), or tick **Public** for the app in "Allow an app through firewall".
 
-**mDNS** is UDP port 5353, as above. A rule for the program has no port limit, so allowing BhayanakShare also lets mDNS in, and no separate port rule is needed. Windows' own mDNS service and browsers use the same port and share it with BhayanakShare, so they do not get in its way. If another program holds it without sharing, see [When Home says local discovery could not start](#when-home-says-local-discovery-could-not-start).
+**mDNS** is UDP port 5353, as above. The rule Windows makes from its prompt is for the program on any port, so it covers mDNS and no separate port rule is needed. Windows' own mDNS service and browsers use the same port and share it with BhayanakShare, so they do not get in its way. If another program holds it without sharing, see [When Home says local discovery could not start](#when-home-says-local-discovery-could-not-start).
 
-**Why the rule is for the program, not a port:** BhayanakShare listens on a UDP port it picks at random each time it starts, so a rule for one port would stop working at the next start. Allow the program, `bhayanakshare.exe`, which is in the folder the installer used.
+**Why the rule is for the program, not a port:** BhayanakShare listens on a UDP port it picks at random each time it starts, so a rule for one port would stop working at the next start. A rule for the program holds whatever port it picks.
 
 On a computer managed by an organisation, Group Policy may stop programs from adding firewall rules or switch the prompt off. Then an administrator must add the rule.
 
