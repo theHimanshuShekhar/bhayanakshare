@@ -9,15 +9,15 @@ Two things must be allowed:
 1. **mDNS, inbound**: UDP port 5353, so Devices hear each other.
 2. **The app itself, inbound**: BhayanakShare listens on a UDP port it picks at random each time it starts, so allow the program rather than a port number. Without this, a Transfer between two Devices on one network falls back to the internet relay, or fails offline.
 
-BhayanakShare never changes firewall rules itself, and neither do its packages: the AppImage, deb and rpm run no install, update or removal scripts, so installing, updating or removing it leaves your firewall as it was. Allowing the two things above is always something you do yourself.
+BhayanakShare never changes firewall rules itself, and neither do its installers or packages, on Linux or Windows: the AppImage, deb and rpm run no install, update or removal scripts, and the Windows installer adds no firewall rules, so installing, updating or removing it leaves your firewall as it was. Allowing the two things above is always something you do yourself. On Windows, Windows asks you the first time, see [Windows](#windows).
 
-The steps below come from each system's documentation. The project tests on Linux only, and they have not been run on every system listed.
+The steps below come from each system's documentation. The project's tests run on Linux and Windows, but not against a firewall, and the steps have not been tried on every system and version listed.
 
 ## When Home says local discovery could not start
 
 This is not the firewall guess above: BhayanakShare tried to open the mDNS port and could not, on Windows and on Linux alike. Home says why, in one of three ways:
 
-- **The port is in use or refused.** Another program holds UDP port 5353 and does not share it (most mDNS software shares it, as Windows' own mDNS, browsers and Avahi do), or the system or security software refused the program. Close the other program or stop its mDNS, or allow BhayanakShare in the security software, and check the two firewall steps below.
+- **The port is in use or refused.** Another program holds UDP port 5353 and does not share it (most mDNS software shares it, as Windows' own mDNS, browsers and Avahi do), or the system or security software refused the program. Close the other program or stop its mDNS, or allow BhayanakShare in the security software, and check the two firewall steps in [Linux](#linux) or [Windows](#windows) below.
 - **No network connection can use it.** No network interface is up, or none supports multicast. Connect to a network. A VPN that takes over all traffic can leave nothing else (see Other causes below).
 - **The system reported an error.** The line in the log says which: Settings, Diagnostics, Export diagnostics.
 
@@ -66,11 +66,33 @@ If you run Avahi, nothing needs changing for BhayanakShare: both share port 5353
 
 ## Windows
 
-The first time BhayanakShare runs, Windows Defender Firewall asks whether to allow it. Allow it on **Private** networks. If the network is marked **Public**, Windows blocks inbound traffic: set the network to Private (Settings, Network and internet, your network, Network profile type), or allow the app on Public networks in "Allow an app through Windows Firewall".
+The first time BhayanakShare listens on the network, which is when it starts, Windows Defender Firewall shows "Windows Defender Firewall has blocked some features of this app". The installer does not trigger it and does not change any rule: Windows asks because no rule for the program exists yet.
+
+**Answer it as an administrator, with Allow.**
+
+1. Tick **Private networks** (a home or office network you trust). Leave **Public networks** unticked unless this network is marked Public and you trust it.
+2. Choose **Allow access**.
+
+Only an administrator can allow it: a standard user is asked for an administrator's password, and a user who cannot give one cannot allow the app themselves. **Cancelling the prompt, or answering it as a standard user, makes Windows create persistent block rules for the program** (one for TCP and one for UDP), and **the prompt never comes back**, so the app stays blocked without saying so. Block rules win over allow rules. Symptoms are the ones in the first section: no Nearby Devices, and Transfers that take the relay or fail offline.
+
+**To undo a block**, as an administrator:
+
+1. Open Windows Security, **Firewall & network protection**, **Advanced settings**, then **Inbound Rules**. Remove the rules for BhayanakShare: they are named after the program (BhayanakShare or bhayanakshare), their Action is Block and their Program column shows the path of `bhayanakshare.exe`. There are usually two, TCP and UDP. (Or run `wf.msc`.)
+2. Start BhayanakShare again. Windows asks again, as no rule exists: answer as above. Or allow it yourself: Windows Security, Firewall & network protection, **Allow an app through firewall**, **Change settings**, **Allow another app**, choose `bhayanakshare.exe`, **Add**, and tick **Private**.
+
+If the network is marked **Public**, Windows treats it as untrusted and the rule for Private networks does not apply. Set the network to Private (Settings, Network and internet, your network, Network profile type), or tick **Public** for the app in "Allow an app through firewall".
+
+**mDNS** is UDP port 5353, as above. A rule for the program has no port limit, so allowing BhayanakShare also lets mDNS in, and no separate port rule is needed. Windows' own mDNS service and browsers use the same port and share it with BhayanakShare, so they do not get in its way. If another program holds it without sharing, see [When Home says local discovery could not start](#when-home-says-local-discovery-could-not-start).
+
+**Why the rule is for the program, not a port:** BhayanakShare listens on a UDP port it picks at random each time it starts, so a rule for one port would stop working at the next start. Allow the program, `bhayanakshare.exe`, which is in the folder the installer used.
+
+On a computer managed by an organisation, Group Policy may stop programs from adding firewall rules or switch the prompt off. Then an administrator must add the rule.
+
+These steps follow Microsoft's pages [Windows Firewall rules](https://learn.microsoft.com/en-us/windows/security/operating-system-security/network-security/windows-firewall/rules) and [Risks of allowing apps through Windows Firewall](https://support.microsoft.com/en-us/windows/security/firewall/risks-of-allowing-apps-through-windows-firewall); they have not been tried on every Windows 11 build.
 
 ## macOS
 
-macOS 15 and later ask for **Local Network** access the first time the app looks for Devices. Choose Allow. If you refused, turn it on in System Settings, Privacy and Security, Local Network.
+Not supported in version 1.
 
 ## Other causes
 
