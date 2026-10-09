@@ -81,4 +81,6 @@ body:
     attributes:
       label: Diagnostics zip
       description: Attach the zip from Settings, then Diagnostics, then "Export diagnostics…". It holds no full Device IDs, file names or text. If the app cannot start or export, say so under "What happened" and leave this empty.
+    validations:
+      required: false
       accept: ".zip"
