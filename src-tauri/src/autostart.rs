@@ -7,7 +7,7 @@
 //! space and nothing starts at login.
 
 use auto_launch::{AutoLaunch, AutoLaunchBuilder};
-use tauri::{AppHandle, Manager as _, Runtime};
+use tauri::{AppHandle, Runtime};
 
 /// The login entry of this install, managed by the app.
 pub struct Autostart(AutoLaunch);
@@ -20,7 +20,7 @@ impl Autostart {
         let exe = std::env::current_exe()?.display().to_string();
         // An AppImage is started through its own file, not the binary inside its mount.
         #[cfg(target_os = "linux")]
-        let exe = app.env().appimage.and_then(|path| path.to_str().map(str::to_owned)).unwrap_or(exe);
+        let exe = tauri::Manager::env(app).appimage.and_then(|path| path.to_str().map(str::to_owned)).unwrap_or(exe);
         Ok(Self(entry(&app.package_info().name, &exe, args)?))
     }
 
