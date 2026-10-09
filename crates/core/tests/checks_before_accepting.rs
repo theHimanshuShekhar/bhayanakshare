@@ -1,13 +1,15 @@
 //! What the Receiver checks before it says yes: the Offer must fit in the save folder (and
 //! the folder can be chosen per Offer), and the Sender may not send more than it offered.
-//! The Receiver's disk is a closure that answers per folder, so no test fills a real one.
+//! The Receiver's disk is a closure that answers per folder, so no test fills a real one,
+//! except the last: it asks the real operating system, on every platform, and offers more than
+//! the save folder's volume has free.
 
 mod support;
 
 use std::path::{Path, PathBuf};
 
 use bhayanakshare_core::{
-    Error, INCOMING_DIR, SpaceCheck, TransferState,
+    DeviceId, Error, FreeSpace, INCOMING_DIR, SpaceCheck, SystemFreeSpace, TransferState,
     protocol::{self, Hello, Message, read_frame, write_frame},
 };
 use iroh::protocol::Router;
@@ -169,4 +171,49 @@ async fn a_sender_that_sends_more_than_it_offered_is_cut_off() {
 
 fn protocol_id(n: u8) -> bhayanakshare_core::TransferId {
     bhayanakshare_core::TransferId::from_bytes([n; 16])
+}
+
+/// The real free-space probe, not a closure, on whatever platform this runs on: an Offer that
+/// claims more than the save folder's volume has free is flagged before Accept and held back
+/// from Auto-accept. The Sender is written by hand and offers a size it never serves, so no
+/// disk is filled.
+#[tokio::test]
+async fn an_offer_larger_than_the_real_free_space_is_flagged_and_never_auto_accepted() {
+    let mut bob = TestDevice::start("bob").await;
+    let peer = raw_peer().await;
+    let peer_id: DeviceId = data_encoding::BASE32_NOPAD.encode(peer.id().as_bytes()).parse().unwrap();
+    bob.device.add_contact(peer_id, None).await.unwrap();
+    bob.device.set_auto_accept(peer_id, true).await.unwrap();
+
+    // What the operating system says is free where Bob saves; the Offer claims a TiB more.
+    let free = SystemFreeSpace.available(&bob.save_dir).expect("the system probe works on this platform");
+    let claimed = free + (1 << 40);
+
+    let conn = peer.connect(dial_addr(&bob), protocol::ALPN).await.unwrap();
+    let (mut send, mut recv) = conn.open_bi().await.unwrap();
+    write_frame(&mut send, &Message::Hello(Hello::current())).await.unwrap();
+    assert!(matches!(read_frame(&mut recv).await.unwrap(), Message::Hello(_)));
+    let id = protocol_id(9);
+    write_frame(&mut send, &Message::Offer(support::one_file_offer(*id.as_bytes(), "huge.bin", claimed)))
+        .await
+        .unwrap();
+    bob.wait_offer().await;
+
+    // Flagged before Accept: the free space is known (not "unknown", which never blocks) and
+    // the Offer does not fit in it.
+    let check = bob.device.check_offer(id, None).await.unwrap();
+    let known = check.free.expect("free space is known, not unsupported");
+    assert!(known < claimed, "{known} free, {claimed} claimed");
+    assert_eq!(check.needed, claimed);
+    assert!(!check.fits());
+    let refused = bob.device.accept(id).await.unwrap_err();
+    assert!(matches!(refused, Error::NotEnoughSpace { .. }), "{refused:?}");
+
+    // Not auto-accepted: the Offer is still waiting, with nothing saved and no answer sent.
+    assert_eq!(bob.history(id), ["offered"]);
+    assert_eq!(list_dir(&bob.save_dir), Vec::<String>::new());
+
+    bob.device.decline(id).await.unwrap();
+    assert!(matches!(read_frame(&mut recv).await.unwrap(), Message::Decline));
+    bob.shutdown().await;
 }
