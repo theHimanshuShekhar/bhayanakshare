@@ -5,10 +5,20 @@ use std::{io, path::Path};
 /// Renames `from` to `to`, failing with `AlreadyExists` instead of replacing `to`.
 ///
 /// Tries the strongest atomic primitive the platform and filesystem offer:
-/// 1. Linux `renameat2(RENAME_NOREPLACE)`;
-/// 2. a hard link (which fails if `to` exists) followed by removing `from`;
-/// 3. check-then-rename, which has a small window in which another program could create
-///    `to`. It is only used where neither of the above works (some FUSE and FAT mounts).
+/// 1. Windows `MoveFileExW` without `MOVEFILE_REPLACE_EXISTING`, for files and folders;
+/// 2. Linux `renameat2(RENAME_NOREPLACE)`;
+/// 3. a hard link (which fails if `to` exists) followed by removing `from`, for files only;
+/// 4. check-then-rename, which has a small window in which another program could create
+///    `to`. It is only used where none of the above works (some FUSE and FAT mounts).
+///
+/// Windows has only the first, and a failure there is the answer: a folder cannot be linked,
+/// and a check before a rename is the race this is here to avoid.
+#[cfg(windows)]
+pub fn rename_no_replace(from: &Path, to: &Path) -> io::Result<()> {
+    windows::move_no_replace(from, to)
+}
+
+#[cfg(not(windows))]
 pub fn rename_no_replace(from: &Path, to: &Path) -> io::Result<()> {
     #[cfg(target_os = "linux")]
     match linux::renameat2_no_replace(from, to) {
@@ -22,6 +32,7 @@ pub fn rename_no_replace(from: &Path, to: &Path) -> io::Result<()> {
     }
 }
 
+#[cfg(not(windows))]
 fn move_by_link(from: &Path, to: &Path) -> io::Result<()> {
     std::fs::hard_link(from, to)?;
     if let Err(e) = std::fs::remove_file(from) {
@@ -32,11 +43,42 @@ fn move_by_link(from: &Path, to: &Path) -> io::Result<()> {
     Ok(())
 }
 
+#[cfg(not(windows))]
 fn check_then_rename(from: &Path, to: &Path) -> io::Result<()> {
     if to.symlink_metadata().is_ok() {
         return Err(io::ErrorKind::AlreadyExists.into());
     }
     std::fs::rename(from, to)
+}
+
+#[cfg(windows)]
+mod windows {
+    use std::{io, os::windows::ffi::OsStrExt, path::Path};
+
+    use windows_sys::Win32::Storage::FileSystem::MoveFileExW;
+
+    /// Moves a file or a folder to a name that is free, and fails with `AlreadyExists` (from
+    /// `ERROR_ALREADY_EXISTS` or `ERROR_FILE_EXISTS`, which `std` maps) if there is anything at
+    /// it. No flags: `MOVEFILE_REPLACE_EXISTING` is what would replace, and without
+    /// `MOVEFILE_COPY_ALLOWED` a move to another volume fails (`ERROR_NOT_SAME_DEVICE`) instead
+    /// of being copied and deleted. A folder moves within a volume in one step. Callers pass
+    /// extended-length paths (see `long_path`), which are used as given.
+    pub fn move_no_replace(from: &Path, to: &Path) -> io::Result<()> {
+        let wide = |p: &Path| -> io::Result<Vec<u16>> {
+            let mut wide: Vec<u16> = p.as_os_str().encode_wide().collect();
+            if wide.contains(&0) {
+                return Err(io::Error::new(io::ErrorKind::InvalidInput, "the path holds a NUL"));
+            }
+            wide.push(0);
+            Ok(wide)
+        };
+        let (from, to) = (wide(from)?, wide(to)?);
+        // SAFETY: both are NUL-terminated UTF-16 strings that live for the whole call.
+        if unsafe { MoveFileExW(from.as_ptr(), to.as_ptr(), 0) } == 0 {
+            return Err(io::Error::last_os_error());
+        }
+        Ok(())
+    }
 }
 
 #[cfg(target_os = "linux")]
@@ -75,11 +117,11 @@ mod tests {
 
     /// Every way of moving that is built here, so that each is held to the same rules.
     fn strategies() -> Vec<(&'static str, Move)> {
-        vec![
-            ("rename_no_replace", rename_no_replace),
-            ("move_by_link", move_by_link),
-            ("check_then_rename", check_then_rename),
-        ]
+        let mut all: Vec<(&'static str, Move)> = vec![("rename_no_replace", rename_no_replace)];
+        // Windows has neither: it moves with its own call.
+        #[cfg(not(windows))]
+        all.extend([("move_by_link", move_by_link as Move), ("check_then_rename", check_then_rename)]);
+        all
     }
 
     #[test]
@@ -217,7 +259,7 @@ mod tests {
     }
 
     /// Guards against the Windows call being silently the replacing kind: the system call itself
-    /// must refuse, for a file and for a folder, and a folder must move whole to a free name.
+    /// must refuse, for a file and for a folder, however it is named.
     #[cfg(windows)]
     #[test]
     fn the_windows_call_refuses_to_replace_a_file_or_a_folder() {
