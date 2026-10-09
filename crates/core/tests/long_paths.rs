@@ -194,7 +194,8 @@ async fn a_save_folder_whose_own_path_passes_260_characters_takes_a_tree() {
     let empty = format!("{top}/empty");
     let mut sent = offer(&files[2..], &empty).await;
     let elsewhere = tempfile::tempdir().unwrap();
-    let folder: PathBuf = elsewhere.path().join(nested(6));
+    // One name at a time, so that the separators are the system's and the Device's answer compares.
+    let folder: PathBuf = nested(6).split('/').fold(elsewhere.path().to_owned(), |dir, name| dir.join(name));
     std::fs::create_dir_all(&folder).unwrap();
     assert!(folder.as_os_str().len() > 260);
     let check = sent.bob.device.check_offer(sent.id, Some(&folder)).await.unwrap();
