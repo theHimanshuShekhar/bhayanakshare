@@ -9,7 +9,7 @@ The manual gate for every beta and for 1.0 ([#46](https://github.com/theHimanshu
 - **Notes**: anything seen, and any figure a row asks for.
 - **A ticket number under an ID** (such as [#54](https://github.com/theHimanshuShekhar/bhayanakshare/issues/54)) means the row can only pass once that ticket has merged. Until then it fails by design; once it has, the row is part of the gate like any other.
 
-A beta or 1.0 passes the gate when every row is Pass or a justified N/A. 1.0 runs the whole list once more on its final build, after both betas have passed.
+A beta or 1.0 passes the gate when every row is Pass or a justified N/A. 1.0 runs the whole list once more on its final build, after both betas have passed. The update rows (UPD) can only run once a release is published, since the updater reads the latest published release: run them straight after publishing. An update row that fails then is fixed forward in a patch release (for 1.0, in 1.0.1), and the failing release is not left as the latest.
 
 The words in quotes are the app's own (`ui/src/i18n.ts`). If the wording has moved on, the row's meaning wins.
 
@@ -22,6 +22,16 @@ The words in quotes are the app's own (`ui/src/i18n.ts`). If the wording has mov
 | Lin's firewall (firewalld zone, or ufw) | |
 | LAN: wired or Wi-Fi, same subnet, Wi-Fi client isolation off | |
 | Files tested: installer, AppImage, deb or rpm | |
+
+## Before the manual rows
+
+The tests that stand in for the internet rows (see Not in the gate) do not run in CI, so run them on the release's commit first, on a Linux machine with internet access. Record each as a row:
+
+| ID | Steps | Expected | Result | Build | Notes |
+|---|---|---|---|---|---|
+| AUTO-1 | `cargo test -p bhayanakshare-core --features relay-tests --test relay_limit -- --nocapture` | Passes: a Transfer completes through a rate-limited relay. | | | |
+| AUTO-2 | `BHAYANAKSHARE_TEST_DHT=1 cargo test -p bhayanakshare-core --lib dht` | Passes: the Device is found in the public DHT. | | | |
+| AUTO-3 | CI on the release's commit | `check` and `check-windows` both passed. | | | |
 
 ## Setting
 
@@ -292,6 +302,6 @@ The by-hand checklist is in [`docs/accessibility.md`](accessibility.md#before-a-
 
 ## Not in the gate
 
-- **Internet and relay rows**: a Transfer over the internet, through n0's relays, n0 DNS or the public DHT. The relay is covered by automated tests: a Transfer through a rate-limited relay (`crates/core/tests/relay_limit.rs`) and the lookup in the public DHT (`crates/core/src/dht.rs`). Both run on demand rather than in CI, as the [README](../README.md#tests) says.
+- **Internet and relay rows**: a Transfer over the internet, through n0's relays, n0 DNS or the public DHT. The relay is covered by automated tests: a Transfer through a rate-limited relay (`crates/core/tests/relay_limit.rs`) and the lookup in the public DHT (`crates/core/src/dht.rs`). Both run on demand rather than in CI ([README](../README.md#tests)), so the gate runs them as AUTO-1 and AUTO-2.
 - **Windows ↔ Windows rows**: covered by Windows CI, which runs the Device API integration tests on Windows, with two Devices in one process.
 - **macOS, ARM builds, and Linux distros other than Ubuntu 22.04+ and Fedora 39+.** Not part of version 1, or not checked (README, Install and update).
