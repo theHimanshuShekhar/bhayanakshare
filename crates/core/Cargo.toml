@@ -55,8 +55,9 @@ zip = { version = "8", default-features = false, features = ["deflate"] }
 libc = "0.2"
 
 [target.'cfg(windows)'.dependencies]
-# GetDiskFreeSpaceExW, for the free-space probe (space.rs). The same version the tests below use.
-windows-sys = { version = "0.61", features = ["Win32_Storage_FileSystem"] }
+# GetDiskFreeSpaceExW, for the free-space probe (space.rs), and RtlGetVersion, for the Windows
+# version in the diagnostics (logs.rs). The same version the tests below use.
+windows-sys = { version = "0.61", features = ["Win32_Storage_FileSystem", "Wdk_System_SystemServices", "Win32_System_SystemInformation"] }
 
 [target.'cfg(windows)'.dev-dependencies]
 # tests/support/multicast.rs holds the mDNS port exclusively (SO_EXCLUSIVEADDRUSE), which socket2

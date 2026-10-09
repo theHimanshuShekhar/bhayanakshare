@@ -12,6 +12,9 @@ name = "bhayanakshare_lib"
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
+# Start at login (autostart.rs). The Tauri plugin around it is not used: it cannot quote the program
+# path the Windows Run key needs.
+auto-launch = "0.6"
 bhayanakshare-core = { path = "../crates/core" }
 semver = "1"
 serde = { version = "1", features = ["derive"] }
@@ -20,7 +23,6 @@ serde_json = "1"
 specta = { version = "=2.0.0-rc.25", features = ["derive"] }
 specta-typescript = "0.0.12"
 tauri = { version = "2", features = ["tray-icon"] }
-tauri-plugin-autostart = "2"
 tauri-plugin-deep-link = "2"
 tauri-plugin-dialog = "2"
 tauri-plugin-opener = "2"
@@ -41,6 +43,10 @@ webkit2gtk = { version = "2", features = ["v2_40"] }
 
 [target.'cfg(not(target_os = "linux"))'.dependencies]
 tauri-plugin-notification = "2"
+
+[target.'cfg(windows)'.dev-dependencies]
+# Reads back the Run key in the start at login test. The version auto-launch uses.
+windows-registry = "0.6"
 
 [dev-dependencies]
 zip = { version = "8", default-features = false, features = ["deflate"] }
