@@ -18,22 +18,44 @@ The core's public seam is `Device`: it is created from a data folder, a save fol
 
 ## Install and update
 
-Releases are on the [releases page](https://github.com/theHimanshuShekhar/bhayanakshare/releases/latest). On Linux there are three formats, built by Tauri's bundler:
+Version 1 runs on **Windows 11 (x64)** and **Linux (x86_64)**. The Linux distros it is built and checked for are Ubuntu 22.04+ and Fedora 39+ (deb and rpm). The AppImage is expected to work on other distros with glibc 2.35+ and WebKitGTK 4.1, but is not checked there. macOS is later: there is no macOS build, and signing, notarisation and the Local Network permission are not part of version 1.
+
+Releases are on the [releases page](https://github.com/theHimanshuShekhar/bhayanakshare/releases/latest). Windows has one installer; Linux has three formats. All are built by Tauri's bundler:
 
 | Format | Install | Updates |
 |---|---|---|
+| Windows installer (`BhayanakShare_X.Y.Z_x64-setup.exe`; Windows 11) | Run it; see [Installing on Windows](#installing-on-windows) | Itself, after the user agrees |
 | AppImage (`BhayanakShare_X.Y.Z_amd64.AppImage`) | `chmod +x` the file and run it | Itself, after the user agrees |
 | deb (`BhayanakShare_X.Y.Z_amd64.deb`; Debian, Ubuntu) | `sudo apt install ./BhayanakShare_X.Y.Z_amd64.deb` | Not itself: a notice with a link to the release page |
 | rpm (`BhayanakShare-X.Y.Z-1.x86_64.rpm`; Fedora, openSUSE) | `sudo dnf install ./BhayanakShare-X.Y.Z-1.x86_64.rpm` | Not itself: a notice with a link to the release page |
 
 The app looks for a newer release when it starts, and again once 24 hours of clock time have passed since the last successful look (it wakes hourly to check, so a machine that was asleep looks soon after waking, and one that was offline at start tries again within the hour), by fetching `latest.json` from the latest release on GitHub: a plain GET, with no Device ID and no user data. There is no telemetry. When a newer release exists the app shows "Update available (version X)":
 
+- **Windows installer** (intended, once [#58](https://github.com/theHimanshuShekhar/bhayanakshare/issues/58) lands; the shell's updater detects only the AppImage today): the notice has "Install and restart" and works as the AppImage's does: nothing is installed before the user agrees, the signature is checked against the key in the app, and the app restarts the way Quit does. Until then a Windows install is updated by hand, with the installer from the releases page.
 - **AppImage** (the `APPIMAGE` variable is set, `src-tauri/src/updates.rs`): the notice has "Install and restart". Nothing is installed before the user presses it, and what is installed is the version the notice showed (if a newer one has been found since, the install is refused and the user checks again). With Transfers in progress the user is asked first, as they stop for the restart. The new AppImage is downloaded, its signature is checked against the key in the app, the file is replaced, and the app restarts the way Quit does, so Transfers save their progress and resume.
-- **deb and rpm** (anything that is not an AppImage): the notice links to the release page; the package is updated by hand.
+- **deb and rpm** (anything on Linux that is not an AppImage): the notice links to the release page; the package is updated by hand.
 
-When a Transfer is refused because this Device's version is older, the notice also has "Update now": it looks for the update and, on an AppImage, installs it and restarts (pressing it is the agreement; the version being installed is shown), and on a package opens the release page. If no update is found, or the check cannot be made (offline), it says so. A failed check or install is logged and otherwise ignored, never a crash.
+When a Transfer is refused because this Device's version is older, the notice also has "Update now": it looks for the update and, on an AppImage, installs it and restarts (pressing it is the agreement; the version being installed is shown), and on a package opens the release page (on Windows, the same as an AppImage, once #58 lands). If no update is found, or the check cannot be made (offline), it says so. A failed check or install is logged and otherwise ignored, never a crash.
 
-The packages register the `bhayanakshare://` scheme (the desktop file, `src-tauri/linux/bhayanakshare.desktop`, has the scheme handler and `%u` to receive the link), run no install scripts and never change firewall rules; see [`docs/firewall.md`](docs/firewall.md) for allowing local discovery yourself.
+The Linux packages register the `bhayanakshare://` scheme (the desktop file, `src-tauri/linux/bhayanakshare.desktop`, has the scheme handler and `%u` to receive the link), run no install scripts and never change firewall rules. The Windows installer does not change them either; Windows asks the first time the app listens. See [`docs/firewall.md`](docs/firewall.md) for allowing local discovery yourself on either system.
+
+### Installing on Windows
+
+Download the installer from the releases page and run it. It installs for the current user only, under `%LOCALAPPDATA%`, with no administrator rights and no UAC prompt, and adds BhayanakShare to the Start menu and to Settings, Apps. Windows 11 already has WebView2, which the app needs; the installer downloads it only on a PC that lacks it.
+
+The installer is **not code-signed in version 1**, so Windows warns about it:
+
+- **SmartScreen** shows "Windows protected your PC". Choose **More info**, then **Run anyway**.
+- **Smart App Control** is a stricter Windows 11 setting, and a fresh install can have it on. When it is on, it blocks the unsigned installer outright, with no "Run anyway" and no way to allow one app. To install, turn Smart App Control off first (Windows Security, App & browser control, Smart App Control settings). This is a limit of version 1's unsigned build, not something the installer can work around; code signing is a later decision. Microsoft says recent Windows updates let Smart App Control be turned on again afterwards, but not on every PC (see [What is Smart App Control](https://support.microsoft.com/en-us/topic/what-is-smart-app-control-285ea03d-fa88-4d56-882e-6698afdb7003)).
+
+The first time the app listens, Windows asks about its firewall. Only an administrator can allow it, and cancelling leaves block rules that stop the app finding Devices; see [Windows](docs/firewall.md#windows) before answering.
+
+**Uninstalling** (Settings, Apps, Installed apps, BhayanakShare, Uninstall; or the Start menu entry) removes the app and **keeps** two things, so that a reinstall is the same Device with the same Device ID:
+
+- The data folder, `%APPDATA%\dev.bhayanakshare.share` (the Roaming AppData folder plus the app's identifier): the database with settings, Contacts and History, `logs/`, and the fallback `secret.key` if one was ever made. Delete the folder to remove it. The uninstaller has an option to delete the application data too, unticked by default; it removes this folder but not the key.
+- The secret key, in Credential Manager. Open Credential Manager (Start menu), **Windows Credentials**, and under Generic Credentials remove the entry named `device-secret-key.bhayanakshare`.
+
+Remove both and the next install is a new Device with a new Device ID. The files received are in the save folder (`Downloads\BhayanakShare` by default), which the uninstaller never touches.
 
 ### Cutting a release
 
@@ -100,7 +122,7 @@ Copy the Device ID from one instance's "My ID", choose "Send to ID…" in the ot
 
 ### Where the secret key lives
 
-The Device ID comes from a secret key, which is kept in the OS secret store (Secret Service on Linux, Keychain on macOS, Credential Manager on Windows; entry `bhayanakshare` / `device-secret-key`), or in `secret.key` in the data folder, mode 0600, where there is no secret store. `key-location` beside it says which. Where it says `os-store`, a store that is locked or not running stops the app with an error (shown in a dialog): it never makes a new key, so it never gives the Device a new Device ID. The one accepted gap is a first start with nothing recorded: if the data folder was cleared while the Secret Service was not running, the old key in the store cannot be seen, and a new key is made in a file. A `secret.key` left by an older version moves into the store on the next start, and is deleted only after the store has given the same key back. An instance with its own `BHAYANAKSHARE_DATA_DIR` keeps its key in that folder instead, as the store has one entry for all installs of a user.
+The Device ID comes from a secret key, which is kept in the OS secret store (Secret Service on Linux, Credential Manager on Windows; entry `bhayanakshare` / `device-secret-key`, which Credential Manager lists as `device-secret-key.bhayanakshare`), or in `secret.key` in the data folder, where there is no secret store. On Linux that file has mode 0600. Windows has no Unix modes: the fallback key file, like the log files, relies on the permissions of the user profile folder, so anyone who can read that folder can read them. `key-location` beside it says which. Where it says `os-store`, a store that is locked or not running stops the app with an error (shown in a dialog): it never makes a new key, so it never gives the Device a new Device ID. The one accepted gap is a first start with nothing recorded: if the data folder was cleared while the Secret Service was not running, the old key in the store cannot be seen, and a new key is made in a file. A `secret.key` left by an older version moves into the store on the next start, and is deleted only after the store has given the same key back. An instance with its own `BHAYANAKSHARE_DATA_DIR` keeps its key in that folder instead, as the store has one entry for all installs of a user.
 
 Settings → Identity exports the key alone, under a password, as a `.bhid` file, and imports one on another install. Contacts and History are neither exported nor touched by an import.
 
