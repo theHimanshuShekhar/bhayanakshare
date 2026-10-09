@@ -3292,7 +3292,7 @@ describe("updates", () => {
       ["none_pending", "There is no update to install. Check again."],
       ["already_installing", "An update is already being installed."],
       ["quitting", "BhayanakShare is closing, so nothing was installed."],
-      ["not_app_image", "This install is updated from the release page, not by BhayanakShare itself."],
+      ["not_self_updating", "This install is updated from the release page, not by BhayanakShare itself."],
       ["download_failed", "Could not download the update. Are you online?"],
       ["signature_invalid", "The update's signature did not check out, so it was not installed."],
       ["install_failed", "Could not install the update."],

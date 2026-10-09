@@ -94,9 +94,11 @@ export const commands = {
 	 */
 	pendingUpdate: () => __TAURI_INVOKE<UpdateAction>("pending_update"),
 	/**
-	 *  Downloads `version`, the release the user agreed to install, replaces this AppImage with it
-	 *  (the plugin checks the signature first), and starts the app again by the way out of quitting,
-	 *  so that the Device saves its Transfers' progress: they resume in the new version. The UI
+	 *  Downloads `version`, the release the user agreed to install (the plugin checks the
+	 *  signature), and installs it. An AppImage is replaced and the app starts again by the way out
+	 *  of quitting, so that the Device saves its Transfers' progress: they resume in the new
+	 *  version. On Windows the updater runs the installer and ends the process itself, after the
+	 *  before-exit hook has done what quitting does; the installer starts the new version. The UI
 	 *  calls this only once the user has agreed (and, with Transfers in progress, been told they
 	 *  stop for the restart). Refused if that is no longer the release found, if the app is
 	 *  quitting, and for a deb or rpm install, which is never updated in place.
@@ -560,7 +562,7 @@ export type UnavailableReason =
 export type UpdateAction = 
 /**  Nothing newer, or nothing that could be compared. */
 { type: "none" } | 
-/**  Offer to install `version` and restart: an AppImage. */
+/**  Offer to install `version` and restart: the Windows installer, or an AppImage. */
 { type: "install"; version: string } | 
 /**  Offer a link to the release page for `version`: a package. */
 { type: "open_page"; version: string };
@@ -570,8 +572,8 @@ export type UpdateAction =
  *  Deliberately no message: the plugin's are English, and can name the AppImage's path.
  */
 export type UpdateError = 
-/**  This install is a package, which is never updated in place. */
-"not_app_image" | 
+/**  This install is a package (or unrecognised), which is never updated in place. */
+"not_self_updating" | 
 /**  No newer release has been found. */
 "none_pending" | 
 /**  The release found is no longer the version the user agreed to: a newer check replaced it. */
@@ -584,7 +586,7 @@ export type UpdateError =
 "download_failed" | 
 /**  The download was not signed by the update key, so it was not installed. */
 "signature_invalid" | 
-/**  Replacing the AppImage failed. */
+/**  Replacing the AppImage, or starting the Windows installer, failed. */
 "install_failed";
 
 /**

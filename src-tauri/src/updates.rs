@@ -3,7 +3,8 @@
 //!
 //! The check is a plain GET of `latest.json` on GitHub Releases (the endpoint is in
 //! `tauri.conf.json`): no Device ID, no user data. An AppImage can replace itself with the new
-//! release, signed with the update key; a deb or rpm install never updates itself, and is only
+//! release, signed with the update key, and so can the per-user Windows installer (it runs the
+//! new installer, which restarts the app); a deb or rpm install never updates itself, and is only
 //! pointed at the release page. Nothing is installed without the UI asking for it, for the
 //! version the user was shown.
 //!
@@ -12,7 +13,6 @@
 //! [`check`] and [`install_update`].
 
 use std::{
-    ffi::OsStr,
     sync::{
         Mutex,
         atomic::{AtomicBool, Ordering},
@@ -23,7 +23,10 @@ use std::{
 use semver::Version;
 use serde::Serialize;
 use specta::Type;
-use tauri::{AppHandle, Manager, Runtime, State};
+use tauri::{
+    AppHandle, Manager, Runtime, State,
+    utils::{config::BundleType, platform::bundle_type},
+};
 use tauri_plugin_updater::{Update, UpdaterExt as _};
 
 use crate::{Relaunch, background};
@@ -41,23 +44,28 @@ const CHECK_TIMEOUT: Duration = Duration::from_secs(30);
 /// How this copy of BhayanakShare was installed, which decides how it can be updated.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum InstallKind {
+    /// Installed by the Windows (NSIS) installer, which can run the next one.
+    WindowsInstaller,
     /// Run from an AppImage, which can replace itself.
     AppImage,
-    /// Installed by a package manager (deb, rpm), or anything else that is not an AppImage:
-    /// updated by the user, from the release page.
+    /// Installed by a package manager (deb, rpm), or anything else that cannot update itself:
+    /// a build with no bundle type (run from a checkout, or a portable exe), or a bundle this
+    /// app does not build. Updated by the user, from the release page.
     Package,
 }
 
 impl InstallKind {
-    /// The kind of this run, from the `APPIMAGE` variable an AppImage's launcher sets.
+    /// The kind of this run, from the bundle type the bundler wrote into the binary.
     pub fn current() -> Self {
-        Self::detect(std::env::var_os("APPIMAGE").as_deref())
+        Self::from_bundle(bundle_type())
     }
 
-    /// An AppImage has `APPIMAGE` (the path of the file) set, and non-empty.
-    fn detect(appimage: Option<&OsStr>) -> Self {
-        match appimage {
-            Some(path) if !path.is_empty() => Self::AppImage,
+    /// Only a bundle that can update itself says so; no bundle type is a package, so that a
+    /// build that cannot be recognised is never replaced.
+    fn from_bundle(bundle: Option<BundleType>) -> Self {
+        match bundle {
+            Some(BundleType::Nsis) => Self::WindowsInstaller,
+            Some(BundleType::AppImage) => Self::AppImage,
             _ => Self::Package,
         }
     }
@@ -69,7 +77,7 @@ impl InstallKind {
 pub enum UpdateAction {
     /// Nothing newer, or nothing that could be compared.
     None,
-    /// Offer to install `version` and restart: an AppImage.
+    /// Offer to install `version` and restart: the Windows installer, or an AppImage.
     Install { version: String },
     /// Offer a link to the release page for `version`: a package.
     OpenPage { version: String },
@@ -96,7 +104,7 @@ pub fn decide(current: &str, latest: &str, kind: InstallKind) -> UpdateAction {
     }
     let version = latest.to_string();
     match kind {
-        InstallKind::AppImage => UpdateAction::Install { version },
+        InstallKind::WindowsInstaller | InstallKind::AppImage => UpdateAction::Install { version },
         InstallKind::Package => UpdateAction::OpenPage { version },
     }
 }
@@ -115,8 +123,8 @@ pub fn due(last_success: Option<SystemTime>, last_failure: Option<SystemTime>, n
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Type)]
 #[serde(rename_all = "snake_case")]
 pub enum UpdateError {
-    /// This install is a package, which is never updated in place.
-    NotAppImage,
+    /// This install is a package (or unrecognised), which is never updated in place.
+    NotSelfUpdating,
     /// No newer release has been found.
     NonePending,
     /// The release found is no longer the version the user agreed to: a newer check replaced it.
@@ -129,7 +137,7 @@ pub enum UpdateError {
     DownloadFailed,
     /// The download was not signed by the update key, so it was not installed.
     SignatureInvalid,
-    /// Replacing the AppImage failed.
+    /// Replacing the AppImage, or starting the Windows installer, failed.
     InstallFailed,
 }
 
@@ -148,11 +156,12 @@ impl From<&tauri_plugin_updater::Error> for UpdateError {
     }
 }
 
-/// Whether installing `agreed`, the version the user was shown, may start: only an AppImage, not
-/// while quitting, and only if it is still the release that was found.
+/// Whether installing `agreed`, the version the user was shown, may start: only the Windows
+/// installer and an AppImage, not while quitting, and only if it is still the release that was
+/// found.
 fn may_install(kind: InstallKind, quitting: bool, found: Option<&str>, agreed: &str) -> Result<(), UpdateError> {
-    if kind != InstallKind::AppImage {
-        return Err(UpdateError::NotAppImage);
+    if kind == InstallKind::Package {
+        return Err(UpdateError::NotSelfUpdating);
     }
     if quitting {
         return Err(UpdateError::Quitting);
@@ -170,6 +179,9 @@ pub struct Updates {
     found: Mutex<Option<(UpdateAction, Update)>>,
     /// Set while an install runs, and once one has finished, until the app restarts.
     installing: AtomicBool,
+    /// Set by the before-exit hook: the Device is shut down for an installer that is about to
+    /// end this process.
+    stopped_for_installer: AtomicBool,
 }
 
 impl Updates {
@@ -202,12 +214,40 @@ impl Updates {
     }
 }
 
+/// What the updater runs just before it starts the Windows installer and ends the process itself
+/// (`std::process::exit`, so neither the `RunEvent::Exit` handler nor anything after
+/// `Update::install` runs): the same as quitting. The UI is told ("Saving progress…"), the Device
+/// saves its Transfers' progress for at most [`QUIT_DEADLINE`](crate::QUIT_DEADLINE) and the log
+/// is written out, and then what the updater would have done itself (`cleanup_before_exit`:
+/// the tray icon and the windows) is done. It replaces the updater's own hook, so it must.
+///
+/// The updater calls it only on Windows. It blocks until that is done, so it must not be called
+/// from a thread of the async runtime ([`install_update`] calls the install from a blocking one).
+fn before_exit<R: Runtime>(app: &AppHandle<R>) -> impl Fn() + Send + Sync + 'static {
+    let app = app.clone();
+    move || {
+        app.state::<Updates>().stopped_for_installer.store(true, Ordering::SeqCst);
+        background::begin_quit(&app);
+        tauri::async_runtime::block_on(background::save_and_flush(&app));
+        app.cleanup_before_exit();
+    }
+}
+
 /// Looks at `latest.json` once and remembers what it found. A failed check says why, as a
 /// message, and leaves what was found before.
 async fn check<R: Runtime>(app: &AppHandle<R>) -> Result<UpdateAction, String> {
     let updater = app
         .updater_builder()
         .timeout(CHECK_TIMEOUT)
+        // The release found keeps these, which are for Windows only (the builder ignores them
+        // elsewhere). The hook is what quitting does; the NSIS installer is told in passive mode
+        // (`tauri.conf.json`) to start the app when it is done (`/R`), with no arguments, as
+        // the AppImage's restart does, so that a start at login (`--background`) does not
+        // bring the app back with its window closed, and the link or file it was started with
+        // is not opened again. The updater's own restart would pass them on.
+        .on_before_exit(before_exit(app))
+        .restart_after_install(false)
+        .installer_arg("/R")
         .build()
         .map_err(|e| e.to_string())?;
     let release = updater.check().await.map_err(|e| e.to_string())?;
@@ -275,9 +315,11 @@ pub fn pending_update(updates: State<'_, Updates>) -> UpdateAction {
     updates.action()
 }
 
-/// Downloads `version`, the release the user agreed to install, replaces this AppImage with it
-/// (the plugin checks the signature first), and starts the app again by the way out of quitting,
-/// so that the Device saves its Transfers' progress: they resume in the new version. The UI
+/// Downloads `version`, the release the user agreed to install (the plugin checks the
+/// signature), and installs it. An AppImage is replaced and the app starts again by the way out
+/// of quitting, so that the Device saves its Transfers' progress: they resume in the new
+/// version. On Windows the updater runs the installer and ends the process itself, after the
+/// before-exit hook has done what quitting does; the installer starts the new version. The UI
 /// calls this only once the user has agreed (and, with Transfers in progress, been told they
 /// stop for the restart). Refused if that is no longer the release found, if the app is
 /// quitting, and for a deb or rpm install, which is never updated in place.
@@ -288,14 +330,46 @@ pub async fn install_update<R: Runtime>(
     updates: State<'_, Updates>,
     version: String,
 ) -> Result<(), UpdateError> {
-    let update = updates.begin_install(InstallKind::current(), background::is_quitting(&app), &version)?;
-    if let Err(e) = update.download_and_install(|_, _| {}, || {}).await {
+    let kind = InstallKind::current();
+    let update = updates.begin_install(kind, background::is_quitting(&app), &version)?;
+    let failed = |e: &tauri_plugin_updater::Error| {
         // The kind only: the plugin's message can name the AppImage's path, which is in the
         // home folder, and the log's redaction does not cover paths.
-        let kind = UpdateError::from(&e);
+        let kind = UpdateError::from(e);
         tracing::warn!("could not install the update: {kind:?}");
-        updates.install_failed();
-        return Err(kind);
+        kind
+    };
+    let bytes = match update.download(|_, _| {}, || {}).await {
+        Ok(bytes) => bytes,
+        Err(e) => {
+            updates.install_failed();
+            return Err(failed(&e));
+        }
+    };
+    if kind == InstallKind::WindowsInstaller && background::is_quitting(&app) {
+        // Quit was chosen meanwhile: the installer would start the app again, so it is not run.
+        return Err(UpdateError::Quitting);
+    }
+    tracing::info!("installing version {version}");
+    // On a blocking thread: on Windows the before-exit hook waits for the Device to shut down,
+    // which needs the async runtime's threads free, and the install does not return at all
+    // when it works.
+    let installed = tauri::async_runtime::spawn_blocking(move || update.install(bytes)).await;
+    let error = match installed {
+        Ok(Ok(())) => None,
+        Ok(Err(e)) => Some(failed(&e)),
+        Err(_) => Some(UpdateError::InstallFailed),
+    };
+    if let Some(error) = error {
+        if updates.stopped_for_installer.load(Ordering::SeqCst) {
+            // The Device was shut down for an installer that did not start: start the app again
+            // rather than leave it running without one.
+            app.state::<Relaunch>().0.store(true, Ordering::SeqCst);
+            app.exit(0);
+        } else {
+            updates.install_failed();
+        }
+        return Err(error);
     }
     tracing::info!("installed version {version}");
     if background::is_quitting(&app) {
@@ -310,6 +384,7 @@ pub async fn install_update<R: Runtime>(
 
 #[cfg(test)]
 mod tests {
+    use bhayanakshare_core::Device;
     use serde_json::Value;
     use tauri::test::{mock_builder, mock_context, noop_assets};
 
@@ -323,25 +398,42 @@ mod tests {
         UpdateAction::OpenPage { version: version.into() }
     }
 
+    const KINDS: [InstallKind; 3] = [InstallKind::WindowsInstaller, InstallKind::AppImage, InstallKind::Package];
+
     #[test]
-    fn an_appimage_is_told_apart_by_its_variable() {
-        assert_eq!(InstallKind::detect(Some(OsStr::new("/home/me/BhayanakShare.AppImage"))), InstallKind::AppImage);
-        // Anything else on Linux is a package: deb, rpm, a build run from a checkout.
-        assert_eq!(InstallKind::detect(None), InstallKind::Package);
-        assert_eq!(InstallKind::detect(Some(OsStr::new(""))), InstallKind::Package);
+    fn the_install_kind_is_the_bundle_the_app_was_built_as() {
+        assert_eq!(InstallKind::from_bundle(Some(BundleType::Nsis)), InstallKind::WindowsInstaller);
+        assert_eq!(InstallKind::from_bundle(Some(BundleType::AppImage)), InstallKind::AppImage);
+        assert_eq!(InstallKind::from_bundle(Some(BundleType::Deb)), InstallKind::Package);
+        assert_eq!(InstallKind::from_bundle(Some(BundleType::Rpm)), InstallKind::Package);
     }
 
     #[test]
-    fn a_newer_release_is_installed_by_an_appimage_and_linked_to_for_a_package() {
-        assert_eq!(decide("0.1.0", "0.2.0", InstallKind::AppImage), install("0.2.0"));
+    fn a_build_that_is_no_known_bundle_is_a_package_and_never_installs_itself() {
+        // A dev build or a test run has no bundle type (nothing patched the binary), and neither
+        // does a bundle whose patching failed: all are only pointed at the release page.
+        assert_eq!(bundle_type(), None);
+        assert_eq!(InstallKind::from_bundle(None), InstallKind::Package);
+        assert_eq!(InstallKind::current(), InstallKind::Package);
+        // Bundles that are not built, or not by this shell's installer: the same.
+        for other in [BundleType::Msi, BundleType::App, BundleType::Dmg] {
+            assert_eq!(InstallKind::from_bundle(Some(other)), InstallKind::Package);
+        }
+    }
+
+    #[test]
+    fn a_newer_release_is_installed_by_a_windows_installer_and_an_appimage_and_linked_to_for_a_package() {
+        for kind in [InstallKind::WindowsInstaller, InstallKind::AppImage] {
+            assert_eq!(decide("0.1.0", "0.2.0", kind), install("0.2.0"));
+            assert_eq!(decide("0.9.0", "0.10.0", kind), install("0.10.0"));
+        }
         assert_eq!(decide("0.1.0", "0.2.0", InstallKind::Package), page("0.2.0"));
-        assert_eq!(decide("0.9.0", "0.10.0", InstallKind::AppImage), install("0.10.0"));
         assert_eq!(decide("0.1.0", "1.0.0-beta.1", InstallKind::Package), page("1.0.0-beta.1"));
     }
 
     #[test]
     fn the_same_or_an_older_release_is_nothing_to_do() {
-        for kind in [InstallKind::AppImage, InstallKind::Package] {
+        for kind in KINDS {
             assert_eq!(decide("0.2.0", "0.2.0", kind), UpdateAction::None);
             assert_eq!(decide("0.2.0", "0.1.9", kind), UpdateAction::None);
             // A release candidate comes before its release.
@@ -366,17 +458,17 @@ mod tests {
     }
 
     #[test]
-    fn only_the_version_that_was_found_is_installed_by_an_appimage_that_is_not_quitting() {
-        assert_eq!(may_install(InstallKind::AppImage, false, Some("0.2.0"), "0.2.0"), Ok(()));
-        // A newer check replaced the release the user was shown.
-        assert_eq!(
-            may_install(InstallKind::AppImage, false, Some("0.3.0"), "0.2.0"),
-            Err(UpdateError::VersionChanged)
-        );
-        assert_eq!(may_install(InstallKind::AppImage, false, None, "0.2.0"), Err(UpdateError::NonePending));
-        assert_eq!(may_install(InstallKind::AppImage, true, Some("0.2.0"), "0.2.0"), Err(UpdateError::Quitting));
+    fn only_the_version_that_was_found_is_installed_by_a_self_updating_install_that_is_not_quitting() {
+        for kind in [InstallKind::WindowsInstaller, InstallKind::AppImage] {
+            assert_eq!(may_install(kind, false, Some("0.2.0"), "0.2.0"), Ok(()));
+            // A newer check replaced the release the user was shown.
+            assert_eq!(may_install(kind, false, Some("0.3.0"), "0.2.0"), Err(UpdateError::VersionChanged));
+            assert_eq!(may_install(kind, false, None, "0.2.0"), Err(UpdateError::NonePending));
+            assert_eq!(may_install(kind, true, Some("0.2.0"), "0.2.0"), Err(UpdateError::Quitting));
+        }
         // A package is never updated in place, whatever else is true.
-        assert_eq!(may_install(InstallKind::Package, false, Some("0.2.0"), "0.2.0"), Err(UpdateError::NotAppImage));
+        assert_eq!(may_install(InstallKind::Package, false, Some("0.2.0"), "0.2.0"), Err(UpdateError::NotSelfUpdating));
+        assert_eq!(may_install(InstallKind::Package, true, None, "0.2.0"), Err(UpdateError::NotSelfUpdating));
     }
 
     #[test]
@@ -395,6 +487,102 @@ mod tests {
 
     const HOUR: u64 = 60 * 60;
     const DAY: u64 = 24 * HOUR;
+
+    #[test]
+    fn nothing_is_pending_until_a_check_finds_something_for_a_windows_installer_too() {
+        let updates = Updates::default();
+        assert!(matches!(
+            updates.begin_install(InstallKind::WindowsInstaller, false, "0.2.0"),
+            Err(UpdateError::NonePending)
+        ));
+        assert!(matches!(
+            updates.begin_install(InstallKind::Package, false, "0.2.0"),
+            Err(UpdateError::NotSelfUpdating)
+        ));
+    }
+
+    /// A mock app with a Device on temp folders, and the states the shell sets up.
+    fn app_with_device(tmp: &std::path::Path) -> tauri::App<tauri::test::MockRuntime> {
+        use std::sync::Arc;
+
+        use bhayanakshare_core::{DeviceConfig, KeySource, Network, SystemClock, SystemFreeSpace};
+
+        let config = DeviceConfig {
+            key_source: KeySource::File(tmp.join("data").join("secret.key")),
+            data_dir: tmp.join("data"),
+            save_dir: tmp.join("save"),
+            clock: Arc::new(SystemClock),
+            network: Network::Localhost,
+            free_space: Arc::new(SystemFreeSpace),
+        };
+        let app = tauri::test::mock_app();
+        // As `setup` does, so that events can be emitted.
+        crate::specta_builder().mount_events(&app);
+        app.manage(background::Quitting::default());
+        app.manage(Updates::default());
+        app.manage(Relaunch::default());
+        crate::start_device(&app, config).unwrap();
+        app
+    }
+
+    #[test]
+    fn the_before_exit_hook_does_what_quitting_does_before_the_updater_ends_the_process() {
+        use bhayanakshare_core::{Error, LogFiles, Visibility};
+
+        let tmp = tempfile::tempdir().unwrap();
+        let app = app_with_device(tmp.path());
+        let files = std::sync::Arc::new(LogFiles::open(&tmp.path().join("data").join("logs")).unwrap());
+        app.manage(crate::Logging::new(Some(files), |_| Ok(())));
+        let device = app.state::<Device>();
+        let handle = app.handle();
+
+        assert!(!background::is_quitting(handle));
+        assert!(!app.state::<Updates>().stopped_for_installer.load(Ordering::SeqCst));
+        // Running the Device: a command is answered.
+        assert!(tauri::async_runtime::block_on(device.set_visibility(Visibility::Everyone)).is_ok());
+
+        // What the UI hears: the event's payload, as JSON.
+        let heard = std::sync::Arc::new(Mutex::new(Vec::<String>::new()));
+        {
+            use tauri::Listener as _;
+            use tauri_specta::Event as _;
+            let heard = heard.clone();
+            handle.listen_any(background::ShellEvent::NAME, move |event| {
+                heard.lock().unwrap().push(event.payload().to_owned());
+            });
+        }
+
+        // The hook is what is handed to the updater, which calls it on a blocking thread: not
+        // one of the runtime's, where waiting for the Device would panic.
+        let hook = before_exit(handle);
+        tauri::async_runtime::block_on(tauri::async_runtime::spawn_blocking(hook)).unwrap();
+
+        // The app is quitting (so the UI says "Saving progress…" and nothing new starts), the
+        // Device has been shut down, and the hook says so for the install that called it.
+        assert!(background::is_quitting(handle));
+        assert_eq!(*heard.lock().unwrap(), [r#"{"type":"quitting"}"#], "the UI is told once");
+        assert!(app.state::<Updates>().stopped_for_installer.load(Ordering::SeqCst));
+        let after = tauri::async_runtime::block_on(device.set_visibility(Visibility::Hidden));
+        assert!(matches!(after, Err(Error::ShuttingDown)), "{after:?}");
+        // No Relaunch: the installer starts the new version, and a second start would only be
+        // taken for a second launch.
+        assert!(!app.state::<Relaunch>().0.load(Ordering::SeqCst));
+    }
+
+    #[test]
+    fn the_before_exit_hook_is_safe_when_quit_was_already_chosen() {
+        let tmp = tempfile::tempdir().unwrap();
+        let app = app_with_device(tmp.path());
+        let handle = app.handle();
+        // Quit is in progress and the Device is already shut down: the hook is not stopped by
+        // that, nor does it need a log.
+        assert!(background::begin_quit(handle));
+        tauri::async_runtime::block_on(app.state::<Device>().shutdown(Duration::from_secs(5)));
+        before_exit(handle)();
+        assert!(background::is_quitting(handle));
+        // Quitting begins once: the UI is told once.
+        assert!(!background::begin_quit(handle));
+    }
 
     #[test]
     fn the_first_check_is_due_at_once() {
@@ -447,6 +635,9 @@ mod tests {
             serde_json::json!(["https://github.com/theHimanshuShekhar/bhayanakshare/releases/latest/download/latest.json"]),
         );
         assert!(updater["pubkey"].as_str().is_some_and(|key| !key.is_empty()));
+        // The Windows installer runs with a progress bar and no questions (the plugin's default,
+        // written down): per user, so there is no UAC prompt either.
+        assert_eq!(updater["windows"]["installMode"], "passive");
         assert_eq!(conf["bundle"]["createUpdaterArtifacts"], true);
         // The licence the packages ship, relative to this folder, is there.
         let license = conf["bundle"]["licenseFile"].as_str().unwrap();

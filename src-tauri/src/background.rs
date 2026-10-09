@@ -21,7 +21,7 @@ use tauri_plugin_deep_link::DeepLinkExt as _;
 use tauri_plugin_dialog::DialogExt as _;
 use tauri_specta::Event as _;
 
-use crate::{QUIT_DEADLINE, notice, updates::UpdateAction};
+use crate::{Logging, QUIT_DEADLINE, notice, updates::UpdateAction};
 
 /// Passed by the login entry, so that starting at login leaves the window closed.
 pub const BACKGROUND_FLAG: &str = "--background";
@@ -272,16 +272,35 @@ pub fn request_quit<R: Runtime>(app: &AppHandle<R>) {
     });
 }
 
-/// Shuts the Device down so that its Transfers resume on the next start, then exits. The
-/// window stays up meanwhile, saying so, for at most [`QUIT_DEADLINE`].
-pub async fn finish_quit<R: Runtime>(app: &AppHandle<R>) {
+/// Marks the app as on its way out and tells the UI, so that it says "Saving progress…".
+/// False if that had already been done, by whoever is quitting.
+pub fn begin_quit<R: Runtime>(app: &AppHandle<R>) -> bool {
     if app.state::<Quitting>().0.swap(true, Ordering::SeqCst) {
-        return;
+        return false;
     }
     emit(app, ShellEvent::Quitting);
+    true
+}
+
+/// Shuts the Device down so that its Transfers resume on the next start, for at most
+/// [`QUIT_DEADLINE`] (after which the process may end anyway: the next start re-checks), and
+/// writes out the log. Safe to repeat: the exit does it again.
+pub async fn save_and_flush<R: Runtime>(app: &AppHandle<R>) {
     if let Some(device) = app.try_state::<Device>() {
         device.shutdown(QUIT_DEADLINE).await;
     }
+    if let Some(logging) = app.try_state::<Logging>() {
+        logging.flush();
+    }
+}
+
+/// Saves the Transfers' progress (see [`save_and_flush`]), then exits. The window stays up
+/// meanwhile, saying so.
+pub async fn finish_quit<R: Runtime>(app: &AppHandle<R>) {
+    if !begin_quit(app) {
+        return;
+    }
+    save_and_flush(app).await;
     app.exit(0);
 }
 

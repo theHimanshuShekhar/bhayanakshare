@@ -50,7 +50,7 @@ const en = {
   "update.cancel": "Not now",
   "update.none": "No newer version was found.",
   "update.checkFailed": "Could not check for updates. Are you online?",
-  "update.error.notAppImage": "This install is updated from the release page, not by BhayanakShare itself.",
+  "update.error.notSelfUpdating": "This install is updated from the release page, not by BhayanakShare itself.",
   "update.error.nonePending": "There is no update to install. Check again.",
   "update.error.versionChanged": "A newer version came out in the meantime. Check again to install it.",
   "update.error.alreadyInstalling": "An update is already being installed.",
