@@ -1,0 +1,105 @@
+name: bundle-check
+
+# Builds the installers and packages without a tag, so that a change to how they are made shows
+# its result on the push that makes it, not on release day (release.yml, which needs a tag, makes
+# the same bundles and signs them). Nothing is signed or published here: there are no secrets,
+# and the updater artifacts, which need the signing key, are turned off.
+
+on:
+  push:
+    paths:
+      - src-tauri/tauri.conf.json
+      - src-tauri/tauri.*.conf.json
+      - src-tauri/build.rs
+      - src-tauri/Cargo.toml
+      - src-tauri/icons/**
+      - src-tauri/linux/**
+      - .github/scripts/check-exe-manifest.ps1
+      - .github/workflows/release.yml
+      - .github/workflows/bundle-check.yml
+  pull_request:
+    paths:
+      - src-tauri/tauri.conf.json
+      - src-tauri/tauri.*.conf.json
+      - src-tauri/build.rs
+      - src-tauri/Cargo.toml
+      - src-tauri/icons/**
+      - src-tauri/linux/**
+      - .github/scripts/check-exe-manifest.ps1
+      - .github/workflows/release.yml
+      - .github/workflows/bundle-check.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: bundle-check-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  bundle:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-22.04
+            name: linux
+            bundles: appimage,deb,rpm
+            upload: |
+              target/release/bundle/appimage/*.AppImage
+              target/release/bundle/deb/*.deb
+              target/release/bundle/rpm/*.rpm
+          - os: windows-latest
+            name: windows
+            bundles: nsis
+            upload: target/release/bundle/nsis/*-setup.exe
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # The same as release.yml.
+      - name: Install system libraries
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev build-essential curl wget file libxdo-dev \
+            libssl-dev libayatana-appindicator3-dev librsvg2-dev patchelf xdg-utils
+
+      # The pnpm version comes from "packageManager" in package.json.
+      - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - uses: dtolnay/rust-toolchain@89b12181fb390509a0842a86cc55eeb8eb928c1d # stable branch
+
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+
+      - run: pnpm install --frozen-lockfile
+
+      - name: Build the bundles
+        shell: bash
+        run: pnpm tauri build --bundles ${{ matrix.bundles }} --config '{"bundle":{"createUpdaterArtifacts":false}}'
+
+      - name: List the bundles
+        shell: bash
+        run: find target/release/bundle -maxdepth 2 -type f -exec ls -l {} +
+
+      # #48: the app's manifest. The linker embeds one (build.rs) and tauri-build adds none.
+      - name: Check the app's manifest
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: .github/scripts/check-exe-manifest.ps1 target/release/bhayanakshare.exe
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: bundles-${{ matrix.name }}
+          path: ${{ matrix.upload }}
+          if-no-files-found: error
+          retention-days: 3

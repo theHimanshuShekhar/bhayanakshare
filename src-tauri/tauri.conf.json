@@ -32,7 +32,6 @@
   },
   "bundle": {
     "active": true,
-    "targets": "all",
     "createUpdaterArtifacts": true,
     "publisher": "Himanshu Shekhar",
     "copyright": "Copyright (c) 2026 Himanshu Shekhar",
