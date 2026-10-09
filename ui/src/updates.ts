@@ -20,7 +20,7 @@ export type UpdateProgress =
   | { step: "failed"; message: string };
 
 const ERRORS: Record<UpdateError, MessageKey> = {
-  not_app_image: "update.error.notAppImage",
+  not_self_updating: "update.error.notSelfUpdating",
   none_pending: "update.error.nonePending",
   version_changed: "update.error.versionChanged",
   already_installing: "update.error.alreadyInstalling",
@@ -43,10 +43,10 @@ export function offeredVersion(action: UpdateAction): string | null {
 
 /**
  * Looking for and installing an update. `install` is for a release that was found; `updateNow`
- * looks first, then installs (an AppImage) or opens the release page (a package): where the
- * user has pressed a button that says so, that press is the agreement to install, and the
- * version is shown while it goes. Either way, with Transfers in progress the user is asked
- * first (`confirm` or `cancel`), as they stop for the restart.
+ * looks first, then installs (the Windows installer, an AppImage) or opens the release page (a
+ * package): where the user has pressed a button that says so, that press is the agreement to
+ * install, and the version is shown while it goes. Either way, with Transfers in progress the user
+ * is asked first (`confirm` or `cancel`), as they stop for the restart.
  *
  * `check` only looks, for Settings: what it finds is left for the user to install (or not), and
  * is handed back so the app can note it.

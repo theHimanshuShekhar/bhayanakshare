@@ -889,12 +889,7 @@ pub fn run() {
             // busy disk can make that slow (spec section 7: "Saving progress…" for up to 30
             // s); after that the process exits anyway, and the next start re-checks.
             if let tauri::RunEvent::Exit = event {
-                if let Some(device) = app.try_state::<Device>() {
-                    tauri::async_runtime::block_on(device.shutdown(QUIT_DEADLINE));
-                }
-                if let Some(logging) = app.try_state::<Logging>() {
-                    logging.flush();
-                }
+                tauri::async_runtime::block_on(background::save_and_flush(app));
                 // The Device is closed and the single instance plugin has let go of its lock
                 // (it does so before this), so the new start is neither held up by the data
                 // folder nor taken for a second launch. It gets no arguments.

@@ -120,9 +120,9 @@ export interface Api {
   checkForUpdate(): Promise<UpdateAction>;
   /** The newer release the last check found, if any. */
   pendingUpdate(): Promise<UpdateAction>;
-  /** Installs `version`, the release the user agreed to, and restarts the app (an AppImage
-   * only). The caller has the user's agreement. Rejects with an `UpdateError` if it could not be
-   * installed, as when `version` is no longer the release found. */
+  /** Installs `version`, the release the user agreed to, and restarts the app (the Windows
+   * installer or an AppImage). The caller has the user's agreement. Rejects with an `UpdateError`
+   * if it could not be installed, as when `version` is no longer the release found. */
   installUpdate(version: string): Promise<unknown>;
   /** Every Contact, in the order they were added. */
   contacts(): Promise<Contact[]>;
