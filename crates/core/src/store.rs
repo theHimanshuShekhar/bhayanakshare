@@ -12,6 +12,8 @@ use std::{
 
 use iroh_blobs::store::fs::FsStore;
 
+use crate::long_path::long;
+
 static OPEN_DIRS: LazyLock<Mutex<HashSet<PathBuf>>> = LazyLock::new(Mutex::default);
 
 #[derive(Debug, thiserror::Error)]
@@ -59,8 +61,10 @@ impl Drop for DirGuard {
 /// Opens (creating if needed) the fs store in `dir`.
 pub async fn open(dir: &Path) -> Result<Store, StoreError> {
     let dir_err = |source| StoreError::Dir { path: dir.to_owned(), source };
-    tokio::fs::create_dir_all(dir).await.map_err(dir_err)?;
-    let canonical = tokio::fs::canonicalize(dir).await.map_err(dir_err)?;
+    // Extended-length on Windows: the directory is under a save folder that may be deep.
+    let long_dir = long(dir);
+    tokio::fs::create_dir_all(&long_dir).await.map_err(dir_err)?;
+    let canonical = tokio::fs::canonicalize(&long_dir).await.map_err(dir_err)?;
     if !OPEN_DIRS.lock().unwrap_or_else(|e| e.into_inner()).insert(canonical.clone()) {
         return Err(StoreError::AlreadyOpen(canonical));
     }

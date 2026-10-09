@@ -139,8 +139,8 @@ pub(crate) enum Decision {
 pub(crate) struct PendingOffer {
     pub peer: DeviceId,
     pub size: u64,
-    /// Bytes in the longest path the Offer would create, names as adjusted, relative to the
-    /// save folder: what the path-length check needs.
+    /// Length of the longest path the Offer would create, names as adjusted, relative to the
+    /// save folder: what the path-length check needs, in bytes (UTF-16 code units on Windows).
     pub longest_path: usize,
     /// A text Offer takes nothing from the save folder, so the checks about it always pass.
     pub text: bool,
@@ -301,7 +301,7 @@ impl Shared {
     }
 
     /// What Transfer `id`, an Offer of `needed` bytes whose longest path is `longest_path`
-    /// bytes, would take from `folder`.
+    /// long (bytes; UTF-16 code units on Windows), would take from `folder`.
     pub async fn space_check(
         &self,
         id: TransferId,
