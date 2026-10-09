@@ -251,6 +251,45 @@ async fn what_is_already_in_the_save_folder_survives_and_incoming_items_arrive_r
     bob.shutdown().await;
 }
 
+/// The Transfer is accepted and its content is on its way, and only then do the names it will be
+/// saved under get taken, which is as near as the Device API gets to "just before the final
+/// move": the Receiver looks at the save folder when it moves the finished tree in, not when it
+/// accepts. The true race, a name appearing between that look and the move, cannot be timed from
+/// here; `fsmove`'s tests hold the move itself to never replacing, and `receiver`'s that the next
+/// name is tried when it refuses.
+#[tokio::test]
+async fn a_name_taken_after_the_offer_was_accepted_is_not_overwritten_or_merged() {
+    let mut bob = TestDevice::start("bob").await;
+    let mut sender = HandSender::new(&[
+        ("photos/new.jpg", b"theirs"),
+        ("photos/old.jpg", b"theirs, same name"),
+        ("a.txt", b"theirs"),
+    ])
+    .await;
+    // Nothing is in the way when the Offer is made and accepted.
+    let id = TransferId::from_bytes([3; 16]);
+    sender.offer(&bob, id).await;
+    bob.wait_offer().await;
+    bob.device.accept(id).await.unwrap();
+    assert!(list_dir(&bob.save_dir).iter().all(|name| name != "photos" && name != "a.txt"));
+
+    // Another program, or the user, takes both names before the content arrives.
+    write(&bob.save_dir.join("photos/old.jpg"), b"mine");
+    write(&bob.save_dir.join("a.txt"), b"mine too");
+    sender.serve_until_saved().await;
+    bob.wait_state(id, "completed").await;
+
+    assert_eq!(list_dir(&bob.save_dir), [INCOMING_DIR, "a (1).txt", "a.txt", "photos", "photos (1)"]);
+    assert_eq!(list_dir(&bob.save_dir.join("photos")), ["old.jpg"]);
+    assert_eq!(read(bob.save_dir.join("photos/old.jpg")), b"mine");
+    assert_eq!(read(bob.save_dir.join("a.txt")), b"mine too");
+    assert_eq!(list_dir(&bob.save_dir.join("photos (1)")), ["new.jpg", "old.jpg"]);
+    assert_eq!(read(bob.save_dir.join("photos (1)/new.jpg")), b"theirs");
+    assert_eq!(read(bob.save_dir.join("photos (1)/old.jpg")), b"theirs, same name");
+    assert_eq!(read(bob.save_dir.join("a (1).txt")), b"theirs");
+    bob.shutdown().await;
+}
+
 #[tokio::test]
 async fn an_item_named_like_the_incoming_store_never_lands_in_it_or_replaces_it() {
     let mut alice = TestDevice::start("alice").await;
