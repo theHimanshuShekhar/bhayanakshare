@@ -32,9 +32,9 @@ export function UpdateStatus({ updater }: { updater: Updater }) {
 }
 
 /**
- * A newer release exists. The Windows installer and an AppImage offer to install it and restart; a package, which never
- * updates itself, links to the release page. The banner can be dismissed; the same notice in
- * Settings, which is not given a way to, is what a check there found.
+ * A newer release exists. The Windows installer and an AppImage offer to install it and restart; a
+ * package, which never updates itself, links to the release page. The banner can be dismissed;
+ * the same notice in Settings, which is not given a way to, is what a check there found.
  */
 export function UpdateBanner({
   api,
