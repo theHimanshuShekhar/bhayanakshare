@@ -64,6 +64,8 @@ Remove both and the next install is a new Device with a new Device ID. The files
 3. `.github/workflows/release.yml` builds on Ubuntu 22.04 and uploads the AppImage, deb, rpm, their updater signatures and `latest.json` to a **draft** GitHub Release.
 4. Publish the draft. The updater reads the latest *published* release, so installed AppImages see the new version only then.
 
+Each beta and 1.0 must pass the [release checklist](docs/release-checklist.md): the manual gate, run on one Windows 11 PC and one Linux PC on the same LAN, with their firewalls on.
+
 The release workflow is the one that sees the signing key, so its actions are pinned to commits (the tag is in a comment beside each), it caches nothing, and only its job has write permission. Update the pins by hand, checking the new tag.
 
 `.github/workflows/ci.yml` runs `pnpm typecheck` and `pnpm test` on every push and pull request, on Ubuntu and on Windows (without `BHAYANAKSHARE_REQUIRE_MULTICAST`, as multicast may not work on a runner). A test that cannot run on Windows is `#[ignore]`d there with its reason, or prints `SKIPPED: ...` and says what it did not test; the Windows job runs with `RUST_TEST_NOCAPTURE` so that line is in its log.
