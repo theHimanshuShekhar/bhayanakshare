@@ -20,6 +20,7 @@ mod identity_file;
 mod keyfile;
 mod keystore;
 mod logs;
+mod long_path;
 pub mod manifest;
 mod names;
 pub mod protocol;

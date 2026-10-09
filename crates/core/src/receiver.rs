@@ -30,6 +30,7 @@
 
 use std::{
     collections::{BTreeSet, hash_map::Entry},
+    ffi::OsStr,
     io,
     path::{Path, PathBuf},
     sync::Arc,
@@ -59,6 +60,7 @@ use crate::{
     device::{Decision, PendingOffer, Shared, TransferInfo},
     fsmove::rename_no_replace,
     identity::DeviceId,
+    long_path::long,
     manifest::{self, Manifest},
     names::{adjust_names, numbered},
     protocol::{self, FrameError, Message, OfferKind, spawn_reader, write_frame},
@@ -95,11 +97,34 @@ fn collection_allowance(manifest: &Manifest) -> u64 {
     COLLECTION_SLACK + PER_ENTRY * (manifest.file_count() + 1) + names
 }
 
-/// The longest path the platform's filesystems take, in bytes, counting everything from the
-/// root. Linux's `PATH_MAX` and macOS's include the terminating NUL. Windows is not limited to
-/// this (the app uses `\\?\` paths there, untested) but is held to it too, for want of a
-/// better number, since an Offer's own paths are far shorter.
-const MAX_PATH: usize = if cfg!(target_os = "linux") { 4095 } else { 1023 };
+/// The longest path a Transfer may be saved at, counting everything from the root and not the
+/// terminating NUL, in [`path_len`]'s unit. On Linux that is `PATH_MAX` less the NUL, in bytes.
+/// Windows, where the Receiver uses extended-length (`\\?\`) paths (see [`long`]), takes 32,767
+/// UTF-16 code units for the whole path including the prefix, "approximately" in Microsoft's words
+/// (https://learn.microsoft.com/en-us/windows/win32/fileio/maximum-file-path-limitation), and
+/// 255 for each name (NTFS). Names are held to 255 bytes already, when an Offer is validated, and
+/// 255 bytes of UTF-8 are never more than 255 UTF-16 units. Other systems keep the smallest limit
+/// there is, macOS's 1,023 bytes, which v1 does not ship on.
+const MAX_PATH: usize = if cfg!(windows) {
+    32_767
+} else if cfg!(target_os = "linux") {
+    4095
+} else {
+    1023
+};
+
+/// The length of `path` in the unit [`MAX_PATH`] counts: UTF-16 code units on Windows, bytes
+/// elsewhere.
+#[cfg(windows)]
+fn path_len(path: &OsStr) -> usize {
+    use std::os::windows::ffi::OsStrExt;
+    path.encode_wide().count()
+}
+
+#[cfg(not(windows))]
+fn path_len(path: &OsStr) -> usize {
+    path.as_encoded_bytes().len()
+}
 
 /// How long one try to reach the Sender may take before the next is made.
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
@@ -249,7 +274,8 @@ async fn flow(
     let (kind, items, adjusted_names, longest_path, manifest, text) = match offer.kind {
         OfferKind::Files(manifest) => {
             let adjusted = adjust_names(&manifest, INCOMING_DIR);
-            let longest = adjusted.manifest.entries.iter().map(|entry| entry.path().len()).max().unwrap_or(0);
+            let paths = adjusted.manifest.entries.iter().map(|entry| path_len(OsStr::new(entry.path())));
+            let longest = paths.max().unwrap_or(0);
             let items = manifest.top_level_items();
             (TransferKind::Files, items, adjusted.count, longest, Some(Arc::new(manifest)), None)
         }
@@ -438,7 +464,7 @@ async fn refuse(session: &mut Session, conn: &Connection) {
 
 /// The save folder to accept `info` into without asking, if its Sender is a Contact with
 /// Auto-accept on and the Offer passes the Receiver's checks: it fits, and its paths (the longest
-/// is `longest_path` bytes) are not too long. Any failed check (or a failure to run one) returns
+/// is `longest_path` long, see [`path_len`]) are not too long. Any failed check (or a failure to run one) returns
 /// `None`, and the Offer is shown as a normal prompt with its warning. Adjusted names are no
 /// reason to ask.
 async fn auto_accept_folder(sh: &Shared, info: &TransferInfo, longest_path: usize) -> Option<PathBuf> {
@@ -475,13 +501,14 @@ fn incoming_dir(save_dir: &Path, id: TransferId) -> PathBuf {
     save_dir.join(INCOMING_DIR).join(id.to_string())
 }
 
-/// Whether the longest path of Transfer `id` (`longest_path` bytes, relative to the save
-/// folder) is short enough to write under `save_dir`. The tree is built under the incoming
-/// store, which is deeper than where it ends up, so the path there is the one that has to
-/// fit; it also leaves room for the number a clashing item is given.
+/// Whether the longest path of Transfer `id` (`longest_path`, in [`path_len`]'s unit, relative to
+/// the save folder) is short enough to write under `save_dir`. The tree is built under the
+/// incoming store, which is deeper than where it ends up, so the path there is the one that has
+/// to fit; it also leaves room for the number a clashing item is given. On Windows the path is
+/// counted as it is given to the filesystem, with its `\\?\` prefix.
 pub(crate) fn paths_fit(save_dir: &Path, id: TransferId, longest_path: usize) -> bool {
-    let staged = incoming_dir(save_dir, id).join(OUT_DIR);
-    staged.as_os_str().as_encoded_bytes().len() + 1 + longest_path <= MAX_PATH
+    let staged = long(&incoming_dir(save_dir, id).join(OUT_DIR));
+    path_len(staged.as_os_str()) + 1 + longest_path <= MAX_PATH
 }
 
 /// How the Transfer ended after the Receiver accepted it, and the connection to the Sender
@@ -905,7 +932,9 @@ async fn fetch_and_save(
                 hash: *hash,
                 // The store keeps the data in its own file, so this is a rename, not a copy.
                 mode: ExportMode::TryReference,
-                target: out.join(staged),
+                // Extended-length on Windows, of the whole path: after the `\\?\` prefix a `/` is
+                // not a separator, and the manifest's paths have them.
+                target: long(&out.join(staged)),
             })
             .finish()
             .await
@@ -963,7 +992,7 @@ fn build_tree(out: &Path, manifest: &Manifest) -> io::Result<()> {
 fn finish_entry(out: &Path, entry: &manifest::Entry) -> io::Result<()> {
     match entry {
         manifest::Entry::File { path, size, mtime_ns, executable } => {
-            let file = std::fs::OpenOptions::new().write(true).open(out.join(path))?;
+            let file = std::fs::OpenOptions::new().write(true).open(long(&out.join(path)))?;
             if file.metadata()?.len() != *size {
                 return Err(io::Error::new(io::ErrorKind::InvalidData, "a file is not the size offered"));
             }
@@ -979,7 +1008,7 @@ fn finish_entry(out: &Path, entry: &manifest::Entry) -> io::Result<()> {
             }
             file.sync_all()
         }
-        manifest::Entry::EmptyDir { path } => std::fs::create_dir_all(out.join(path)),
+        manifest::Entry::EmptyDir { path } => std::fs::create_dir_all(long(&out.join(path))),
     }
 }
 
@@ -1013,7 +1042,7 @@ fn move_into_save_folder(out: &Path, save_dir: &Path, items: &[String]) -> io::R
     });
     if let Err(e) = result.and_then(|()| sync_dir(save_dir)) {
         for (dest, staged) in moved.iter().rev() {
-            if let Err(undo) = rename_no_replace(dest, staged) {
+            if let Err(undo) = rename_no_replace(&long(dest), &long(staged)) {
                 // Not where: the name of what was saved is the Sender's, and the folder the user's.
                 tracing::warn!("could not take a saved item back out of the save folder: {undo}");
             }
@@ -1029,8 +1058,9 @@ fn move_into_save_folder(out: &Path, save_dir: &Path, items: &[String]) -> io::R
 fn move_item(staged: &Path, save_dir: &Path, name: &str) -> io::Result<PathBuf> {
     for n in 0u32.. {
         let candidate = if n == 0 { name.to_owned() } else { numbered(name, n) };
+        // `dest` stays the plain path: it is what is shown and recorded as where this was saved.
         let dest = save_dir.join(candidate);
-        match rename_no_replace(staged, &dest) {
+        match rename_no_replace(&long(staged), &long(&dest)) {
             Ok(()) => return Ok(dest),
             Err(e) if e.kind() == io::ErrorKind::AlreadyExists => continue,
             Err(e) => return Err(e),
@@ -1066,7 +1096,7 @@ fn close_store(sh: &Shared, opened: Opened, delete: bool) {
 }
 
 async fn remove_dir(dir: &Path) {
-    if let Err(e) = tokio::fs::remove_dir_all(dir).await {
+    if let Err(e) = tokio::fs::remove_dir_all(long(dir)).await {
         if e.kind() != io::ErrorKind::NotFound {
             // Only the last part of the path, which is a Transfer ID or `out` (see `incoming_dir`):
             // the rest is under the save folder.
@@ -1124,22 +1154,74 @@ mod tests {
         assert!(names(&out).is_empty());
     }
 
+    /// Where a save folder is, and what the Receiver puts in front of a Transfer's paths in it
+    /// as it hands them to the filesystem.
+    #[cfg(windows)]
+    const SAVE: &str = r"C:\Users\me\Downloads\BhayanakShare";
+    #[cfg(not(windows))]
+    const SAVE: &str = "/home/me/Downloads/BhayanakShare";
+
+    /// How many units (see `path_len`) come before a Transfer's paths while they are being built.
+    fn before(save: &Path, id: TransferId) -> usize {
+        path_len(long(&incoming_dir(save, id).join(OUT_DIR)).as_os_str()) + 1
+    }
+
     #[test]
     fn a_path_fits_when_the_staged_tree_under_the_incoming_store_stays_within_the_limit() {
-        let save = Path::new("/home/me/Downloads/BhayanakShare");
+        let save = Path::new(SAVE);
         let id = TransferId::from_bytes([0xab; 16]);
-        // What is in front of a Transfer's paths while it is being built.
-        let before = incoming_dir(save, id).join(OUT_DIR).as_os_str().len() + 1;
-        assert_eq!(before, save.as_os_str().len() + 1 + INCOMING_DIR.len() + 1 + 32 + 1 + 3 + 1);
+        let before = before(save, id);
+        // The save folder, then `.bhayanakshare-incoming/<id>/out/`, and on Windows the `\\?\`.
+        let prefix = if cfg!(windows) { 4 } else { 0 };
+        assert_eq!(before, prefix + SAVE.len() + 1 + INCOMING_DIR.len() + 1 + 32 + 1 + 3 + 1);
 
         assert!(paths_fit(save, id, 0));
         assert!(paths_fit(save, id, MAX_PATH - before));
         assert!(!paths_fit(save, id, MAX_PATH - before + 1));
         // A longer save folder leaves less room.
         assert!(!paths_fit(&save.join("x".repeat(100)), id, MAX_PATH - before));
-        // The limit counts bytes, not characters: 60 characters of 2 bytes are 120.
+    }
+
+    #[cfg(not(windows))]
+    #[test]
+    fn on_linux_the_limit_is_path_max_less_the_nul_counted_in_bytes() {
+        if cfg!(target_os = "linux") {
+            assert_eq!(MAX_PATH, 4095);
+        }
+        let save = Path::new(SAVE);
+        let id = TransferId::from_bytes([0xab; 16]);
+        let before = before(save, id);
+        // 60 characters of 2 bytes are 120.
         assert!(paths_fit(&save.join("é".repeat(60)), id, MAX_PATH - before - 121));
         assert!(!paths_fit(&save.join("é".repeat(60)), id, MAX_PATH - before - 120));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn on_windows_the_limit_is_32767_utf16_units_counted_with_the_extended_prefix() {
+        assert_eq!(MAX_PATH, 32_767);
+        let save = Path::new(SAVE);
+        let id = TransferId::from_bytes([0xab; 16]);
+        let before = before(save, id);
+        // Far past the 4,095 and 1,023 bytes of the other systems, and past 260 characters.
+        assert!(paths_fit(save, id, 4096));
+        // The same save folder given as a path that is extended-length already counts the same.
+        assert!(paths_fit(Path::new(&format!(r"\\?\{SAVE}")), id, MAX_PATH - before));
+        assert!(!paths_fit(Path::new(&format!(r"\\?\{SAVE}")), id, MAX_PATH - before + 1));
+        // A save folder deep enough to leave no room for the longest an Offer may have.
+        let deep = Path::new(SAVE).join("d".repeat(255)).join("d".repeat(255));
+        let deep = (0..60).fold(deep, |path, _| path.join("d".repeat(255)));
+        assert!(path_len(deep.as_os_str()) > 15_000);
+        assert!(paths_fit(&deep, id, 4096));
+        let deeper = (0..60).fold(deep, |path, _| path.join("d".repeat(255)));
+        assert!(!paths_fit(&deeper, id, 4096));
+        // UTF-16 units, not bytes: 60 characters of 2 bytes and one of 4 are 60 + 2 units, and the
+        // two separators before them.
+        let wide = Path::new(SAVE).join("é".repeat(60)).join("\u{1F600}");
+        let extra = 60 + 2 + 2;
+        assert_eq!(path_len(wide.as_os_str()), SAVE.len() + extra);
+        assert!(paths_fit(&wide, id, MAX_PATH - before - extra));
+        assert!(!paths_fit(&wide, id, MAX_PATH - before - extra + 1));
     }
 
     #[test]

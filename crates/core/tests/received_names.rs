@@ -9,7 +9,7 @@
 
 mod support;
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use bhayanakshare_core::{
     DeviceId, Error, INCOMING_DIR, TransferId,
@@ -314,6 +314,20 @@ fn long_path(len: usize) -> String {
     path
 }
 
+/// A folder under `base` that leaves no room for the longest path an Offer may have (4,090 bytes
+/// here) on this system. On Linux `base` is that already. On Windows, extended-length paths allow
+/// 32,767 UTF-16 code units, so the folder is made about 29,000 long, of names of 255 characters.
+fn folder_with_no_room(base: &Path) -> PathBuf {
+    let mut folder = base.to_owned();
+    if cfg!(windows) {
+        for _ in 0..113 {
+            folder.push("d".repeat(255));
+        }
+    }
+    std::fs::create_dir_all(&folder).unwrap();
+    folder
+}
+
 /// A Sender written by hand, which has said Hello to `bob` and sent an Offer of one file of
 /// `path` that it never serves.
 async fn offer_by_a_raw_sender(
@@ -335,14 +349,16 @@ async fn offer_by_a_raw_sender(
 async fn an_offer_whose_paths_are_too_long_for_the_folder_cannot_be_accepted() {
     let mut bob = TestDevice::start("bob").await;
     let peer = raw_peer().await;
-    let elsewhere = tempfile::tempdir().unwrap();
+    let elsewhere_tmp = tempfile::tempdir().unwrap();
+    let elsewhere = folder_with_no_room(elsewhere_tmp.path());
+    let save = bob.device.set_save_folder(&folder_with_no_room(&bob.save_dir)).await.unwrap();
 
     // Legal for an Offer (under 4096 bytes), but nothing can be written at it: not in the save
     // folder, and not in the one chosen for this Offer either.
     let id = TransferId::from_bytes([1; 16]);
     let (_conn, _send, mut recv) = offer_by_a_raw_sender(&mut bob, &peer, id, &long_path(4090)).await;
     bob.wait_offer().await;
-    for folder in [None, Some(elsewhere.path())] {
+    for folder in [None, Some(elsewhere.as_path())] {
         let check = bob.device.check_offer(id, folder).await.unwrap();
         assert!(check.paths_too_long, "{folder:?}");
         assert!(check.fits() && !check.passes(), "the space is fine, the paths are not");
@@ -352,8 +368,8 @@ async fn an_offer_whose_paths_are_too_long_for_the_folder_cannot_be_accepted() {
     }
     // The Offer still waits, and nothing was made on disk.
     assert_eq!(bob.history(id), ["offered"]);
-    assert_eq!(list_dir(&bob.save_dir), Vec::<String>::new());
-    assert_eq!(list_dir(elsewhere.path()), Vec::<String>::new());
+    assert_eq!(list_dir(&save), Vec::<String>::new());
+    assert_eq!(list_dir(&elsewhere), Vec::<String>::new());
 
     bob.device.decline(id).await.unwrap();
     assert!(matches!(read_frame(&mut recv).await.unwrap(), Message::Decline));
@@ -382,6 +398,7 @@ async fn a_path_that_fits_is_not_held_back() {
 async fn too_long_paths_hold_auto_accept_back_and_the_offer_is_prompted() {
     let mut bob = TestDevice::start("bob").await;
     let peer = raw_peer().await;
+    let save = bob.device.set_save_folder(&folder_with_no_room(&bob.save_dir)).await.unwrap();
     let peer_id: DeviceId = data_encoding::BASE32_NOPAD.encode(peer.id().as_bytes()).parse().unwrap();
     bob.device.add_contact(peer_id, None).await.unwrap();
     bob.device.set_auto_accept(peer_id, true).await.unwrap();
@@ -394,7 +411,7 @@ async fn too_long_paths_hold_auto_accept_back_and_the_offer_is_prompted() {
     assert_eq!(bob.history(id), ["offered"]);
     assert!(bob.device.check_offer(id, None).await.unwrap().paths_too_long);
     assert!(matches!(bob.device.accept(id).await, Err(Error::PathsTooLong)));
-    assert_eq!(list_dir(&bob.save_dir), Vec::<String>::new());
+    assert_eq!(list_dir(&save), Vec::<String>::new());
 
     bob.device.decline(id).await.unwrap();
     assert!(matches!(read_frame(&mut recv).await.unwrap(), Message::Decline));

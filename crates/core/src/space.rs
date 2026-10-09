@@ -56,7 +56,8 @@ impl FreeSpace for SystemFreeSpace {
 
         use windows_sys::Win32::Storage::FileSystem::GetDiskFreeSpaceExW;
 
-        let mut path: Vec<u16> = dir.as_os_str().encode_wide().collect();
+        // A save folder past 260 characters is only found by its extended-length path.
+        let mut path: Vec<u16> = crate::long_path::long(dir).as_os_str().encode_wide().collect();
         if path.contains(&0) {
             return Err(io::Error::new(io::ErrorKind::InvalidInput, "the path holds a NUL"));
         }
