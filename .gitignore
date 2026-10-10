@@ -6,3 +6,4 @@ node_modules
 .DS_Store
 # Agent worktrees live inside the main checkout
 /.claude/worktrees/
+/ui/.screens-out
