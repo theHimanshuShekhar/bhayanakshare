@@ -13,6 +13,7 @@ Created in [T3 Code](https://t3.codes).
 | `crates/core` | The Rust core, with no Tauri dependency: Device API, control protocol, blob stores, SQLite persistence. All integration tests live here. |
 | `src-tauri` | The Tauri 2 shell: starts a core `Device`, exposes its commands to the UI, forwards its event stream. |
 | `ui` | React + TypeScript + Vite front end. `ui/src/bindings.ts` is generated from the Rust types and committed; every UI string is in `ui/src/i18n.ts`. |
+| `ui/screens` | The screen preview harness (dev only, never shipped): see [Screen previews](#screen-previews). |
 
 The core's public seam is `Device`: it is created from a data folder, a save folder, a key source and an injected clock; commands go in as methods and everything that happens comes back, in order, on one `EventStream`. The shell and every test use only that.
 
@@ -129,6 +130,21 @@ BHAYANAKSHARE_DATA_DIR=/tmp/bhs-b/data BHAYANAKSHARE_SAVE_DIR=/tmp/bhs-b/save ta
 An instance given `BHAYANAKSHARE_DATA_DIR` is treated as a separate install made to run beside another: it skips the single-instance check and does not register itself to start at login or as the handler of `bhayanakshare://` links. (Without the variable, a second launch focuses the running window instead and hands it any files named on the command line.)
 
 Copy the Device ID from one instance's "My ID", choose "Send to ID…" in the other, and paste it. Without the variables the data lives in the platform's app data folder and files are saved to `~/Downloads/BhayanakShare` (or the folder chosen in Settings, which takes the place of `BHAYANAKSHARE_SAVE_DIR` once set).
+
+### Screen previews
+
+`ui/screens` draws the real app (its components and `styles.css`) in a browser, with the UI tests' stand-in shell (`fakeApi` from `ui/src/testApi.tsx`) and made-up sample data, one URL per screen and dialog in its main states. It is for handing the current screens to Claude Design, and for reviewing the implemented redesign against the mockups later. It is not part of the app.
+
+```sh
+pnpm --filter ui preview:screens   # http://localhost:1430/ lists every view; ?view=<id> draws one
+pnpm --filter ui exec playwright install chromium   # once: Chromium, into ~/.cache
+pnpm --filter ui capture:screens   # a PNG of every view in ui/.screens-out/ (not committed)
+pnpm --filter ui capture:screens home-populated offer-warnings   # only these views
+```
+
+Captures are 1100 px wide (a page is taken whole, a dialog as the 1100x760 window); the views marked narrow are taken again at 640 px, which is a 1280 px window at 200% zoom (`<id>.narrow.png`). The script uses a running preview server, or starts its own, and stops the clock so that an Offer's countdown reads the same every time.
+
+A view is a name and the steps that bring the app to its state (`ui/screens/views.ts`): the same events the tests push (`push`, `transfer`, `nearby`, `shell`) and the clicks a user would make, with no change to any component. Add a view there when a screen or state is added. `ui/screens` has its own Vite config and is not reachable from `ui/index.html`, so `vite build` (and so the app's `frontendDist`) never includes it; `pnpm --filter ui typecheck` covers it.
 
 ### Where the secret key lives
 

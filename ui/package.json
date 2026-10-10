@@ -7,7 +7,9 @@
     "dev": "vite",
     "build": "tsc --noEmit && vite build",
     "typecheck": "tsc --noEmit",
-    "test": "vitest run"
+    "test": "vitest run",
+    "preview:screens": "vite screens --config screens/vite.config.ts",
+    "capture:screens": "node screens/capture.mjs"
   },
   "dependencies": {
     "@tauri-apps/api": "^2.12.1",
@@ -28,6 +30,7 @@
     "@vitejs/plugin-react": "^6.1.1",
     "axe-core": "^4.14.0",
     "jsdom": "^29.1.1",
+    "playwright": "^1.64.0",
     "typescript": "^5.9",
     "vite": "^8.3.2",
     "vitest": "^5.0.3"
