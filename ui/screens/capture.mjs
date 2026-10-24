@@ -2,6 +2,7 @@
 //
 //   pnpm --filter ui capture:screens            every view at 1100x760, key ones also at 640 wide
 //   pnpm --filter ui capture:screens home-populated offer-warnings     only these views
+//   pnpm --filter ui capture:screens --dark       the same in the dark theme, as <view>.dark.png
 //
 // It uses the preview server if one is already running (`pnpm --filter ui preview:screens`),
 // and starts its own otherwise. Needs Chromium: `pnpm --filter ui exec playwright install chromium`.
@@ -18,7 +19,10 @@ const URL_BASE = "http://localhost:1430/";
 const WIDE = { width: 1100, height: 760 };
 const NARROW = { width: 640, height: 760 };
 
-const only = new Set(process.argv.slice(2));
+const args = process.argv.slice(2);
+const dark = args.includes("--dark");
+const only = new Set(args.filter((a) => a !== "--dark"));
+const suffix = dark ? ".dark" : "";
 
 async function running() {
   try {
@@ -38,6 +42,7 @@ const browser = await chromium.launch({
 });
 const context = await browser.newContext({
   viewport: WIDE,
+  colorScheme: dark ? "dark" : "light",
   locale: "en-US",
   timezoneId: "UTC",
   permissions: ["camera"],
@@ -94,8 +99,8 @@ try {
   };
 
   for (const view of wanted) {
-    await shoot(view, WIDE, view.id);
-    if (view.narrow) await shoot(view, NARROW, `${view.id}.narrow`);
+    await shoot(view, WIDE, `${view.id}${suffix}`);
+    if (view.narrow) await shoot(view, NARROW, `${view.id}.narrow${suffix}`);
   }
 
   const files = (await readdir(OUT)).filter((f) => f.endsWith(".png")).sort();
