@@ -1518,6 +1518,173 @@ html:has(.bs-scrim) {
   font-weight: var(--bs-fw-bold);
 }
 
+/* History, Contacts and My ID (#70) */
+
+/* My ID: the QR code beside the Fingerprint, Device ID and share link, then the copy buttons. */
+.myid {
+  display: grid;
+  gap: 12px;
+}
+
+.myid__b {
+  display: flex;
+  gap: 20px;
+  align-items: flex-start;
+}
+
+.myid__d {
+  display: grid;
+  gap: 10px;
+  margin: 0;
+  min-width: 0;
+}
+
+.myid__d dt {
+  font-size: 12px;
+  font-weight: var(--bs-fw-bold);
+  color: var(--bs-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.myid__d dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.fpb {
+  font-size: 22px;
+  font-weight: var(--bs-fw-bold);
+  letter-spacing: 0.04em;
+}
+
+.sm {
+  font-size: 12.5px;
+  line-height: 1.4;
+}
+
+.myid__a {
+  margin: 2px 0 0;
+}
+
+.copystat {
+  display: inline-flex;
+  gap: 6px;
+  align-items: center;
+  font-size: var(--bs-fs-small);
+  font-weight: var(--bs-fw-semibold);
+}
+
+.copystat--ok {
+  color: var(--bs-ok-ink);
+}
+
+.copystat--err {
+  color: var(--bs-err-ink);
+}
+
+/* A Contact: its name, Device Name and Fingerprint, Nickname, Auto-accept, and what to do. */
+.cc {
+  display: grid;
+  gap: 14px;
+}
+
+.cc__h {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+}
+
+.cc__dl {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 4px 16px;
+  margin: 0;
+}
+
+.cc__dl dt {
+  font-weight: var(--bs-fw-semibold);
+  color: var(--bs-muted);
+}
+
+.cc__dl dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.cc__nick {
+  display: flex;
+  gap: 8px;
+  align-items: flex-end;
+}
+
+.cc__nick .bs-field {
+  flex: 1;
+}
+
+.cc .srow {
+  padding: 0;
+  border-top: 0;
+}
+
+.cc__f {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  justify-content: flex-end;
+  border-top: 1px solid var(--bs-line);
+  padding-top: 12px;
+}
+
+/* History: the filters in one wrapping row, and what a row says about its Transfer. */
+.filters {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: flex-end;
+}
+
+.filters .bs-field {
+  flex: 1 1 180px;
+}
+
+.filters .filters__q {
+  flex: 1.4 1 200px;
+}
+
+.hmeta {
+  display: grid;
+  gap: 2px;
+}
+
+.hsaved {
+  margin-top: 6px;
+}
+
+.gone {
+  display: inline-flex;
+  gap: 6px;
+  align-items: center;
+  margin-top: 6px;
+  color: var(--bs-warn-ink);
+  font-weight: var(--bs-fw-semibold);
+  font-size: var(--bs-fs-small);
+}
+
+.gone svg {
+  flex: none;
+}
+
+@media (max-width: 720px) {
+  .myid__b {
+    flex-direction: column;
+  }
+
+  .cc__nick {
+    flex-wrap: wrap;
+  }
+}
+
 /* ---- Markup not yet on the classes above ----
  * Each screen's ticket removes its part as the screen moves to the components. */
 
@@ -1586,46 +1753,6 @@ html:has(.bs-scrim) {
 
 .transfers p {
   margin: 4px 0;
-}
-
-/* History (#70) */
-.filters {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 12px;
-}
-
-.filters label {
-  display: block;
-  margin-bottom: 4px;
-  font-weight: var(--bs-fw-semibold);
-}
-
-/* Contacts (#70) */
-.contacts {
-  list-style: none;
-  margin: 0;
-  padding: 0;
-  display: grid;
-  gap: 10px;
-}
-
-.contacts li {
-  background: var(--bs-surface);
-  border: 1px solid var(--bs-line);
-  border-radius: var(--bs-r-lg);
-  padding: 16px;
-}
-
-.contacts dl {
-  display: grid;
-  grid-template-columns: max-content 1fr;
-  gap: 4px 16px;
-}
-
-.contacts dd {
-  margin: 0;
-  overflow-wrap: anywhere;
 }
 
 /* Sheets (#69) */

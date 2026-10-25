@@ -2905,7 +2905,9 @@ describe("History", () => {
     // The times are the user's own format; each is there.
     const times = within(row).getByText(/^Offered .* · Accepted .* · Finished /);
     expect(times.textContent).toContain(new Date(1_700_000_005_000).toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" }));
-    expect(within(row).getByText(`Saved to ${SAVED}`, { exact: false })).toBeTruthy();
+    // The path is its own element, in the monospace face, so the words and the path are two texts.
+    expect(within(row).getByText(SAVED).className).toContain("bs-mono");
+    expect(row.textContent).toContain(`Saved to ${SAVED}`);
 
     fireEvent.click(within(row).getByRole("button", { name: "Show in folder: photos and 1 more" }));
     expect(device.api.showInFolder).toHaveBeenCalledWith(SAVED);
