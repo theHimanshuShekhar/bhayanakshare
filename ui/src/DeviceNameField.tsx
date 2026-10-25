@@ -1,4 +1,5 @@
 import type { ReactNode, Ref } from "react";
+import { FieldError, Hint } from "./Banner";
 import { t } from "./i18n";
 
 /** What a Device Name may be at the most, in characters: the core cuts a longer one. */
@@ -9,6 +10,7 @@ export function DeviceNameField({
   value,
   disabled,
   invalid,
+  error,
   onChange,
   children,
   ref,
@@ -17,6 +19,8 @@ export function DeviceNameField({
   disabled?: boolean;
   /** The name was refused: the field is marked so. */
   invalid?: boolean;
+  /** Why it was refused, said under the field. */
+  error?: string | null;
   onChange: (value: string) => void;
   /** Beside the field, as Settings' Save button is. */
   children?: ReactNode;
@@ -24,11 +28,14 @@ export function DeviceNameField({
   ref?: Ref<HTMLInputElement>;
 }) {
   return (
-    <>
-      <label htmlFor="device-name">{t("deviceName.label")}</label>
-      <div className="row">
+    <div className="bs-field">
+      <label className="bs-label" htmlFor="device-name">
+        {t("deviceName.label")}
+      </label>
+      <div className="bs-inline">
         <input
           id="device-name"
+          className="bs-input"
           ref={ref}
           value={value}
           disabled={disabled}
@@ -40,9 +47,8 @@ export function DeviceNameField({
         />
         {children}
       </div>
-      <p id="device-name-hint" className="note">
-        {t("deviceName.hint")}
-      </p>
-    </>
+      <Hint id="device-name-hint">{t("deviceName.hint")}</Hint>
+      {error != null && <FieldError>{error}</FieldError>}
+    </div>
   );
 }

@@ -7,8 +7,8 @@ const OPTIONS = [
   { value: "hidden", label: "visibility.hidden", hint: "visibility.hiddenHint" },
 ] as const satisfies readonly { value: Visibility; label: MessageKey; hint: MessageKey }[];
 
-/** Who can see this Device as a Nearby Device: three radios, each with a line saying what it means.
- * Used by Settings and by first run. */
+/** Who can see this Device as a Nearby Device: three cards, each a radio with a title and a line
+ * saying what it means. Used by Settings and by first run. */
 export function VisibilityField({
   value,
   onChange,
@@ -18,26 +18,28 @@ export function VisibilityField({
   onChange: (value: Visibility) => void;
 }) {
   return (
-    <fieldset>
-      <legend>{t("visibility.legend")}</legend>
+    <fieldset className="rogroup">
+      <legend className="bs-label">{t("visibility.legend")}</legend>
       {OPTIONS.map((option) => (
-        <p key={option.value}>
+        <label key={option.value} className="rocard" htmlFor={`visibility-${option.value}`}>
           <input
             id={`visibility-${option.value}`}
             type="radio"
             name="visibility"
             checked={value === option.value}
             disabled={value === null}
+            // The card holds the line too, so the title alone names the radio, as before.
+            aria-labelledby={`visibility-${option.value}-title`}
             aria-describedby={`visibility-${option.value}-hint`}
             onChange={() => onChange(option.value)}
-          />{" "}
-          <label htmlFor={`visibility-${option.value}`} className="inline">
-            {t(option.label)}
-          </label>
-          <span id={`visibility-${option.value}-hint`} className="note">
-            {t(option.hint)}
+          />
+          <span className="bs-opt__t">
+            <b id={`visibility-${option.value}-title`}>{t(option.label)}</b>
+            <span id={`visibility-${option.value}-hint`} className="bs-hint">
+              {t(option.hint)}
+            </span>
           </span>
-        </p>
+        </label>
       ))}
     </fieldset>
   );

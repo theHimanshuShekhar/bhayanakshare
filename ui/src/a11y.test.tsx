@@ -168,6 +168,13 @@ describe("accessibility: first run", () => {
     await screen.findByText("Enter a name for this Device.");
     await expectNoViolations();
   });
+
+  it("has none while it says start at login could not be switched on", async () => {
+    await firstRun({ setAutostart: () => Promise.reject(new Error("no")) });
+    fireEvent.click(screen.getByRole("button", { name: "Get started" }));
+    await screen.findByRole("button", { name: "Continue" });
+    await expectNoViolations();
+  });
 });
 
 describe("accessibility: Home", () => {
@@ -368,6 +375,44 @@ describe("accessibility: Settings", () => {
     fireEvent.click(screen.getByRole("button", { name: "Check for updates" }));
     await act(async () => {});
     expect(device.api.checkForUpdate).toHaveBeenCalled();
+    await expectNoViolations();
+  });
+
+  it("has none while a switch, the Visibility, the save folder and the export each say they failed", async () => {
+    await start(
+      fakeApi({
+        setPublicDht: () => Promise.reject(new Error("no")),
+        setVisibility: () => Promise.reject(new Error("no")),
+        setSaveFolder: () => Promise.reject(new Error("no")),
+        pickDiagnosticsSavePath: () => Promise.resolve("/tmp/d.zip"),
+        exportDiagnostics: () => Promise.reject(new Error("no")),
+      }),
+    );
+    open("Settings");
+    await waitFor(() => expect((screen.getByLabelText("Everyone") as HTMLInputElement).disabled).toBe(false));
+    await waitFor(() =>
+      expect((screen.getByRole("checkbox", { name: "Public DHT" }) as HTMLInputElement).disabled).toBe(false),
+    );
+    fireEvent.click(screen.getByRole("checkbox", { name: "Public DHT" }));
+    fireEvent.click(screen.getByLabelText("Hidden"));
+    fireEvent.click(screen.getByRole("button", { name: "Change the folder received files are saved to" }));
+    fireEvent.click(screen.getByRole("button", { name: "Export diagnostics…" }));
+    await screen.findByText(/Could not change the public DHT/);
+    await screen.findByText(/Could not use that folder/);
+    await screen.findByText(/Could not export diagnostics/);
+    await expectNoViolations();
+  });
+
+  it("has none with a new Device Name saved and the save folder changed", async () => {
+    await start();
+    open("Settings");
+    const name = await screen.findByLabelText("Device Name");
+    await waitFor(() => expect((name as HTMLInputElement).disabled).toBe(false));
+    fireEvent.change(name, { target: { value: "Kitchen PC" } });
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+    await screen.findByText(/Kitchen PC/, { selector: "[role=status] span" });
+    fireEvent.click(screen.getByRole("button", { name: "Change the folder received files are saved to" }));
+    await screen.findByText(/Saved\. Files you receive/);
     await expectNoViolations();
   });
 });

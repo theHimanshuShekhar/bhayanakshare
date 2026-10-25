@@ -1,5 +1,6 @@
 import { useEffect, useState, type FormEvent } from "react";
 import type { Api } from "./api";
+import { Hint } from "./Banner";
 import { DeviceNameField } from "./DeviceNameField";
 import { t } from "./i18n";
 
@@ -54,6 +55,7 @@ export function DeviceNameSettings({ api, onSaved }: { api: Api; onSaved: () => 
         value={draft}
         disabled={saved === null}
         invalid={error !== null && draft.trim() === ""}
+        error={error}
         onChange={(value) => {
           setDraft(value);
           setStatus(null);
@@ -63,8 +65,11 @@ export function DeviceNameSettings({ api, onSaved }: { api: Api; onSaved: () => 
           {t("deviceName.save")}
         </button>
       </DeviceNameField>
-      {error !== null && <p role="alert">{error}</p>}
-      {status !== null && <p role="status">{status}</p>}
+      {status !== null && (
+        <Hint icon="ok" tone="ok" role="status">
+          {status}
+        </Hint>
+      )}
     </form>
   );
 }

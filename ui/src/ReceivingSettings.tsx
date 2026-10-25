@@ -1,11 +1,12 @@
 import { useEffect, useState } from "react";
 import type { Api } from "./api";
+import { FieldError, Hint } from "./Banner";
 import { t } from "./i18n";
 import { SaveFolderField } from "./SaveFolderField";
 import { saveFolderFailure } from "./saveFolder";
 
 /** Settings → Receiving: the folder received files are saved to, which applies from the next
- * Offer on. */
+ * Offer on. It is one row of the section's card. */
 export function ReceivingSettings({ api }: { api: Api }) {
   // null until read.
   const [folder, setFolder] = useState<string | null>(null);
@@ -38,11 +39,15 @@ export function ReceivingSettings({ api }: { api: Api }) {
   };
 
   return (
-    <>
+    <div className="srow">
       <SaveFolderField folder={folder} onChange={change} />
-      <p className="note">{t("saveFolder.hint")}</p>
-      {error !== null && <p role="alert">{error}</p>}
-      {saved && <p role="status">{t("saveFolder.saved")}</p>}
-    </>
+      <Hint>{t("saveFolder.hint")}</Hint>
+      {error !== null && <FieldError>{error}</FieldError>}
+      {saved && (
+        <Hint icon="ok" tone="ok" role="status">
+          {t("saveFolder.saved")}
+        </Hint>
+      )}
+    </div>
   );
 }

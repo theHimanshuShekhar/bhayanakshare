@@ -1518,6 +1518,49 @@ html:has(.bs-scrim) {
   font-weight: var(--bs-fw-bold);
 }
 
+/* First run and Settings (#67) */
+.first-run {
+  display: grid;
+  gap: 20px;
+}
+
+.first-run__head p {
+  margin: 8px 0 0;
+}
+
+.first-run__form {
+  display: grid;
+  gap: 20px;
+}
+
+.settings {
+  display: grid;
+  gap: 22px;
+}
+
+/* A row's text takes the room the switch leaves; the switch keeps its size. */
+.srow--split > .bs-opt__t {
+  flex: 1;
+  min-width: 0;
+}
+
+.srow--split > input.bs-switch {
+  flex: none;
+}
+
+/* A row that is a form (Device Name and its Save) or holds a section (My ID) spaces its parts too. */
+.srow > form,
+.srow > section {
+  display: grid;
+  gap: 8px;
+}
+
+/* A path wraps wherever it has to, rather than widening the card. */
+.srow .kv code {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
 /* ---- Markup not yet on the classes above ----
  * Each screen's ticket removes its part as the screen moves to the components. */
 
