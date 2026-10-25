@@ -1,0 +1,53 @@
+METRIC send.store_load_secs 0.514
+METRIC send.reused_tag true
+METRIC send.import_secs 0.396
+METRIC send.after_import.peak_rss_mib 8.6
+METRIC send.after_import.rss_mib 8.6
+send: serving 4a1feaee8b7ca4746a480bb268743fb58c97228d138e463ef3979d9727a8ee37 (Raw)
+SYS 2026-10-04T02:10:09+05:30 load=30.94,30.62,30.17 io_psi=avg10=65.17 mem_avail_mib=5348
+## rep 1 chunk=64
+METRIC recv.store_load_secs 1.196
+METRIC recv.local_info_secs 0.000
+METRIC recv.local_bytes_before 0
+METRIC recv.complete_before false
+METRIC recv.connect_secs 0.003
+METRIC recv.chunk_mib 64
+METRIC recv.first_payload_byte_since_start_secs 1.258
+METRIC recv.chunk_requests 160
+METRIC recv.chunk_local_check_secs_total 213.917
+METRIC recv.chunk_get_secs_total 163.856
+METRIC recv.fetch_secs 381.758
+METRIC recv.payload_bytes_read 10737418240
+METRIC recv.other_bytes_read 42011904
+METRIC recv.throughput_mib_s 26.8
+METRIC recv.after_fetch.peak_rss_mib 29.0
+METRIC recv.after_fetch.rss_mib 29.0
+METRIC recv.complete_after true
+METRIC recv.before_shutdown.dirty_mib 0
+METRIC recv.shutdown_secs 0.009
+METRIC recv.total_secs 382.979
+SYS 2026-10-04T02:16:32+05:30 load=15.91,24.39,27.91 io_psi=avg10=61.25 mem_avail_mib=7290
+## rep 1 chunk=16
+METRIC recv.store_load_secs 0.012
+METRIC recv.local_info_secs 0.000
+METRIC recv.local_bytes_before 0
+METRIC recv.complete_before false
+METRIC recv.connect_secs 0.001
+METRIC recv.chunk_mib 16
+METRIC recv.first_payload_byte_since_start_secs 0.026
+METRIC recv.chunk_requests 640
+METRIC recv.chunk_local_check_secs_total 143.891
+METRIC recv.chunk_get_secs_total 127.194
+METRIC recv.fetch_secs 271.118
+METRIC recv.payload_bytes_read 10737418240
+METRIC recv.other_bytes_read 42300416
+METRIC recv.throughput_mib_s 37.8
+METRIC recv.after_fetch.peak_rss_mib 29.0
+METRIC recv.after_fetch.rss_mib 29.0
+METRIC recv.complete_after true
+METRIC recv.before_shutdown.dirty_mib 0
+METRIC recv.shutdown_secs 0.123
+METRIC recv.total_secs 271.268
+SYS 2026-10-04T02:21:04+05:30 load=18.59,20.22,25.19 io_psi=avg10=15.25 mem_avail_mib=5508
+METRIC send.final.peak_rss_mib 33.5
+METRIC send.final.rss_mib 33.5

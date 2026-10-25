@@ -1,0 +1,260 @@
+METRIC gen.secs 2.74
+METRIC send.store_load_secs 0.021
+METRIC send.reused_tag false
+METRIC send.import_secs 1.260
+METRIC send.after_import.peak_rss_mib 10.2
+METRIC send.after_import.rss_mib 9.9
+send: serving 03b34a0fca3ed00b4b604e00951bb7f58e58b2d02556608ffcc7ca58d733ec6b (Raw)
+SYS 2026-10-04T02:22:37+05:30 load=13.59,18.18,23.98 io_psi=avg10=2.19 mem_avail_mib=5509
+## chunk=64
+METRIC recv.store_load_secs 0.021
+METRIC recv.local_info_secs 0.001
+METRIC recv.local_bytes_before 0
+METRIC recv.complete_before false
+METRIC recv.connect_secs 0.006
+METRIC recv.chunk_mib 64
+METRIC recv.first_payload_byte_since_start_secs 0.043
+chunk 0: local 0.000s get 0.593s observe 0.089s
+BITFIELD_WRITE at 02:22:38.332 size=0
+chunk 67108864: local 0.007s get 0.500s observe 0.000s
+BITFIELD_WRITE at 02:22:38.917 size=0
+BITFIELD_WRITE at 02:22:38.960 size=0
+chunk 134217728: local 0.087s get 0.532s observe 0.000s
+BITFIELD_WRITE at 02:22:39.530 size=0
+chunk 201326592: local 0.082s get 0.529s observe 0.000s
+BITFIELD_WRITE at 02:22:40.123 size=0
+BITFIELD_WRITE at 02:22:40.168 size=0
+chunk 268435456: local 0.087s get 0.528s observe 0.000s
+BITFIELD_WRITE at 02:22:40.738 size=0
+BITFIELD_WRITE at 02:22:40.783 size=0
+chunk 335544320: local 0.081s get 0.611s observe 0.000s
+BITFIELD_WRITE at 02:22:41.459 size=0
+BITFIELD_WRITE at 02:22:41.494 size=0
+chunk 402653184: local 0.098s get 0.489s observe 0.000s
+BITFIELD_WRITE at 02:22:42.046 size=0
+BITFIELD_WRITE at 02:22:42.090 size=0
+BITFIELD_WRITE at 02:22:42.140 size=0
+chunk 469762048: local 0.103s get 0.808s observe 0.000s
+BITFIELD_WRITE at 02:22:42.970 size=0
+BITFIELD_WRITE at 02:22:43.016 size=0
+chunk 536870912: local 0.102s get 0.670s observe 0.000s
+BITFIELD_WRITE at 02:22:43.766 size=0
+chunk 603979776: local 0.128s get 0.677s observe 0.000s
+BITFIELD_WRITE at 02:22:44.549 size=0
+chunk 671088640: local 0.000s get 0.771s observe 0.000s
+BITFIELD_WRITE at 02:22:45.305 size=0
+chunk 738197504: local 0.108s get 0.682s observe 0.000s
+BITFIELD_WRITE at 02:22:46.097 size=0
+BITFIELD_WRITE at 02:22:46.139 size=0
+chunk 805306368: local 0.102s get 0.730s observe 0.000s
+BITFIELD_WRITE at 02:22:46.938 size=0
+BITFIELD_WRITE at 02:22:46.984 size=0
+chunk 872415232: local 0.101s get 0.654s observe 0.000s
+BITFIELD_WRITE at 02:22:47.760 size=0
+BITFIELD_WRITE at 02:22:47.811 size=0
+chunk 939524096: local 0.155s get 0.689s observe 0.000s
+BITFIELD_WRITE at 02:22:48.529 size=0
+BITFIELD_WRITE at 02:22:48.574 size=0
+chunk 1006632960: local 0.113s get 0.620s observe 0.000s
+METRIC recv.chunk_requests 16
+METRIC recv.chunk_local_check_secs_total 1.353
+METRIC recv.chunk_get_secs_total 10.083
+METRIC recv.fetch_secs 11.526
+METRIC recv.payload_bytes_read 1073741824
+METRIC recv.other_bytes_read 4197504
+METRIC recv.throughput_mib_s 88.8
+METRIC recv.after_fetch.peak_rss_mib 28.8
+METRIC recv.after_fetch.rss_mib 28.8
+METRIC recv.complete_after true
+METRIC recv.before_shutdown.dirty_mib 130
+METRIC recv.shutdown_secs 0.039
+METRIC recv.total_secs 11.607
+BITFIELD_WRITES chunk=64 count=26
+SYS 2026-10-04T02:22:49+05:30 load=15.26,18.38,23.99 io_psi=avg10=1.72 mem_avail_mib=5264
+## chunk=16
+METRIC recv.store_load_secs 0.031
+METRIC recv.local_info_secs 0.000
+METRIC recv.local_bytes_before 0
+METRIC recv.complete_before false
+METRIC recv.connect_secs 0.002
+METRIC recv.chunk_mib 16
+METRIC recv.first_payload_byte_since_start_secs 0.056
+chunk 0: local 0.001s get 0.194s observe 0.000s
+BITFIELD_WRITE at 02:22:49.650 size=0
+BITFIELD_WRITE at 02:22:49.692 size=0
+chunk 16777216: local 0.038s get 0.157s observe 0.000s
+BITFIELD_WRITE at 02:22:49.862 size=0
+BITFIELD_WRITE at 02:22:49.905 size=0
+chunk 33554432: local 0.045s get 0.185s observe 0.000s
+BITFIELD_WRITE at 02:22:50.090 size=0
+chunk 50331648: local 0.000s get 0.132s observe 0.000s
+BITFIELD_WRITE at 02:22:50.207 size=0
+BITFIELD_WRITE at 02:22:50.244 size=0
+chunk 67108864: local 0.033s get 0.133s observe 0.000s
+BITFIELD_WRITE at 02:22:50.387 size=0
+chunk 83886080: local 0.000s get 0.199s observe 0.000s
+BITFIELD_WRITE at 02:22:50.597 size=0
+chunk 100663296: local 0.032s get 0.136s observe 0.000s
+chunk 117440512: local 0.000s get 0.144s observe 0.000s
+BITFIELD_WRITE at 02:22:50.939 size=0
+chunk 134217728: local 0.000s get 0.186s observe 0.000s
+BITFIELD_WRITE at 02:22:51.091 size=0
+BITFIELD_WRITE at 02:22:51.140 size=0
+chunk 150994944: local 0.033s get 0.162s observe 0.000s
+BITFIELD_WRITE at 02:22:51.273 size=0
+BITFIELD_WRITE at 02:22:51.316 size=0
+chunk 167772160: local 0.030s get 0.168s observe 0.000s
+BITFIELD_WRITE at 02:22:51.458 size=42
+BITFIELD_WRITE at 02:22:51.498 size=0
+chunk 184549376: local 0.033s get 0.137s observe 0.000s
+BITFIELD_WRITE at 02:22:51.640 size=0
+chunk 201326592: local 0.000s get 0.144s observe 0.000s
+BITFIELD_WRITE at 02:22:51.788 size=0
+BITFIELD_WRITE at 02:22:51.828 size=0
+chunk 218103808: local 0.039s get 0.109s observe 0.000s
+BITFIELD_WRITE at 02:22:51.947 size=0
+chunk 234881024: local 0.034s get 0.103s observe 0.000s
+BITFIELD_WRITE at 02:22:52.088 size=0
+chunk 251658240: local 0.000s get 0.150s observe 0.000s
+BITFIELD_WRITE at 02:22:52.219 size=0
+BITFIELD_WRITE at 02:22:52.248 size=0
+chunk 268435456: local 0.046s get 0.131s observe 0.000s
+BITFIELD_WRITE at 02:22:52.413 size=0
+BITFIELD_WRITE at 02:22:52.454 size=0
+chunk 285212672: local 0.037s get 0.120s observe 0.000s
+BITFIELD_WRITE at 02:22:52.548 size=0
+BITFIELD_WRITE at 02:22:52.582 size=0
+chunk 301989888: local 0.039s get 0.099s observe 0.000s
+BITFIELD_WRITE at 02:22:52.696 size=0
+BITFIELD_WRITE at 02:22:52.726 size=0
+chunk 318767104: local 0.038s get 0.085s observe 0.000s
+BITFIELD_WRITE at 02:22:52.819 size=0
+chunk 335544320: local 0.031s get 0.067s observe 0.000s
+BITFIELD_WRITE at 02:22:52.900 size=0
+BITFIELD_WRITE at 02:22:52.934 size=0
+chunk 352321536: local 0.035s get 0.086s observe 0.000s
+BITFIELD_WRITE at 02:22:53.047 size=0
+chunk 369098752: local 0.033s get 0.090s observe 0.000s
+BITFIELD_WRITE at 02:22:53.151 size=0
+BITFIELD_WRITE at 02:22:53.183 size=0
+chunk 385875968: local 0.034s get 0.092s observe 0.000s
+BITFIELD_WRITE at 02:22:53.272 size=0
+BITFIELD_WRITE at 02:22:53.303 size=0
+chunk 402653184: local 0.033s get 0.118s observe 0.000s
+BITFIELD_WRITE at 02:22:53.482 size=0
+BITFIELD_WRITE at 02:22:53.516 size=0
+chunk 419430400: local 0.094s get 0.114s observe 0.000s
+BITFIELD_WRITE at 02:22:53.631 size=0
+BITFIELD_WRITE at 02:22:53.670 size=0
+chunk 436207616: local 0.034s get 0.081s observe 0.000s
+BITFIELD_WRITE at 02:22:53.769 size=0
+chunk 452984832: local 0.042s get 0.104s observe 0.000s
+BITFIELD_WRITE at 02:22:53.912 size=0
+BITFIELD_WRITE at 02:22:53.958 size=0
+chunk 469762048: local 0.033s get 0.169s observe 0.000s
+BITFIELD_WRITE at 02:22:54.118 size=0
+BITFIELD_WRITE at 02:22:54.160 size=0
+chunk 486539264: local 0.046s get 0.141s observe 0.000s
+BITFIELD_WRITE at 02:22:54.295 size=0
+BITFIELD_WRITE at 02:22:54.327 size=0
+chunk 503316480: local 0.043s get 0.110s observe 0.000s
+BITFIELD_WRITE at 02:22:54.453 size=0
+chunk 520093696: local 0.038s get 0.108s observe 0.000s
+BITFIELD_WRITE at 02:22:54.579 size=0
+BITFIELD_WRITE at 02:22:54.616 size=0
+chunk 536870912: local 0.038s get 0.118s observe 0.000s
+BITFIELD_WRITE at 02:22:54.765 size=0
+chunk 553648128: local 0.034s get 0.136s observe 0.000s
+BITFIELD_WRITE at 02:22:54.931 size=0
+chunk 570425344: local 0.032s get 0.133s observe 0.000s
+BITFIELD_WRITE at 02:22:55.123 size=0
+BITFIELD_WRITE at 02:22:55.174 size=0
+chunk 587202560: local 0.090s get 0.204s observe 0.000s
+BITFIELD_WRITE at 02:22:55.608 size=0
+chunk 603979776: local 0.000s get 0.447s observe 0.000s
+BITFIELD_WRITE at 02:22:55.829 size=0
+BITFIELD_WRITE at 02:22:55.879 size=0
+chunk 620756992: local 0.040s get 0.151s observe 0.000s
+BITFIELD_WRITE at 02:22:56.012 size=42
+BITFIELD_WRITE at 02:22:56.072 size=0
+chunk 637534208: local 0.033s get 0.236s observe 0.000s
+BITFIELD_WRITE at 02:22:56.312 size=0
+chunk 654311424: local 0.000s get 0.207s observe 0.000s
+BITFIELD_WRITE at 02:22:56.500 size=0
+BITFIELD_WRITE at 02:22:56.543 size=0
+chunk 671088640: local 0.038s get 0.202s observe 0.000s
+BITFIELD_WRITE at 02:22:56.735 size=42
+BITFIELD_WRITE at 02:22:56.798 size=0
+chunk 687865856: local 0.037s get 0.219s observe 0.000s
+BITFIELD_WRITE at 02:22:57.004 size=0
+BITFIELD_WRITE at 02:22:57.047 size=0
+chunk 704643072: local 0.037s get 0.166s observe 0.000s
+chunk 721420288: local 0.000s get 0.165s observe 0.000s
+BITFIELD_WRITE at 02:22:57.389 size=42
+BITFIELD_WRITE at 02:22:57.444 size=0
+chunk 738197504: local 0.072s get 0.204s observe 0.000s
+BITFIELD_WRITE at 02:22:57.644 size=0
+BITFIELD_WRITE at 02:22:57.693 size=0
+chunk 754974720: local 0.040s get 0.199s observe 0.000s
+BITFIELD_WRITE at 02:22:57.875 size=42
+BITFIELD_WRITE at 02:22:57.916 size=0
+chunk 771751936: local 0.044s get 0.164s observe 0.000s
+BITFIELD_WRITE at 02:22:58.088 size=0
+BITFIELD_WRITE at 02:22:58.138 size=0
+chunk 788529152: local 0.039s get 0.222s observe 0.000s
+chunk 805306368: local 0.004s get 0.208s observe 0.000s
+BITFIELD_WRITE at 02:22:58.591 size=0
+BITFIELD_WRITE at 02:22:58.642 size=0
+chunk 822083584: local 0.069s get 0.143s observe 0.000s
+BITFIELD_WRITE at 02:22:58.774 size=0
+BITFIELD_WRITE at 02:22:58.818 size=0
+chunk 838860800: local 0.039s get 0.204s observe 0.000s
+BITFIELD_WRITE at 02:22:59.022 size=0
+chunk 855638016: local 0.000s get 0.218s observe 0.000s
+BITFIELD_WRITE at 02:22:59.225 size=0
+BITFIELD_WRITE at 02:22:59.265 size=0
+chunk 872415232: local 0.045s get 0.110s observe 0.000s
+BITFIELD_WRITE at 02:22:59.412 size=0
+chunk 889192448: local 0.000s get 0.200s observe 0.000s
+BITFIELD_WRITE at 02:22:59.583 size=0
+BITFIELD_WRITE at 02:22:59.638 size=0
+chunk 905969664: local 0.038s get 0.173s observe 0.000s
+BITFIELD_WRITE at 02:22:59.807 size=0
+chunk 922746880: local 0.002s get 0.210s observe 0.000s
+BITFIELD_WRITE at 02:23:00.009 size=0
+chunk 939524096: local 0.000s get 0.174s observe 0.000s
+BITFIELD_WRITE at 02:23:00.192 size=42
+BITFIELD_WRITE at 02:23:00.238 size=0
+chunk 956301312: local 0.049s get 0.167s observe 0.000s
+BITFIELD_WRITE at 02:23:00.506 size=0
+chunk 973078528: local 0.141s get 0.126s observe 0.000s
+BITFIELD_WRITE at 02:23:00.694 size=0
+chunk 989855744: local 0.047s get 0.161s observe 0.000s
+BITFIELD_WRITE at 02:23:00.889 size=42
+BITFIELD_WRITE at 02:23:00.936 size=0
+chunk 1006632960: local 0.052s get 0.182s observe 0.000s
+BITFIELD_WRITE at 02:23:01.114 size=0
+BITFIELD_WRITE at 02:23:01.165 size=0
+chunk 1023410176: local 0.043s get 0.200s observe 0.000s
+BITFIELD_WRITE at 02:23:01.371 size=42
+BITFIELD_WRITE at 02:23:01.429 size=0
+chunk 1040187392: local 0.061s get 0.161s observe 0.000s
+BITFIELD_WRITE at 02:23:01.605 size=0
+BITFIELD_WRITE at 02:23:01.659 size=0
+chunk 1056964608: local 0.073s get 0.241s observe 0.000s
+METRIC recv.chunk_requests 64
+METRIC recv.chunk_local_check_secs_total 2.210
+METRIC recv.chunk_get_secs_total 10.204
+METRIC recv.fetch_secs 12.425
+METRIC recv.payload_bytes_read 1073741824
+METRIC recv.other_bytes_read 4215296
+METRIC recv.throughput_mib_s 82.4
+METRIC recv.after_fetch.peak_rss_mib 27.4
+METRIC recv.after_fetch.rss_mib 27.4
+METRIC recv.complete_after true
+METRIC recv.before_shutdown.dirty_mib 66
+METRIC recv.shutdown_secs 0.020
+METRIC recv.total_secs 12.491
+BITFIELD_WRITES chunk=16 count=99
+METRIC send.final.peak_rss_mib 35.2
+METRIC send.final.rss_mib 35.2

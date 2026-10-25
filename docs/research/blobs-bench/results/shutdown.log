@@ -1,0 +1,175 @@
+METRIC gen.secs 71.09
+METRIC send.store_load_secs 0.104
+METRIC send.reused_tag false
+METRIC send.import_secs 3.539
+METRIC send.after_import.peak_rss_mib 10.1
+METRIC send.after_import.rss_mib 9.8
+send: serving b01e2d9bc8bffb12c4291bc419a56083589a3b9d17bbe546c5e025d9ad539e76 (Raw)
+METRIC recv.store_load_secs 0.031
+METRIC recv.local_info_secs 0.000
+METRIC recv.local_bytes_before 0
+METRIC recv.complete_before false
+METRIC recv.connect_secs 0.004
+METRIC recv.first_payload_byte_since_start_secs 0.048
+METRIC recv.fetch_secs 100.782
+METRIC recv.payload_bytes_read 2147483648
+METRIC recv.other_bytes_read 8388552
+METRIC recv.throughput_mib_s 20.3
+METRIC recv.after_fetch.peak_rss_mib 28.9
+METRIC recv.after_fetch.rss_mib 28.9
+METRIC recv.complete_after true
+METRIC recv.before_shutdown.dirty_mib 539
+METRIC recv.shutdown_secs 26.150
+METRIC recv.total_secs 126.976
+SYS 2026-10-04T02:28:02+05:30 load=40.33,40.04,32.75 io_psi=avg10=68.54 mem_avail_mib=5334
+## rep 1: complete store, no export
+METRIC recv.store_load_secs 0.013
+METRIC recv.local_info_secs 0.000
+METRIC recv.local_bytes_before 2147483648
+METRIC recv.complete_before true
+METRIC recv.connect_secs 0.002
+METRIC recv.fetch_secs 0.000
+METRIC recv.payload_bytes_read 0
+METRIC recv.other_bytes_read 0
+METRIC recv.throughput_mib_s 0.0
+METRIC recv.after_fetch.peak_rss_mib 20.0
+METRIC recv.after_fetch.rss_mib 20.0
+METRIC recv.complete_after true
+METRIC recv.before_shutdown.dirty_mib 78
+METRIC recv.shutdown_secs 0.014
+METRIC recv.total_secs 0.045
+SYS 2026-10-04T02:28:04+05:30 load=40.33,40.04,32.75 io_psi=avg10=62.64 mem_avail_mib=5245
+## rep 1: export Copy -> tmpfs
+METRIC recv.store_load_secs 0.006
+METRIC recv.local_info_secs 0.000
+METRIC recv.local_bytes_before 2147483648
+METRIC recv.complete_before true
+METRIC recv.connect_secs 0.005
+METRIC recv.fetch_secs 0.002
+METRIC recv.payload_bytes_read 0
+METRIC recv.other_bytes_read 0
+METRIC recv.throughput_mib_s 0.0
+METRIC recv.after_fetch.peak_rss_mib 20.0
+METRIC recv.after_fetch.rss_mib 20.0
+METRIC recv.complete_after true
+METRIC recv.export_secs 37.755
+METRIC recv.after_export.peak_rss_mib 22.4
+METRIC recv.after_export.rss_mib 22.4
+METRIC recv.before_shutdown.dirty_mib 64
+METRIC recv.shutdown_secs 0.462
+METRIC recv.total_secs 38.243
+SYS 2026-10-04T02:28:42+05:30 load=37.91,39.50,32.88 io_psi=avg10=74.29 mem_avail_mib=5545
+## rep 1: export Copy -> same ext4
+METRIC recv.store_load_secs 0.012
+METRIC recv.local_info_secs 0.000
+METRIC recv.local_bytes_before 2147483648
+METRIC recv.complete_before true
+METRIC recv.connect_secs 0.006
+METRIC recv.fetch_secs 0.000
+METRIC recv.payload_bytes_read 0
+METRIC recv.other_bytes_read 0
+METRIC recv.throughput_mib_s 0.0
+METRIC recv.after_fetch.peak_rss_mib 19.5
+METRIC recv.after_fetch.rss_mib 19.5
+METRIC recv.complete_after true
+METRIC recv.export_secs 111.941
+METRIC recv.after_export.peak_rss_mib 21.4
+METRIC recv.after_export.rss_mib 21.4
+METRIC recv.before_shutdown.dirty_mib 656
+METRIC recv.shutdown_secs 10.530
+METRIC recv.total_secs 122.497
+METRIC sync_after_export_secs 7.043698843
+SYS 2026-10-04T02:30:52+05:30 load=30.82,36.41,32.61 io_psi=avg10=73.65 mem_avail_mib=6468
+## rep 1: plain cp 2 GiB onto ext4, then no-export recv
+METRIC recv.store_load_secs 0.758
+METRIC recv.local_info_secs 0.000
+METRIC recv.local_bytes_before 2147483648
+METRIC recv.complete_before true
+METRIC recv.connect_secs 0.008
+METRIC recv.fetch_secs 0.001
+METRIC recv.payload_bytes_read 0
+METRIC recv.other_bytes_read 0
+METRIC recv.throughput_mib_s 0.0
+METRIC recv.after_fetch.peak_rss_mib 19.4
+METRIC recv.after_fetch.rss_mib 19.4
+METRIC recv.complete_after true
+METRIC recv.before_shutdown.dirty_mib 357
+METRIC recv.shutdown_secs 10.904
+METRIC recv.total_secs 11.732
+SYS 2026-10-04T02:32:53+05:30 load=34.10,35.87,32.86 io_psi=avg10=67.59 mem_avail_mib=5125
+## rep 2: complete store, no export
+METRIC recv.store_load_secs 0.107
+METRIC recv.local_info_secs 0.000
+METRIC recv.local_bytes_before 2147483648
+METRIC recv.complete_before true
+METRIC recv.connect_secs 0.002
+METRIC recv.fetch_secs 0.000
+METRIC recv.payload_bytes_read 0
+METRIC recv.other_bytes_read 0
+METRIC recv.throughput_mib_s 0.0
+METRIC recv.after_fetch.peak_rss_mib 19.6
+METRIC recv.after_fetch.rss_mib 19.6
+METRIC recv.complete_after true
+METRIC recv.before_shutdown.dirty_mib 0
+METRIC recv.shutdown_secs 0.011
+METRIC recv.total_secs 0.125
+SYS 2026-10-04T02:32:53+05:30 load=34.10,35.87,32.86 io_psi=avg10=65.31 mem_avail_mib=5113
+## rep 2: export Copy -> tmpfs
+METRIC recv.store_load_secs 0.100
+METRIC recv.local_info_secs 0.000
+METRIC recv.local_bytes_before 2147483648
+METRIC recv.complete_before true
+METRIC recv.connect_secs 0.003
+METRIC recv.fetch_secs 0.000
+METRIC recv.payload_bytes_read 0
+METRIC recv.other_bytes_read 0
+METRIC recv.throughput_mib_s 0.0
+METRIC recv.after_fetch.peak_rss_mib 19.3
+METRIC recv.after_fetch.rss_mib 19.3
+METRIC recv.complete_after true
+METRIC recv.export_secs 30.008
+METRIC recv.after_export.peak_rss_mib 21.7
+METRIC recv.after_export.rss_mib 21.7
+METRIC recv.before_shutdown.dirty_mib 12
+METRIC recv.shutdown_secs 0.142
+METRIC recv.total_secs 30.260
+SYS 2026-10-04T02:33:25+05:30 load=27.81,34.17,32.39 io_psi=avg10=60.10 mem_avail_mib=5118
+## rep 2: export Copy -> same ext4
+METRIC recv.store_load_secs 0.072
+METRIC recv.local_info_secs 0.000
+METRIC recv.local_bytes_before 2147483648
+METRIC recv.complete_before true
+METRIC recv.connect_secs 0.004
+METRIC recv.fetch_secs 0.000
+METRIC recv.payload_bytes_read 0
+METRIC recv.other_bytes_read 0
+METRIC recv.throughput_mib_s 0.0
+METRIC recv.after_fetch.peak_rss_mib 19.5
+METRIC recv.after_fetch.rss_mib 19.5
+METRIC recv.complete_after true
+METRIC recv.export_secs 62.251
+METRIC recv.after_export.peak_rss_mib 21.9
+METRIC recv.after_export.rss_mib 21.9
+METRIC recv.before_shutdown.dirty_mib 228
+METRIC recv.shutdown_secs 5.862
+METRIC recv.total_secs 68.211
+METRIC sync_after_export_secs .511337065
+SYS 2026-10-04T02:34:35+05:30 load=26.03,32.57,31.98 io_psi=avg10=70.54 mem_avail_mib=5294
+## rep 2: plain cp 2 GiB onto ext4, then no-export recv
+METRIC recv.store_load_secs 0.050
+METRIC recv.local_info_secs 0.003
+METRIC recv.local_bytes_before 2147483648
+METRIC recv.complete_before true
+METRIC recv.connect_secs 0.008
+METRIC recv.fetch_secs 0.001
+METRIC recv.payload_bytes_read 0
+METRIC recv.other_bytes_read 0
+METRIC recv.throughput_mib_s 0.0
+METRIC recv.after_fetch.peak_rss_mib 17.7
+METRIC recv.after_fetch.rss_mib 17.7
+METRIC recv.complete_after true
+METRIC recv.before_shutdown.dirty_mib 70
+METRIC recv.shutdown_secs 0.108
+METRIC recv.total_secs 0.264
+METRIC send.final.peak_rss_mib 27.5
+METRIC send.final.rss_mib 10.8

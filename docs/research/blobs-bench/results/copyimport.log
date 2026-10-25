@@ -1,0 +1,23 @@
+METRIC gen.secs 26.27
+SYS 2026-10-04T01:42:17+05:30 load=22.70,28.77,30.17 io_psi=avg10=60.25 mem_avail_mib=6956
+## import ref
+METRIC send.store_load_secs 0.031
+METRIC send.reused_tag false
+METRIC send.import_secs 0.921
+METRIC send.after_import.peak_rss_mib 9.9
+METRIC send.after_import.rss_mib 9.5
+send: serving 03b34a0fca3ed00b4b604e00951bb7f58e58b2d02556608ffcc7ca58d733ec6b (Raw)
+METRIC send.final.peak_rss_mib 19.1
+METRIC send.final.rss_mib 19.1
+SIZE /home/hshekhar/.t3/projects/bhayanakshare-research/bench/data/ci/sstore-ref alloc_kib=4152 apparent_bytes=5251008
+SYS 2026-10-04T01:42:18+05:30 load=22.70,28.77,30.17 io_psi=avg10=62.20 mem_avail_mib=6954
+## import copy
+METRIC send.store_load_secs 0.014
+METRIC send.reused_tag false
+METRIC send.import_secs 30.456
+METRIC send.after_import.peak_rss_mib 10.2
+METRIC send.after_import.rss_mib 10.2
+send: serving 03b34a0fca3ed00b4b604e00951bb7f58e58b2d02556608ffcc7ca58d733ec6b (Raw)
+METRIC send.final.peak_rss_mib 21.0
+METRIC send.final.rss_mib 21.0
+SIZE /home/hshekhar/.t3/projects/bhayanakshare-research/bench/data/ci/sstore-copy alloc_kib=1052732 apparent_bytes=1078992832

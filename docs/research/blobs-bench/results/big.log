@@ -1,0 +1,65 @@
+SIZE /home/hshekhar/.t3/projects/bhayanakshare-research/bench/data/big/src.bin alloc_kib=10485764 apparent_bytes=10737418240
+SYS 2026-10-04T01:13:50+05:30 load=35.54,37.23,26.21 io_psi=avg10=85.13 mem_avail_mib=2838
+## sender import (TryReference, cold cache) + serve
+METRIC send.store_load_secs 0.627
+METRIC send.reused_tag false
+METRIC send.import_secs 58.806
+METRIC send.after_import.peak_rss_mib 9.5
+METRIC send.after_import.rss_mib 8.7
+send: serving 4a1feaee8b7ca4746a480bb268743fb58c97228d138e463ef3979d9727a8ee37 (Raw)
+SIZE /home/hshekhar/.t3/projects/bhayanakshare-research/bench/data/big/sstore alloc_kib=41004 apparent_bytes=42999744
+STOREFILES /home/hshekhar/.t3/projects/bhayanakshare-research/bench/data/big/sstore: 1056768 /home/hshekhar/.t3/projects/bhayanakshare-research/bench/data/big/sstore/blobs.db;41942976 4a1feaee8b7ca4746a480bb268743fb58c97228d138e463ef3979d9727a8ee37.obao4;
+SYS 2026-10-04T01:14:52+05:30 load=24.09,33.66,25.73 io_psi=avg10=36.87 mem_avail_mib=4985
+## receiver fetch + export Copy
+METRIC recv.store_load_secs 0.015
+METRIC recv.local_info_secs 0.000
+METRIC recv.local_bytes_before 0
+METRIC recv.complete_before false
+METRIC recv.connect_secs 0.010
+METRIC recv.first_payload_byte_since_start_secs 0.034
+METRIC recv.fetch_secs 530.818
+METRIC recv.payload_bytes_read 10737418240
+METRIC recv.other_bytes_read 41942984
+METRIC recv.throughput_mib_s 19.3
+METRIC recv.after_fetch.peak_rss_mib 26.8
+METRIC recv.after_fetch.rss_mib 25.6
+METRIC recv.complete_after true
+METRIC recv.export_secs 479.356
+METRIC recv.after_export.peak_rss_mib 26.8
+METRIC recv.after_export.rss_mib 7.6
+METRIC recv.before_shutdown.dirty_mib 0
+METRIC recv.shutdown_secs 1.097
+METRIC recv.total_secs 1011.434
+SYS 2026-10-04T01:31:44+05:30 load=30.06,32.63,30.29 io_psi=avg10=69.41 mem_avail_mib=4172
+SIZE /home/hshekhar/.t3/projects/bhayanakshare-research/bench/data/big/rstore alloc_kib=10526788 apparent_bytes=10780417984
+SIZE /home/hshekhar/.t3/projects/bhayanakshare-research/bench/data/big/out-copy alloc_kib=10485768 apparent_bytes=10737418240
+STOREFILES /home/hshekhar/.t3/projects/bhayanakshare-research/bench/data/big/rstore: 1056768 /home/hshekhar/.t3/projects/bhayanakshare-research/bench/data/big/rstore/blobs.db;10737418240 4a1feaee8b7ca4746a480bb268743fb58c97228d138e463ef3979d9727a8ee37.data;41942976 4a1feaee8b7ca4746a480bb268743fb58c97228d138e463ef3979d9727a8ee37.obao4;
+## verify head/tail 256 MiB
+VERIFY head ok
+VERIFY tail ok
+## receiver export TryReference (already complete, no fetch)
+METRIC recv.store_load_secs 1.156
+METRIC recv.local_info_secs 0.000
+METRIC recv.local_bytes_before 10737418240
+METRIC recv.complete_before true
+METRIC recv.connect_secs 0.050
+METRIC recv.fetch_secs 0.001
+METRIC recv.payload_bytes_read 0
+METRIC recv.other_bytes_read 0
+METRIC recv.throughput_mib_s 0.0
+METRIC recv.after_fetch.peak_rss_mib 19.1
+METRIC recv.after_fetch.rss_mib 19.1
+METRIC recv.complete_after true
+METRIC recv.export_secs 0.003
+METRIC recv.after_export.peak_rss_mib 19.1
+METRIC recv.after_export.rss_mib 19.1
+METRIC recv.before_shutdown.dirty_mib 0
+METRIC recv.shutdown_secs 0.107
+METRIC recv.total_secs 1.416
+SYS 2026-10-04T01:31:49+05:30 load=28.69,32.30,30.20 io_psi=avg10=54.54 mem_avail_mib=4020
+SIZE /home/hshekhar/.t3/projects/bhayanakshare-research/bench/data/big/rstore alloc_kib=41028 apparent_bytes=42495936
+SIZE /home/hshekhar/.t3/projects/bhayanakshare-research/bench/data/big/out-ref alloc_kib=10485768 apparent_bytes=10737418240
+STOREFILES /home/hshekhar/.t3/projects/bhayanakshare-research/bench/data/big/rstore: 552960 /home/hshekhar/.t3/projects/bhayanakshare-research/bench/data/big/rstore/blobs.db;41942976 4a1feaee8b7ca4746a480bb268743fb58c97228d138e463ef3979d9727a8ee37.obao4;
+METRIC send.final.peak_rss_mib 26.5
+METRIC send.final.rss_mib 11.3
+SIZE /home/hshekhar/.t3/projects/bhayanakshare-research/bench/data/big/sstore alloc_kib=41016 apparent_bytes=42999744

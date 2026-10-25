@@ -1,0 +1,106 @@
+SYS 2026-10-04T01:52:54+05:30 load=30.45,30.59,30.26 io_psi=avg10=54.78 mem_avail_mib=6191
+METRIC send.store_load_secs 0.004
+METRIC send.reused_tag true
+METRIC send.import_secs 0.005
+METRIC send.after_import.peak_rss_mib 8.4
+METRIC send.after_import.rss_mib 8.4
+send: serving 4a1feaee8b7ca4746a480bb268743fb58c97228d138e463ef3979d9727a8ee37 (Raw)
+## run 1 (kill-c64): stop at 3263168512 bytes (kill) --chunk-mib 64
+METRIC recv.store_load_secs 0.011
+METRIC recv.local_info_secs 0.000
+METRIC recv.local_bytes_before 0
+METRIC recv.complete_before false
+METRIC recv.connect_secs 0.001
+METRIC recv.chunk_mib 64
+METRIC recv.first_payload_byte_since_start_secs 0.018
+METRIC recv.chunk_requests 49
+METRIC recv.chunk_local_check_secs_total 42.931
+METRIC recv.chunk_get_secs_total 23.996
+METRIC recv.stopped_at_bytes 3263168512
+METRIC recv.stopped_after_secs 69.307
+METRIC recv.at_stop.peak_rss_mib 28.0
+METRIC recv.at_stop.rss_mib 28.0
+recv: SIGKILL self at 3263168512 bytes
+EXIT run1 137
+SIZE /home/hshekhar/.t3/projects/bhayanakshare-research/bench/data/big/rstore-kill-c64 alloc_kib=3201124 apparent_bytes=3278944624
+STOREFILES /home/hshekhar/.t3/projects/bhayanakshare-research/bench/data/big/rstore-kill-c64: 1056768 /home/hshekhar/.t3/projects/bhayanakshare-research/bench/data/big/rstore-kill-c64/blobs.db;0 4a1feaee8b7ca4746a480bb268743fb58c97228d138e463ef3979d9727a8ee37.bitfield;3263545344 4a1feaee8b7ca4746a480bb268743fb58c97228d138e463ef3979d9727a8ee37.data;12748992 4a1feaee8b7ca4746a480bb268743fb58c97228d138e463ef3979d9727a8ee37.obao4;1593520 4a1feaee8b7ca4746a480bb268743fb58c97228d138e463ef3979d9727a8ee37.sizes4;
+SYS 2026-10-04T01:54:04+05:30 load=25.61,29.48,29.92 io_psi=avg10=34.32 mem_avail_mib=6016
+## run 2 (kill-c64): restart and finish
+METRIC recv.store_load_secs 0.077
+METRIC recv.local_info_secs 16.598
+METRIC recv.local_bytes_before 3263545344
+METRIC recv.complete_before false
+METRIC recv.connect_secs 0.008
+METRIC recv.chunk_mib 64
+METRIC recv.first_payload_byte_since_start_secs 19.595
+METRIC recv.chunk_requests 112
+METRIC recv.chunk_local_check_secs_total 98.798
+METRIC recv.chunk_get_secs_total 138.095
+METRIC recv.fetch_secs 236.895
+METRIC recv.payload_bytes_read 7473872896
+METRIC recv.other_bytes_read 29242176
+METRIC recv.throughput_mib_s 30.1
+METRIC recv.after_fetch.peak_rss_mib 27.4
+METRIC recv.after_fetch.rss_mib 27.4
+METRIC recv.complete_after true
+METRIC recv.before_shutdown.dirty_mib 0
+METRIC recv.shutdown_secs 0.073
+METRIC recv.total_secs 253.683
+SIZE /home/hshekhar/.t3/projects/bhayanakshare-research/bench/data/big/rstore-kill-c64 alloc_kib=10526788 apparent_bytes=10779652032
+STOREFILES /home/hshekhar/.t3/projects/bhayanakshare-research/bench/data/big/rstore-kill-c64: 290816 /home/hshekhar/.t3/projects/bhayanakshare-research/bench/data/big/rstore-kill-c64/blobs.db;10737418240 4a1feaee8b7ca4746a480bb268743fb58c97228d138e463ef3979d9727a8ee37.data;41942976 4a1feaee8b7ca4746a480bb268743fb58c97228d138e463ef3979d9727a8ee37.obao4;
+SYS 2026-10-04T01:58:18+05:30 load=28.17,30.43,30.35 io_psi=avg10=52.14 mem_avail_mib=4198
+METRIC send.final.peak_rss_mib 34.1
+METRIC send.final.rss_mib 34.0
+SYS 2026-10-04T01:58:18+05:30 load=28.17,30.43,30.35 io_psi=avg10=52.14 mem_avail_mib=4151
+METRIC send.store_load_secs 0.007
+METRIC send.reused_tag true
+METRIC send.import_secs 0.002
+METRIC send.after_import.peak_rss_mib 8.5
+METRIC send.after_import.rss_mib 8.5
+send: serving 4a1feaee8b7ca4746a480bb268743fb58c97228d138e463ef3979d9727a8ee37 (Raw)
+## run 1 (kill-c16): stop at 3263168512 bytes (kill) --chunk-mib 16
+METRIC recv.store_load_secs 0.035
+METRIC recv.local_info_secs 0.000
+METRIC recv.local_bytes_before 0
+METRIC recv.complete_before false
+METRIC recv.connect_secs 0.002
+METRIC recv.chunk_mib 16
+METRIC recv.first_payload_byte_since_start_secs 0.049
+METRIC recv.chunk_requests 195
+METRIC recv.chunk_local_check_secs_total 46.324
+METRIC recv.chunk_get_secs_total 49.228
+METRIC recv.stopped_at_bytes 3263168512
+METRIC recv.stopped_after_secs 97.379
+METRIC recv.at_stop.peak_rss_mib 27.9
+METRIC recv.at_stop.rss_mib 27.9
+recv: SIGKILL self at 3263168512 bytes
+EXIT run1 137
+SIZE /home/hshekhar/.t3/projects/bhayanakshare-research/bench/data/big/rstore-kill-c16 alloc_kib=3200848 apparent_bytes=3278664944
+STOREFILES /home/hshekhar/.t3/projects/bhayanakshare-research/bench/data/big/rstore-kill-c16: 1056768 /home/hshekhar/.t3/projects/bhayanakshare-research/bench/data/big/rstore-kill-c16/blobs.db;0 4a1feaee8b7ca4746a480bb268743fb58c97228d138e463ef3979d9727a8ee37.bitfield;3263266816 4a1feaee8b7ca4746a480bb268743fb58c97228d138e463ef3979d9727a8ee37.data;12747968 4a1feaee8b7ca4746a480bb268743fb58c97228d138e463ef3979d9727a8ee37.obao4;1593392 4a1feaee8b7ca4746a480bb268743fb58c97228d138e463ef3979d9727a8ee37.sizes4;
+SYS 2026-10-04T01:59:56+05:30 load=24.22,28.49,29.67 io_psi=avg10=16.05 mem_avail_mib=4423
+## run 2 (kill-c16): restart and finish
+METRIC recv.store_load_secs 0.010
+METRIC recv.local_info_secs 12.298
+METRIC recv.local_bytes_before 3263266816
+METRIC recv.complete_before false
+METRIC recv.connect_secs 0.005
+METRIC recv.chunk_mib 16
+METRIC recv.first_payload_byte_since_start_secs 14.405
+METRIC recv.chunk_requests 446
+METRIC recv.chunk_local_check_secs_total 132.197
+METRIC recv.chunk_get_secs_total 113.234
+METRIC recv.fetch_secs 245.449
+METRIC recv.payload_bytes_read 7474151424
+METRIC recv.other_bytes_read 29440176
+METRIC recv.throughput_mib_s 29.0
+METRIC recv.after_fetch.peak_rss_mib 27.7
+METRIC recv.after_fetch.rss_mib 27.7
+METRIC recv.complete_after true
+METRIC recv.before_shutdown.dirty_mib 0
+METRIC recv.shutdown_secs 0.012
+METRIC recv.total_secs 257.802
+SIZE /home/hshekhar/.t3/projects/bhayanakshare-research/bench/data/big/rstore-kill-c16 alloc_kib=10526788 apparent_bytes=10779652032
+STOREFILES /home/hshekhar/.t3/projects/bhayanakshare-research/bench/data/big/rstore-kill-c16: 290816 /home/hshekhar/.t3/projects/bhayanakshare-research/bench/data/big/rstore-kill-c16/blobs.db;10737418240 4a1feaee8b7ca4746a480bb268743fb58c97228d138e463ef3979d9727a8ee37.data;41942976 4a1feaee8b7ca4746a480bb268743fb58c97228d138e463ef3979d9727a8ee37.obao4;
+SYS 2026-10-04T02:04:14+05:30 load=24.90,27.58,29.09 io_psi=avg10=6.90 mem_avail_mib=4445
+METRIC send.final.peak_rss_mib 34.0
+METRIC send.final.rss_mib 33.9

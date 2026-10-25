@@ -1,0 +1,282 @@
+METRIC gen.secs 63.59
+METRIC send.store_load_secs 1.659
+METRIC send.reused_tag false
+METRIC send.import_secs 15.898
+METRIC send.after_import.peak_rss_mib 10.1
+METRIC send.after_import.rss_mib 9.7
+send: serving 03b34a0fca3ed00b4b604e00951bb7f58e58b2d02556608ffcc7ca58d733ec6b (Raw)
+SYS 2026-10-04T02:24:23+05:30 load=65.74,34.34,29.06 io_psi=avg10=77.11 mem_avail_mib=5464
+## kill at 8 MiB, chunk=none
+METRIC recv.store_load_secs 0.429
+METRIC recv.local_info_secs 0.000
+METRIC recv.local_bytes_before 0
+METRIC recv.complete_before false
+METRIC recv.connect_secs 0.002
+METRIC recv.first_payload_byte_since_start_secs 0.443
+METRIC recv.stopped_at_bytes 8388608
+METRIC recv.stopped_after_secs 0.278
+METRIC recv.at_stop.peak_rss_mib 23.9
+METRIC recv.at_stop.rss_mib 23.9
+recv: SIGKILL self at 8388608 bytes
+## reopen
+METRIC recv.store_load_secs 0.164
+METRIC recv.local_info_secs 0.000
+METRIC recv.local_bytes_before 0
+METRIC recv.complete_before false
+METRIC recv.connect_secs 0.002
+METRIC recv.first_payload_byte_since_start_secs 0.180
+METRIC recv.stopped_at_bytes 16384
+METRIC recv.stopped_after_secs 0.002
+METRIC recv.at_stop.peak_rss_mib 20.6
+METRIC recv.at_stop.rss_mib 20.6
+METRIC recv.shutdown_secs 0.709
+SYS 2026-10-04T02:24:24+05:30 load=65.74,34.34,29.06 io_psi=avg10=74.01 mem_avail_mib=5383
+## kill at 32 MiB, chunk=none
+METRIC recv.store_load_secs 0.179
+METRIC recv.local_info_secs 0.000
+METRIC recv.local_bytes_before 0
+METRIC recv.complete_before false
+METRIC recv.connect_secs 0.003
+METRIC recv.first_payload_byte_since_start_secs 0.191
+METRIC recv.stopped_at_bytes 33554432
+METRIC recv.stopped_after_secs 0.356
+METRIC recv.at_stop.peak_rss_mib 26.9
+METRIC recv.at_stop.rss_mib 26.9
+recv: SIGKILL self at 33554432 bytes
+## reopen
+METRIC recv.store_load_secs 0.091
+METRIC recv.local_info_secs 0.000
+METRIC recv.local_bytes_before 0
+METRIC recv.complete_before false
+METRIC recv.connect_secs 0.002
+METRIC recv.first_payload_byte_since_start_secs 0.101
+METRIC recv.stopped_at_bytes 16384
+METRIC recv.stopped_after_secs 0.002
+METRIC recv.at_stop.peak_rss_mib 19.6
+METRIC recv.at_stop.rss_mib 19.6
+METRIC recv.shutdown_secs 2.529
+SYS 2026-10-04T02:24:28+05:30 load=62.56,34.20,29.05 io_psi=avg10=62.87 mem_avail_mib=5435
+## kill at 128 MiB, chunk=none
+METRIC recv.store_load_secs 0.029
+METRIC recv.local_info_secs 0.000
+METRIC recv.local_bytes_before 0
+METRIC recv.complete_before false
+METRIC recv.connect_secs 0.004
+METRIC recv.first_payload_byte_since_start_secs 0.040
+METRIC recv.stopped_at_bytes 134217728
+METRIC recv.stopped_after_secs 0.730
+METRIC recv.at_stop.peak_rss_mib 28.2
+METRIC recv.at_stop.rss_mib 28.2
+recv: SIGKILL self at 134217728 bytes
+## reopen
+METRIC recv.store_load_secs 0.018
+METRIC recv.local_info_secs 0.000
+METRIC recv.local_bytes_before 0
+METRIC recv.complete_before false
+METRIC recv.connect_secs 0.003
+METRIC recv.first_payload_byte_since_start_secs 0.030
+METRIC recv.stopped_at_bytes 16384
+METRIC recv.stopped_after_secs 0.002
+METRIC recv.at_stop.peak_rss_mib 19.4
+METRIC recv.at_stop.rss_mib 19.4
+METRIC recv.shutdown_secs 0.104
+SYS 2026-10-04T02:24:29+05:30 load=62.56,34.20,29.05 io_psi=avg10=62.87 mem_avail_mib=5419
+## kill at 8 MiB, chunk=16
+METRIC recv.store_load_secs 0.029
+METRIC recv.local_info_secs 0.001
+METRIC recv.local_bytes_before 0
+METRIC recv.complete_before false
+METRIC recv.connect_secs 0.004
+METRIC recv.chunk_mib 16
+METRIC recv.first_payload_byte_since_start_secs 0.126
+METRIC recv.chunk_requests 1
+METRIC recv.chunk_local_check_secs_total 0.000
+METRIC recv.chunk_get_secs_total 0.000
+METRIC recv.stopped_at_bytes 8388608
+METRIC recv.stopped_after_secs 0.124
+METRIC recv.at_stop.peak_rss_mib 26.3
+METRIC recv.at_stop.rss_mib 26.3
+recv: SIGKILL self at 8388608 bytes
+## reopen
+METRIC recv.store_load_secs 0.022
+METRIC recv.local_info_secs 0.000
+METRIC recv.local_bytes_before 0
+METRIC recv.complete_before false
+METRIC recv.connect_secs 0.002
+METRIC recv.chunk_mib 16
+METRIC recv.first_payload_byte_since_start_secs 0.042
+METRIC recv.chunk_requests 1
+METRIC recv.chunk_local_check_secs_total 0.000
+METRIC recv.chunk_get_secs_total 0.000
+METRIC recv.stopped_at_bytes 16384
+METRIC recv.stopped_after_secs 0.007
+METRIC recv.at_stop.peak_rss_mib 19.5
+METRIC recv.at_stop.rss_mib 19.5
+METRIC recv.shutdown_secs 0.039
+SYS 2026-10-04T02:24:29+05:30 load=62.56,34.20,29.05 io_psi=avg10=62.87 mem_avail_mib=5484
+## kill at 32 MiB, chunk=16
+METRIC recv.store_load_secs 0.025
+METRIC recv.local_info_secs 0.000
+METRIC recv.local_bytes_before 0
+METRIC recv.complete_before false
+METRIC recv.connect_secs 0.001
+METRIC recv.chunk_mib 16
+METRIC recv.first_payload_byte_since_start_secs 0.033
+METRIC recv.chunk_requests 2
+METRIC recv.chunk_local_check_secs_total 0.000
+METRIC recv.chunk_get_secs_total 0.155
+METRIC recv.stopped_at_bytes 33554432
+METRIC recv.stopped_after_secs 0.777
+METRIC recv.at_stop.peak_rss_mib 26.5
+METRIC recv.at_stop.rss_mib 26.5
+recv: SIGKILL self at 33554432 bytes
+## reopen
+METRIC recv.store_load_secs 0.010
+METRIC recv.local_info_secs 0.000
+METRIC recv.local_bytes_before 0
+METRIC recv.complete_before false
+METRIC recv.connect_secs 0.001
+METRIC recv.chunk_mib 16
+METRIC recv.first_payload_byte_since_start_secs 0.024
+METRIC recv.chunk_requests 1
+METRIC recv.chunk_local_check_secs_total 0.000
+METRIC recv.chunk_get_secs_total 0.000
+METRIC recv.stopped_at_bytes 16384
+METRIC recv.stopped_after_secs 0.005
+METRIC recv.at_stop.peak_rss_mib 19.7
+METRIC recv.at_stop.rss_mib 19.7
+METRIC recv.shutdown_secs 0.027
+SYS 2026-10-04T02:24:30+05:30 load=62.56,34.20,29.05 io_psi=avg10=52.74 mem_avail_mib=5431
+## kill at 128 MiB, chunk=16
+METRIC recv.store_load_secs 0.027
+METRIC recv.local_info_secs 0.001
+METRIC recv.local_bytes_before 0
+METRIC recv.complete_before false
+METRIC recv.connect_secs 0.003
+METRIC recv.chunk_mib 16
+METRIC recv.first_payload_byte_since_start_secs 0.040
+METRIC recv.chunk_requests 8
+METRIC recv.chunk_local_check_secs_total 0.238
+METRIC recv.chunk_get_secs_total 1.114
+METRIC recv.stopped_at_bytes 134217728
+METRIC recv.stopped_after_secs 1.592
+METRIC recv.at_stop.peak_rss_mib 27.3
+METRIC recv.at_stop.rss_mib 27.3
+recv: SIGKILL self at 134217728 bytes
+## reopen
+METRIC recv.store_load_secs 0.021
+METRIC recv.local_info_secs 0.076
+METRIC recv.local_bytes_before 133922816
+METRIC recv.complete_before false
+METRIC recv.connect_secs 0.003
+METRIC recv.chunk_mib 16
+METRIC recv.first_payload_byte_since_start_secs 0.852
+METRIC recv.chunk_requests 1
+METRIC recv.chunk_local_check_secs_total 0.712
+METRIC recv.chunk_get_secs_total 0.000
+METRIC recv.stopped_at_bytes 16384
+METRIC recv.stopped_after_secs 0.732
+METRIC recv.at_stop.peak_rss_mib 21.0
+METRIC recv.at_stop.rss_mib 21.0
+METRIC recv.shutdown_secs 0.023
+SYS 2026-10-04T02:24:33+05:30 load=59.39,34.02,29.01 io_psi=avg10=43.91 mem_avail_mib=5318
+## kill at 8 MiB, chunk=64
+METRIC recv.store_load_secs 0.026
+METRIC recv.local_info_secs 0.003
+METRIC recv.local_bytes_before 0
+METRIC recv.complete_before false
+METRIC recv.connect_secs 0.005
+METRIC recv.chunk_mib 64
+METRIC recv.first_payload_byte_since_start_secs 0.045
+METRIC recv.chunk_requests 1
+METRIC recv.chunk_local_check_secs_total 0.000
+METRIC recv.chunk_get_secs_total 0.000
+METRIC recv.stopped_at_bytes 8388608
+METRIC recv.stopped_after_secs 0.059
+METRIC recv.at_stop.peak_rss_mib 24.7
+METRIC recv.at_stop.rss_mib 24.7
+recv: SIGKILL self at 8388608 bytes
+## reopen
+METRIC recv.store_load_secs 0.019
+METRIC recv.local_info_secs 0.000
+METRIC recv.local_bytes_before 0
+METRIC recv.complete_before false
+METRIC recv.connect_secs 0.003
+METRIC recv.chunk_mib 64
+METRIC recv.first_payload_byte_since_start_secs 0.030
+METRIC recv.chunk_requests 1
+METRIC recv.chunk_local_check_secs_total 0.000
+METRIC recv.chunk_get_secs_total 0.000
+METRIC recv.stopped_at_bytes 16384
+METRIC recv.stopped_after_secs 0.003
+METRIC recv.at_stop.peak_rss_mib 19.1
+METRIC recv.at_stop.rss_mib 19.1
+METRIC recv.shutdown_secs 0.024
+SYS 2026-10-04T02:24:33+05:30 load=59.39,34.02,29.01 io_psi=avg10=43.91 mem_avail_mib=5321
+## kill at 32 MiB, chunk=64
+METRIC recv.store_load_secs 0.033
+METRIC recv.local_info_secs 0.000
+METRIC recv.local_bytes_before 0
+METRIC recv.complete_before false
+METRIC recv.connect_secs 0.003
+METRIC recv.chunk_mib 64
+METRIC recv.first_payload_byte_since_start_secs 0.047
+METRIC recv.chunk_requests 1
+METRIC recv.chunk_local_check_secs_total 0.000
+METRIC recv.chunk_get_secs_total 0.000
+METRIC recv.stopped_at_bytes 33554432
+METRIC recv.stopped_after_secs 0.210
+METRIC recv.at_stop.peak_rss_mib 26.4
+METRIC recv.at_stop.rss_mib 26.4
+recv: SIGKILL self at 33554432 bytes
+## reopen
+METRIC recv.store_load_secs 0.023
+METRIC recv.local_info_secs 0.000
+METRIC recv.local_bytes_before 0
+METRIC recv.complete_before false
+METRIC recv.connect_secs 0.003
+METRIC recv.chunk_mib 64
+METRIC recv.first_payload_byte_since_start_secs 0.043
+METRIC recv.chunk_requests 1
+METRIC recv.chunk_local_check_secs_total 0.000
+METRIC recv.chunk_get_secs_total 0.000
+METRIC recv.stopped_at_bytes 16384
+METRIC recv.stopped_after_secs 0.007
+METRIC recv.at_stop.peak_rss_mib 20.2
+METRIC recv.at_stop.rss_mib 20.2
+METRIC recv.shutdown_secs 0.054
+SYS 2026-10-04T02:24:33+05:30 load=59.39,34.02,29.01 io_psi=avg10=43.91 mem_avail_mib=5318
+## kill at 128 MiB, chunk=64
+METRIC recv.store_load_secs 0.029
+METRIC recv.local_info_secs 0.000
+METRIC recv.local_bytes_before 0
+METRIC recv.complete_before false
+METRIC recv.connect_secs 0.004
+METRIC recv.chunk_mib 64
+METRIC recv.first_payload_byte_since_start_secs 0.047
+METRIC recv.chunk_requests 2
+METRIC recv.chunk_local_check_secs_total 0.000
+METRIC recv.chunk_get_secs_total 0.490
+METRIC recv.stopped_at_bytes 134217728
+METRIC recv.stopped_after_secs 1.048
+METRIC recv.at_stop.peak_rss_mib 29.4
+METRIC recv.at_stop.rss_mib 29.4
+recv: SIGKILL self at 134217728 bytes
+## reopen
+METRIC recv.store_load_secs 0.012
+METRIC recv.local_info_secs 0.079
+METRIC recv.local_bytes_before 134152192
+METRIC recv.complete_before false
+METRIC recv.connect_secs 0.005
+METRIC recv.chunk_mib 64
+METRIC recv.first_payload_byte_since_start_secs 3.057
+METRIC recv.chunk_requests 1
+METRIC recv.chunk_local_check_secs_total 2.918
+METRIC recv.chunk_get_secs_total 0.000
+METRIC recv.stopped_at_bytes 16384
+METRIC recv.stopped_after_secs 2.948
+METRIC recv.at_stop.peak_rss_mib 20.3
+METRIC recv.at_stop.rss_mib 20.3
+METRIC recv.shutdown_secs 0.014
+METRIC send.final.peak_rss_mib 38.7
+METRIC send.final.rss_mib 38.7

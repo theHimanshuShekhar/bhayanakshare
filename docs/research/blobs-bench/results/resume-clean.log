@@ -1,0 +1,44 @@
+SYS 2026-10-04T02:04:14+05:30 load=24.90,27.58,29.09 io_psi=avg10=6.90 mem_avail_mib=4448
+METRIC send.store_load_secs 0.010
+METRIC send.reused_tag true
+METRIC send.import_secs 0.003
+METRIC send.after_import.peak_rss_mib 8.5
+METRIC send.after_import.rss_mib 8.5
+send: serving 4a1feaee8b7ca4746a480bb268743fb58c97228d138e463ef3979d9727a8ee37 (Raw)
+## run 1 (clean): stop at 3263168512 bytes (clean) 
+METRIC recv.store_load_secs 0.017
+METRIC recv.local_info_secs 0.000
+METRIC recv.local_bytes_before 0
+METRIC recv.complete_before false
+METRIC recv.connect_secs 0.006
+METRIC recv.first_payload_byte_since_start_secs 0.055
+METRIC recv.stopped_at_bytes 3263168512
+METRIC recv.stopped_after_secs 110.898
+METRIC recv.at_stop.peak_rss_mib 28.5
+METRIC recv.at_stop.rss_mib 28.5
+METRIC recv.shutdown_secs 10.528
+SIZE /home/hshekhar/.t3/projects/bhayanakshare-research/bench/data/big/rstore-clean alloc_kib=3200768 apparent_bytes=3278565867
+STOREFILES /home/hshekhar/.t3/projects/bhayanakshare-research/bench/data/big/rstore-clean: 1056768 /home/hshekhar/.t3/projects/bhayanakshare-research/bench/data/big/rstore-clean/blobs.db;43 4a1feaee8b7ca4746a480bb268743fb58c97228d138e463ef3979d9727a8ee37.bitfield;3263168512 4a1feaee8b7ca4746a480bb268743fb58c97228d138e463ef3979d9727a8ee37.data;12747200 4a1feaee8b7ca4746a480bb268743fb58c97228d138e463ef3979d9727a8ee37.obao4;1593344 4a1feaee8b7ca4746a480bb268743fb58c97228d138e463ef3979d9727a8ee37.sizes4;
+SYS 2026-10-04T02:06:16+05:30 load=34.35,29.86,29.70 io_psi=avg10=57.49 mem_avail_mib=4123
+## run 2 (clean): restart and finish
+METRIC recv.store_load_secs 0.025
+METRIC recv.local_info_secs 0.006
+METRIC recv.local_bytes_before 3263168512
+METRIC recv.complete_before false
+METRIC recv.connect_secs 0.007
+METRIC recv.first_payload_byte_since_start_secs 0.066
+METRIC recv.fetch_secs 226.080
+METRIC recv.payload_bytes_read 7474249728
+METRIC recv.other_bytes_read 29196488
+METRIC recv.throughput_mib_s 31.5
+METRIC recv.after_fetch.peak_rss_mib 29.0
+METRIC recv.after_fetch.rss_mib 29.0
+METRIC recv.complete_after true
+METRIC recv.before_shutdown.dirty_mib 0
+METRIC recv.shutdown_secs 3.471
+METRIC recv.total_secs 229.604
+SIZE /home/hshekhar/.t3/projects/bhayanakshare-research/bench/data/big/rstore-clean alloc_kib=10526792 apparent_bytes=10779414464
+STOREFILES /home/hshekhar/.t3/projects/bhayanakshare-research/bench/data/big/rstore-clean: 53248 /home/hshekhar/.t3/projects/bhayanakshare-research/bench/data/big/rstore-clean/blobs.db;10737418240 4a1feaee8b7ca4746a480bb268743fb58c97228d138e463ef3979d9727a8ee37.data;41942976 4a1feaee8b7ca4746a480bb268743fb58c97228d138e463ef3979d9727a8ee37.obao4;
+SYS 2026-10-04T02:10:06+05:30 load=30.94,30.62,30.17 io_psi=avg10=64.33 mem_avail_mib=5433
+METRIC send.final.peak_rss_mib 29.2
+METRIC send.final.rss_mib 29.2

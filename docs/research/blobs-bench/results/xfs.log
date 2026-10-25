@@ -1,0 +1,79 @@
+FS store=ext4 dest=tmpfs
+METRIC gen.secs 5.32
+METRIC send.store_load_secs 0.108
+METRIC send.reused_tag false
+METRIC send.import_secs 0.351
+METRIC send.after_import.peak_rss_mib 9.5
+METRIC send.after_import.rss_mib 9.4
+send: serving b071c5fe88db3923c37b0b6df796fa466d5500505c798a8f4d97420bbc9ef64b (Raw)
+## fetch + export Copy -> tmpfs
+METRIC recv.store_load_secs 0.014
+METRIC recv.local_info_secs 0.000
+METRIC recv.local_bytes_before 0
+METRIC recv.complete_before false
+METRIC recv.connect_secs 0.001
+METRIC recv.first_payload_byte_since_start_secs 0.020
+METRIC recv.fetch_secs 4.746
+METRIC recv.payload_bytes_read 524288000
+METRIC recv.other_bytes_read 2047944
+METRIC recv.throughput_mib_s 105.3
+METRIC recv.after_fetch.peak_rss_mib 26.0
+METRIC recv.after_fetch.rss_mib 26.0
+METRIC recv.complete_after true
+METRIC recv.export_secs 0.276
+METRIC recv.after_export.peak_rss_mib 27.2
+METRIC recv.after_export.rss_mib 27.2
+METRIC recv.before_shutdown.dirty_mib 4
+METRIC recv.shutdown_secs 0.106
+METRIC recv.total_secs 12.399
+SIZE /home/hshekhar/.t3/projects/bhayanakshare-research/bench/data/xfs/rstore alloc_kib=514064 apparent_bytes=527392704
+SIZE /dev/shm/blobbench/copy alloc_kib=512000 apparent_bytes=524288000
+STOREFILES /home/hshekhar/.t3/projects/bhayanakshare-research/bench/data/xfs/rstore: 1056768 /home/hshekhar/.t3/projects/bhayanakshare-research/bench/data/xfs/rstore/blobs.db;524288000 b071c5fe88db3923c37b0b6df796fa466d5500505c798a8f4d97420bbc9ef64b.data;2047936 b071c5fe88db3923c37b0b6df796fa466d5500505c798a8f4d97420bbc9ef64b.obao4;
+VERIFY copy ok
+## export TryReference -> tmpfs (cross-device rename)
+METRIC recv.store_load_secs 0.003
+METRIC recv.local_info_secs 0.000
+METRIC recv.local_bytes_before 524288000
+METRIC recv.complete_before true
+METRIC recv.connect_secs 0.001
+METRIC recv.fetch_secs 0.000
+METRIC recv.payload_bytes_read 0
+METRIC recv.other_bytes_read 0
+METRIC recv.throughput_mib_s 0.0
+METRIC recv.after_fetch.peak_rss_mib 18.1
+METRIC recv.after_fetch.rss_mib 18.1
+METRIC recv.complete_after true
+METRIC recv.export_secs 0.271
+METRIC recv.after_export.peak_rss_mib 20.2
+METRIC recv.after_export.rss_mib 20.2
+METRIC recv.before_shutdown.dirty_mib 0
+METRIC recv.shutdown_secs 0.014
+METRIC recv.total_secs 0.295
+SIZE /home/hshekhar/.t3/projects/bhayanakshare-research/bench/data/xfs/rstore alloc_kib=514068 apparent_bytes=526888896
+SIZE /dev/shm/blobbench/ref alloc_kib=512000 apparent_bytes=524288000
+STOREFILES /home/hshekhar/.t3/projects/bhayanakshare-research/bench/data/xfs/rstore: 552960 /home/hshekhar/.t3/projects/bhayanakshare-research/bench/data/xfs/rstore/blobs.db;524288000 b071c5fe88db3923c37b0b6df796fa466d5500505c798a8f4d97420bbc9ef64b.data;2047936 b071c5fe88db3923c37b0b6df796fa466d5500505c798a8f4d97420bbc9ef64b.obao4;
+VERIFY ref ok
+## store still serves blob after ref export? export Copy to disk
+METRIC recv.store_load_secs 0.003
+METRIC recv.local_info_secs 0.000
+METRIC recv.local_bytes_before 524288000
+METRIC recv.complete_before true
+METRIC recv.connect_secs 0.001
+METRIC recv.fetch_secs 0.000
+METRIC recv.payload_bytes_read 0
+METRIC recv.other_bytes_read 0
+METRIC recv.throughput_mib_s 0.0
+METRIC recv.after_fetch.peak_rss_mib 18.2
+METRIC recv.after_fetch.rss_mib 18.2
+METRIC recv.complete_after true
+METRIC recv.export_secs 0.252
+METRIC recv.after_export.peak_rss_mib 20.4
+METRIC recv.after_export.rss_mib 20.4
+METRIC recv.before_shutdown.dirty_mib 500
+METRIC recv.shutdown_secs 6.605
+METRIC recv.total_secs 6.866
+VERIFY again ok
+SIZE /home/hshekhar/.t3/projects/bhayanakshare-research/bench/data/xfs/rstore alloc_kib=514064 apparent_bytes=526630848
+STOREFILES /home/hshekhar/.t3/projects/bhayanakshare-research/bench/data/xfs/rstore: 294912 /home/hshekhar/.t3/projects/bhayanakshare-research/bench/data/xfs/rstore/blobs.db;524288000 b071c5fe88db3923c37b0b6df796fa466d5500505c798a8f4d97420bbc9ef64b.data;2047936 b071c5fe88db3923c37b0b6df796fa466d5500505c798a8f4d97420bbc9ef64b.obao4;
+METRIC send.final.peak_rss_mib 26.9
+METRIC send.final.rss_mib 26.9

@@ -1,0 +1,11 @@
+METRIC gen.secs 29.88
+FINCORE 1073741824 262144 1073741824 /home/hshekhar/.t3/projects/bhayanakshare-research/bench/data/wh/src.bin
+SYS 2026-10-04T01:43:19+05:30 load=25.35,28.38,29.94 io_psi=avg10=61.34 mem_avail_mib=5967
+METRIC send.store_load_secs 0.199
+METRIC send.reused_tag false
+METRIC send.import_secs 0.979
+METRIC send.after_import.peak_rss_mib 9.8
+METRIC send.after_import.rss_mib 9.3
+send: serving 03b34a0fca3ed00b4b604e00951bb7f58e58b2d02556608ffcc7ca58d733ec6b (Raw)
+METRIC send.final.peak_rss_mib 19.5
+METRIC send.final.rss_mib 19.5

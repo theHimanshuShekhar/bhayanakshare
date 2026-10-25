@@ -1,0 +1,45 @@
+SYS 2026-10-04T01:48:54+05:30 load=28.37,28.39,29.51 io_psi=avg10=70.24 mem_avail_mib=6741
+METRIC send.store_load_secs 0.427
+METRIC send.reused_tag true
+METRIC send.import_secs 0.063
+METRIC send.after_import.peak_rss_mib 8.7
+METRIC send.after_import.rss_mib 8.7
+send: serving 4a1feaee8b7ca4746a480bb268743fb58c97228d138e463ef3979d9727a8ee37 (Raw)
+## run 1 (kill): stop at 3263168512 bytes (kill) 
+METRIC recv.store_load_secs 0.180
+METRIC recv.local_info_secs 0.000
+METRIC recv.local_bytes_before 0
+METRIC recv.complete_before false
+METRIC recv.connect_secs 0.002
+METRIC recv.first_payload_byte_since_start_secs 0.199
+METRIC recv.stopped_at_bytes 3263168512
+METRIC recv.stopped_after_secs 59.926
+METRIC recv.at_stop.peak_rss_mib 27.3
+METRIC recv.at_stop.rss_mib 27.3
+recv: SIGKILL self at 3263168512 bytes
+EXIT run1 137
+SIZE /home/hshekhar/.t3/projects/bhayanakshare-research/bench/data/big/rstore-kill alloc_kib=3200652 apparent_bytes=3278467216
+STOREFILES /home/hshekhar/.t3/projects/bhayanakshare-research/bench/data/big/rstore-kill: 1056768 /home/hshekhar/.t3/projects/bhayanakshare-research/bench/data/big/rstore-kill/blobs.db;3263070208 4a1feaee8b7ca4746a480bb268743fb58c97228d138e463ef3979d9727a8ee37.data;12746944 4a1feaee8b7ca4746a480bb268743fb58c97228d138e463ef3979d9727a8ee37.obao4;1593296 4a1feaee8b7ca4746a480bb268743fb58c97228d138e463ef3979d9727a8ee37.sizes4;
+SYS 2026-10-04T01:49:54+05:30 load=36.41,30.84,30.29 io_psi=avg10=39.33 mem_avail_mib=5606
+## run 2 (kill): restart and finish
+METRIC recv.store_load_secs 0.335
+METRIC recv.local_info_secs 6.641
+METRIC recv.local_bytes_before 3263070208
+METRIC recv.complete_before false
+METRIC recv.connect_secs 0.002
+METRIC recv.first_payload_byte_since_start_secs 7.001
+METRIC recv.fetch_secs 169.317
+METRIC recv.payload_bytes_read 7474348032
+METRIC recv.other_bytes_read 29197256
+METRIC recv.throughput_mib_s 42.1
+METRIC recv.after_fetch.peak_rss_mib 27.6
+METRIC recv.after_fetch.rss_mib 27.6
+METRIC recv.complete_after true
+METRIC recv.before_shutdown.dirty_mib 0
+METRIC recv.shutdown_secs 3.177
+METRIC recv.total_secs 179.479
+SIZE /home/hshekhar/.t3/projects/bhayanakshare-research/bench/data/big/rstore-kill alloc_kib=10526788 apparent_bytes=10779652032
+STOREFILES /home/hshekhar/.t3/projects/bhayanakshare-research/bench/data/big/rstore-kill: 290816 /home/hshekhar/.t3/projects/bhayanakshare-research/bench/data/big/rstore-kill/blobs.db;10737418240 4a1feaee8b7ca4746a480bb268743fb58c97228d138e463ef3979d9727a8ee37.data;41942976 4a1feaee8b7ca4746a480bb268743fb58c97228d138e463ef3979d9727a8ee37.obao4;
+SYS 2026-10-04T01:52:54+05:30 load=30.45,30.59,30.26 io_psi=avg10=52.74 mem_avail_mib=6175
+METRIC send.final.peak_rss_mib 29.8
+METRIC send.final.rss_mib 29.8
