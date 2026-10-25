@@ -10,6 +10,10 @@ const TABBABLE =
  * closes it where `onEscape` says it may, and focus goes back to whatever had it when it goes
  * away. The page behind a sheet is made inert by the app where it can be; the trap is what holds
  * for a sheet that sits inside the page (in Settings) or on top of another sheet.
+ *
+ * What goes inside is laid out as the design has it: the heading as `h2.bs-sheet__t`, the content
+ * in `div.bs-sheet__b` (which scrolls when it has to) and the buttons in `div.bs-sheet__a`,
+ * along the bottom.
  */
 export function Sheet({
   role = "dialog",
@@ -76,7 +80,7 @@ export function Sheet({
   };
 
   return (
-    <div className="overlay" onKeyDown={onKeyDown}>
+    <div className="bs-scrim" onKeyDown={onKeyDown}>
       <div
         ref={sheet}
         role={role}
@@ -84,7 +88,7 @@ export function Sheet({
         aria-labelledby={labelledBy}
         aria-describedby={describedBy}
         tabIndex={-1}
-        className="sheet"
+        className="bs-sheet"
       >
         {children}
       </div>

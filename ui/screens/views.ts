@@ -887,7 +887,7 @@ export const VIEWS: View[] = [
       await settings();
       await button("Export identity…");
       await button("Save as…");
-      await screen.findByText(/at least/i, { selector: "[role=alert]" });
+      await screen.findByRole("alert");
     },
   },
   {

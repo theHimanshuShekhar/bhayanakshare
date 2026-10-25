@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState, type FormEvent } from "react";
 import type { Api, IdentityOwner, MyId } from "./api";
+import { Banner, FieldError } from "./Banner";
 import { t } from "./i18n";
 import { Sheet } from "./Sheet";
 import { identityFailure } from "./identity";
@@ -81,27 +82,42 @@ export function ImportIdentityDialog({
       onEscape={restarting ? undefined : onClose}
       initialFocus={passwordInput}
     >
-      <h2 id="import-identity-heading">
+      <h2 id="import-identity-heading" className="bs-sheet__t">
         {confirming ? t("identity.replaceHeading") : t("identity.importHeading")}
       </h2>
       {confirming ? (
         <>
-          <div id="import-identity-body">
-            <p>
-              {t("identity.replaceId", { current: current.fingerprint, incoming: incoming.fingerprint })}
-            </p>
-            <p>{t("identity.replaceOld")}</p>
-            {active > 0 && (
+          <div className="bs-sheet__b">
+            <div id="import-identity-body" className="stack">
               <p>
-                {active === 1 ? t("identity.replaceActiveOne") : t("identity.replaceActive", { count: active })}
+                {t("identity.replaceId", { current: current.fingerprint, incoming: incoming.fingerprint })}
               </p>
+              <Banner kind="warn">{t("identity.replaceOld")}</Banner>
+              {active > 0 && (
+                <Banner kind="warn">
+                  {active === 1 ? t("identity.replaceActiveOne") : t("identity.replaceActive", { count: active })}
+                </Banner>
+              )}
+              <p>{t("identity.replaceRestart")}</p>
+            </div>
+            {error !== null && (
+              <Banner kind="err" role="alert">
+                {error}
+              </Banner>
             )}
-            <p>{t("identity.replaceRestart")}</p>
+            {restarting && (
+              <Banner kind="info" role="status">
+                {t("identity.restarting")}
+              </Banner>
+            )}
           </div>
-          {error !== null && <p role="alert">{error}</p>}
-          {restarting && <p role="status">{t("identity.restarting")}</p>}
-          <div className="actions">
-            <button type="button" onClick={replace} disabled={busy || restarting}>
+          <div className="bs-sheet__a">
+            <button
+              type="button"
+              className="bs-btn bs-btn--danger"
+              onClick={replace}
+              disabled={busy || restarting}
+            >
               {t("identity.replaceConfirm")}
             </button>
             <button type="button" ref={keep} onClick={onClose} disabled={restarting}>
@@ -111,28 +127,40 @@ export function ImportIdentityDialog({
         </>
       ) : same ? (
         <>
-          <p role="status">{t("identity.importSame", { fingerprint: current.fingerprint })}</p>
-          <div className="actions">
-            <button type="button" ref={close} onClick={onClose}>
+          <div className="bs-sheet__b">
+            <Banner kind="info" role="status">
+              {t("identity.importSame", { fingerprint: current.fingerprint })}
+            </Banner>
+          </div>
+          <div className="bs-sheet__a">
+            <button type="button" className="bs-btn bs-btn--pri" ref={close} onClick={onClose}>
               {t("identity.close")}
             </button>
           </div>
         </>
       ) : (
         <form onSubmit={check}>
-          <p>{t("identity.importFile", { name: baseName(path) })}</p>
-          <label htmlFor="import-identity-password">{t("identity.importPassword")}</label>
-          <input
-            id="import-identity-password"
-            ref={passwordInput}
-            type="password"
-            value={password}
-            onChange={(e) => setPassword(e.target.value)}
-            autoComplete="current-password"
-          />
-          {error !== null && <p role="alert">{error}</p>}
-          <div className="actions">
-            <button type="submit" disabled={busy || password === ""}>
+          <div className="bs-sheet__b">
+            <p>{t("identity.importFile", { name: baseName(path) })}</p>
+            <div className="bs-field">
+              <label className="bs-label" htmlFor="import-identity-password">
+                {t("identity.importPassword")}
+              </label>
+              <input
+                id="import-identity-password"
+                className="bs-input"
+                ref={passwordInput}
+                type="password"
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+                aria-invalid={error !== null ? true : undefined}
+                autoComplete="current-password"
+              />
+              {error !== null && <FieldError>{error}</FieldError>}
+            </div>
+          </div>
+          <div className="bs-sheet__a">
+            <button type="submit" className="bs-btn bs-btn--pri" disabled={busy || password === ""}>
               {t("identity.importNext")}
             </button>
             <button type="button" onClick={onClose}>

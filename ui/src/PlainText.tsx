@@ -7,7 +7,7 @@ import { t } from "./i18n";
  */
 export function PlainText({ text }: { text: string }) {
   return (
-    <pre className="plain-text" tabIndex={0} role="region" aria-label={t("text.label")}>
+    <pre className="bs-textbox" tabIndex={0} role="region" aria-label={t("text.label")}>
       {text}
     </pre>
   );

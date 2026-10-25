@@ -1,5 +1,6 @@
 import { useRef, useState } from "react";
 import type { Api } from "./api";
+import { Banner } from "./Banner";
 import { t } from "./i18n";
 import { Sheet } from "./Sheet";
 
@@ -43,15 +44,23 @@ export function ClearHistoryDialog({
       // The safe answer starts focused, so Enter cannot clear History by accident.
       initialFocus={keep}
     >
-      <h2 id="clear-history-heading">{t("history.clearHeading")}</h2>
-      <p id="clear-history-body">{t("history.clearBody")}</p>
-      {error !== null && <p role="alert">{error}</p>}
-      <div className="actions">
-        <button type="button" onClick={clear} disabled={busy}>
-          {t("history.clearConfirm")}
-        </button>
-        <button type="button" ref={keep} onClick={onClose}>
+      <h2 id="clear-history-heading" className="bs-sheet__t">
+        {t("history.clearHeading")}
+      </h2>
+      <div className="bs-sheet__b">
+        <p id="clear-history-body">{t("history.clearBody")}</p>
+        {error !== null && (
+          <Banner kind="err" role="alert">
+            {error}
+          </Banner>
+        )}
+      </div>
+      <div className="bs-sheet__a">
+        <button type="button" className="bs-btn" ref={keep} onClick={onClose}>
           {t("history.clearCancel")}
+        </button>
+        <button type="button" className="bs-btn bs-btn--danger" onClick={clear} disabled={busy}>
+          {t("history.clearConfirm")}
         </button>
       </div>
     </Sheet>

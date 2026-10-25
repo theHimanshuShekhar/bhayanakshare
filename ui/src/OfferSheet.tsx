@@ -1,6 +1,8 @@
 import { useEffect, useRef, useState } from "react";
 import type { Api, Contact, SpaceCheck } from "./api";
+import { Banner, Hint } from "./Banner";
 import { contactName, findContact } from "./contacts";
+import { Icon } from "./Icon";
 import { t } from "./i18n";
 import { PlainText } from "./PlainText";
 import { Sheet } from "./Sheet";
@@ -17,7 +19,12 @@ function Countdown({ expiresAt }: { expiresAt: number }) {
     const tick = setInterval(() => setNow(Date.now()), 1000);
     return () => clearInterval(tick);
   }, []);
-  return <p role="timer">{t("offer.expiresIn", { time: formatCountdown(expiresAt - now) })}</p>;
+  return (
+    <p className="offer-expiry" role="timer">
+      <Icon name="clock" />
+      {t("offer.expiresIn", { time: formatCountdown(expiresAt - now) })}
+    </p>
+  );
 }
 
 const reasonOf = (e: unknown) => (e instanceof Error ? e.message : String(e));
@@ -95,80 +102,126 @@ function Offer({
       (e) => setError(t("offer.folderFailed", { reason: reasonOf(e) })),
     );
 
+  // What stops Accept: the sheet says so under the problems, and Accept points to them.
+  const blocked = short !== null || tooLong || folderError !== null;
+  const problems = blocked || error !== null || offer.adjustedNames > 0;
+
   return (
     <>
-      <h2 id="offer-heading" tabIndex={-1} ref={heading}>
+      <h2 id="offer-heading" className="bs-sheet__t" tabIndex={-1} ref={heading}>
         {t(isText ? "offer.textHeading" : "offer.heading")}
       </h2>
-      <dl>
-        <dt>{t("offer.from")}</dt>
-        <dd>
-          {contact ? (
-            <>
-              {contactName(contact) ?? offer.peerName ?? fingerprint(offer.peer)}{" "}
-              <span className="badge">{t("contacts.badge")}</span>
-            </>
-          ) : (
-            <>
-              {offer.peerName !== null && <>{offer.peerName} · </>}
-              {t("offer.notContact")}
-            </>
-          )}
-        </dd>
-        <dt>{t("offer.fingerprint")}</dt>
-        <dd>{fingerprint(offer.peer)}</dd>
-        {isText ? (
-          <>
-            <dt>{t("offer.size")}</dt>
-            <dd>{formatSize(offer.size)}</dd>
-          </>
-        ) : (
-          <>
-            <dt>{t("offer.items")}</dt>
+      <div className="bs-sheet__b">
+        <dl className="bs-facts">
+          <div>
+            <dt>{t("offer.from")}</dt>
             <dd>
-              <ul>
-                {offer.items.slice(0, SHOWN_ITEMS).map((item) => (
-                  <li key={item}>{item}</li>
-                ))}
-              </ul>
-              {offer.items.length > SHOWN_ITEMS && (
-                <>{t("offer.moreItems", { count: offer.items.length - SHOWN_ITEMS })}</>
+              {contact ? (
+                <>
+                  {contactName(contact) ?? offer.peerName ?? fingerprint(offer.peer)}{" "}
+                  <span className="bs-badge">{t("contacts.badge")}</span>
+                </>
+              ) : (
+                <>
+                  {offer.peerName !== null && <>{offer.peerName} · </>}
+                  {t("offer.notContact")}
+                </>
               )}
             </dd>
-            <dt>{t("offer.files")}</dt>
-            <dd>{offer.fileCount}</dd>
-            <dt>{t("offer.size")}</dt>
-            <dd>{formatSize(offer.size)}</dd>
-            <dt>{t("offer.saveTo")}</dt>
+          </div>
+          <div>
+            <dt>{t("offer.fingerprint")}</dt>
             <dd>
-              <code>{folder ?? space?.folder ?? ""}</code>{" "}
-              <button type="button" aria-label={t("offer.changeFolderLabel")} onClick={changeFolder}>
-                {t("offer.changeFolder")}
-              </button>
+              <span className="bs-mono">{fingerprint(offer.peer)}</span>
             </dd>
-          </>
+          </div>
+          {isText ? (
+            <div>
+              <dt>{t("offer.size")}</dt>
+              <dd>{formatSize(offer.size)}</dd>
+            </div>
+          ) : (
+            <>
+              <div className="w2">
+                <dt>{t("offer.items")}</dt>
+                <dd>
+                  <div>
+                    <ul className="bs-items">
+                      {offer.items.slice(0, SHOWN_ITEMS).map((item) => (
+                        <li key={item}>{item}</li>
+                      ))}
+                    </ul>
+                    {offer.items.length > SHOWN_ITEMS && (
+                      <p className="offer-more">{t("offer.moreItems", { count: offer.items.length - SHOWN_ITEMS })}</p>
+                    )}
+                  </div>
+                </dd>
+              </div>
+              <div>
+                <dt>{t("offer.files")}</dt>
+                <dd>{offer.fileCount}</dd>
+              </div>
+              <div>
+                <dt>{t("offer.size")}</dt>
+                <dd>{formatSize(offer.size)}</dd>
+              </div>
+              <div className="w2">
+                <dt>{t("offer.saveTo")}</dt>
+                <dd>
+                  <code className="bs-mono">{folder ?? space?.folder ?? ""}</code>
+                  <button
+                    type="button"
+                    className="bs-btn bs-btn--quiet"
+                    aria-label={t("offer.changeFolderLabel")}
+                    onClick={changeFolder}
+                  >
+                    {t("offer.changeFolder")}
+                  </button>
+                </dd>
+              </div>
+            </>
+          )}
+        </dl>
+        {isText && <PlainText text={offer.text ?? ""} />}
+        <Countdown expiresAt={offer.expiresAt} />
+        {problems && (
+          <div className="stack" id="offer-problems">
+            {short && (
+              <Banner kind="err" role="alert">
+                {t("offer.noRoom", { needed: formatSize(short.needed), free: formatSize(short.free) })}
+              </Banner>
+            )}
+            {tooLong && (
+              <Banner kind="err" role="alert">
+                {t("offer.pathsTooLong")}
+              </Banner>
+            )}
+            {offer.adjustedNames > 0 && <Banner kind="warn">{adjustedNamesText(offer.adjustedNames)}</Banner>}
+            {folderError !== null && (
+              <Banner kind="err" role="alert">
+                {folderError}
+              </Banner>
+            )}
+            {error !== null && (
+              <Banner kind="err" role="alert">
+                {error}
+              </Banner>
+            )}
+            {blocked && <Hint icon="info">{t("offer.acceptBlocked")}</Hint>}
+          </div>
         )}
-      </dl>
-      {isText && <PlainText text={offer.text ?? ""} />}
-      <Countdown expiresAt={offer.expiresAt} />
-      {short && (
-        <p role="alert">
-          {t("offer.noRoom", { needed: formatSize(short.needed), free: formatSize(short.free) })}
-        </p>
-      )}
-      {tooLong && <p role="alert">{t("offer.pathsTooLong")}</p>}
-      {offer.adjustedNames > 0 && <p>{adjustedNamesText(offer.adjustedNames)}</p>}
-      {folderError !== null && <p role="alert">{folderError}</p>}
-      {error !== null && <p role="alert">{error}</p>}
-      <div className="actions">
+      </div>
+      <div className="bs-sheet__a">
         <button
           type="button"
-          disabled={short !== null || tooLong || folderError !== null}
+          className="bs-btn bs-btn--pri"
+          disabled={blocked}
+          aria-describedby={blocked ? "offer-problems" : undefined}
           onClick={() => answer((id) => api.acceptOffer(id, folder))}
         >
           {t("offer.accept")}
         </button>
-        <button type="button" onClick={() => answer(api.declineOffer)}>
+        <button type="button" className="bs-btn" onClick={() => answer(api.declineOffer)}>
           {t("offer.decline")}
         </button>
       </div>
