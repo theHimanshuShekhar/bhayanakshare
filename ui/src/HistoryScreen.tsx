@@ -311,16 +311,26 @@ function HistoryRow({
   if (x.kind === "files") {
     details.push(x.file_count === 1 ? t("history.fileOne") : t("history.files", { count: x.file_count }));
   }
-  if (x.role === "receiver" && x.adjusted_names > 0) details.push(adjustedNamesText(x.adjusted_names));
+  if (x.role === "receiver" && x.adjusted_names > 0) details.push(adjustedNamesText(x.adjusted_names, x.state.kind === "completed"));
 
   return (
     <li className="bs-row">
       <div>
         <div className="bs-row__t">{title}</div>
-        <div className={x.state.kind === "completed" ? "bs-row__s ok" : "bs-row__s"}>
-          <Icon name={stateIcon(x.state)} />
-          <span>{statusText(x, peer)}</span>
-        </div>
+        {x.state.kind === "failed" ? (
+          <>
+            <div className="bs-row__s">
+              <Icon name="err" />
+              <span>{t("transfer.failed")}</span>
+            </div>
+            <p className="bs-row__why">{statusText(x, peer)}</p>
+          </>
+        ) : (
+          <div className={x.state.kind === "completed" ? "bs-row__s ok" : "bs-row__s"}>
+            <Icon name={stateIcon(x.state)} />
+            <span>{statusText(x, peer)}</span>
+          </div>
+        )}
         <div className="hmeta bs-row__m">
           <span>{details.join(" · ")}</span>
           <span>
@@ -339,7 +349,7 @@ function HistoryRow({
         {savedTo !== null && present === false && (
           <div className="gone">
             <Icon name="warn" />
-            <span>{t("history.fileGone")}</span>
+            <span>{t("history.fileGone", { path: savedTo })}</span>
           </div>
         )}
         {text !== null && (

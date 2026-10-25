@@ -14,6 +14,7 @@ import {
   formatSize,
   isPreparing,
   percent,
+  skippedLinksText,
   statusText,
   transferName,
   type BatchView,
@@ -179,19 +180,25 @@ function TransferRow({
       <div>
         <div className="bs-row__t">{title}</div>
         {/* The Announcer says when this changes, and the progress below at coarse steps. */}
-        <p className={x.state.kind === "completed" ? "bs-row__s ok" : "bs-row__s"}>
-          <Icon name={stateIcon(x, moving)} />
-          <span>{statusText(x, peer, isPreparing(x))}</span>
-        </p>
-        {x.role === "sender" && x.skippedLinks > 0 && (
-          <p className="bs-row__m">
-            {x.skippedLinks === 1
-              ? t("transfer.linkSkipped")
-              : t("transfer.linksSkipped", { count: x.skippedLinks })}
+        {x.state.kind === "failed" ? (
+          <>
+            <p className="bs-row__s">
+              <Icon name="err" />
+              <span>{t("transfer.failed")}</span>
+            </p>
+            <p className="bs-row__m bs-row__why">{statusText(x, peer)}</p>
+          </>
+        ) : (
+          <p className={x.state.kind === "completed" ? "bs-row__s ok" : "bs-row__s"}>
+            <Icon name={stateIcon(x, moving)} />
+            <span>{statusText(x, peer, isPreparing(x))}</span>
           </p>
         )}
+        {x.role === "sender" && x.skippedLinks > 0 && (
+          <p className="bs-row__m">{skippedLinksText(x.skippedLinks)}</p>
+        )}
         {x.role === "receiver" && x.adjustedNames > 0 && (
-          <p className="bs-row__m">{adjustedNamesText(x.adjustedNames)}</p>
+          <p className="bs-row__m">{adjustedNamesText(x.adjustedNames, x.state.kind === "completed")}</p>
         )}
         {savedTo !== null && <p className="bs-row__m">{t("transfer.savedTo", { path: savedTo })}</p>}
         {showFailed && <p role="alert">{t("transfer.showInFolderFailed")}</p>}

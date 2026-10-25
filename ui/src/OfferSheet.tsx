@@ -1,12 +1,19 @@
 import { useEffect, useRef, useState } from "react";
 import type { Api, Contact, SpaceCheck } from "./api";
 import { Banner, Hint } from "./Banner";
-import { contactName, findContact } from "./contacts";
+import { contactName, findContact, peerName } from "./contacts";
 import { Icon } from "./Icon";
 import { t } from "./i18n";
 import { PlainText } from "./PlainText";
 import { Sheet } from "./Sheet";
-import { adjustedNamesText, fingerprint, formatCountdown, formatSize, type TransferView } from "./transfers";
+import {
+  OFFER_WARNINGS,
+  adjustedNamesText,
+  fingerprint,
+  formatCountdown,
+  formatSize,
+  type TransferView,
+} from "./transfers";
 
 /** How many top-level items the sheet lists before it says how many more there are: an Offer
  * can name any number of them, and the sheet has to stay usable. */
@@ -94,7 +101,9 @@ function Offer({
   const tooLong = space !== null && space.paths_too_long;
 
   const answer = (command: (id: string) => Promise<unknown>) =>
-    command(offer.id).catch((e) => setError(t("offer.failed", { reason: reasonOf(e) })));
+    command(offer.id).catch((e) =>
+      setError(t("offer.failed", { peer: peerName(offer.peer, contacts, offer.peerName), reason: reasonOf(e) })),
+    );
 
   const changeFolder = () =>
     api.pickFolder().then(
@@ -188,12 +197,12 @@ function Offer({
           <div className="stack" id="offer-problems">
             {short && (
               <Banner kind="err" role="alert">
-                {t("offer.noRoom", { needed: formatSize(short.needed), free: formatSize(short.free) })}
+                {t(OFFER_WARNINGS.no_room[0], { needed: formatSize(short.needed), free: formatSize(short.free) })}
               </Banner>
             )}
             {tooLong && (
               <Banner kind="err" role="alert">
-                {t("offer.pathsTooLong")}
+                {t(OFFER_WARNINGS.paths_too_long[0])}
               </Banner>
             )}
             {offer.adjustedNames > 0 && <Banner kind="warn">{adjustedNamesText(offer.adjustedNames)}</Banner>}

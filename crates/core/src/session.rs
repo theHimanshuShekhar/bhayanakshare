@@ -12,21 +12,13 @@ use crate::{
     event::{EventKind, Outdated, VersionMismatchEvent},
     identity::DeviceId,
     protocol::{FrameError, Hello, Message, PROTOCOL_VERSION, write_frame},
+    reasons::{LOST, UNEXPECTED, mismatch_reason},
     transfer::{Role, STALL_TTL_MS, TransferState},
 };
 
 /// How long to wait for the other side to close the connection after our last frame, so the
 /// frame is not cut off by us hanging up first.
 pub(crate) const CLOSE_GRACE: Duration = Duration::from_secs(5);
-
-pub(crate) const LOST: &str = "The other Device went away.";
-pub(crate) const UNEXPECTED: &str = "The other Device sent something unexpected.";
-pub(crate) const BUSY: &str =
-    "The other Device already has too many Offers from you waiting for an answer. Try again once it has answered some.";
-pub(crate) const INVALID_NAMES: &str = "Couldn't be sent: invalid file names";
-pub(crate) const STALLED: &str = "The Transfer made no progress for 24 hours, so it was given up.";
-pub(crate) const RESTARTED: &str = "This Device restarted before the Transfer could carry on.";
-pub(crate) const FORGOTTEN: &str = "The other Device no longer has this Transfer.";
 
 /// Frames from the other Device, read on a task so they can be waited on with `select!`.
 pub(crate) type Incoming = mpsc::Receiver<Result<Message, FrameError>>;
@@ -135,17 +127,6 @@ async fn refuse(
     let _ = tokio::time::timeout(REFUSE_GRACE, async { while let Some(Ok(_)) = incoming.recv().await {} })
         .await;
     reason
-}
-
-/// What a Transfer that was refused for its versions says, naming the Device if it has a name.
-fn mismatch_reason(outdated: Outdated, name: Option<&str>) -> String {
-    let who = name.unwrap_or("The other Device");
-    match outdated {
-        Outdated::Peer => format!("{who} is running an older BhayanakShare. Ask them to update."),
-        Outdated::ThisDevice => {
-            format!("{who} is running a newer BhayanakShare. Update this Device, then try again.")
-        }
-    }
 }
 
 /// How a Transfer ended without completing, failing or being declined.
@@ -263,18 +244,6 @@ pub(crate) fn retry_delay(attempt: u32) -> Duration {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn a_refusal_says_who_has_to_update() {
-        assert_eq!(
-            mismatch_reason(Outdated::Peer, Some("Alice's Laptop")),
-            "Alice's Laptop is running an older BhayanakShare. Ask them to update."
-        );
-        assert_eq!(
-            mismatch_reason(Outdated::ThisDevice, None),
-            "The other Device is running a newer BhayanakShare. Update this Device, then try again."
-        );
-    }
 
     #[test]
     fn redialling_starts_fast_and_settles_at_about_once_a_minute() {

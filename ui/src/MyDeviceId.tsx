@@ -13,7 +13,7 @@ import { useCopy } from "./useCopy";
  */
 export function MyDeviceId({ api, nested = false }: { api: Api; nested?: boolean }) {
   const Heading = nested ? "h4" : "h3";
-  const [state, setState] = useState<"loading" | "error" | { myId: MyId; link: string }>("loading");
+  const [state, setState] = useState<"loading" | { error: string } | { myId: MyId; link: string }>("loading");
   const { outcome, copy } = useCopy(api);
 
   useEffect(() => {
@@ -21,7 +21,7 @@ export function MyDeviceId({ api, nested = false }: { api: Api; nested?: boolean
     // The link carries the Device Name; without it (it could not be read) the link still works.
     Promise.all([api.myId(), api.deviceName().catch(() => null)]).then(
       ([myId, name]) => live && setState({ myId, link: shareLink(myId.id, name) }),
-      () => live && setState("error"),
+      (e) => live && setState({ error: e instanceof Error ? e.message : String(e) }),
     );
     return () => {
       live = false;
@@ -29,7 +29,7 @@ export function MyDeviceId({ api, nested = false }: { api: Api; nested?: boolean
   }, [api]);
 
   if (state === "loading") return <p role="status">{t("home.loading")}</p>;
-  if (state === "error") return <p role="alert">{t("home.error")}</p>;
+  if ("error" in state) return <p role="alert">{t("home.error", { reason: state.error })}</p>;
 
   const { myId, link } = state;
 

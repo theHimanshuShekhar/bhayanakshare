@@ -1,7 +1,19 @@
 // Identity export and import: what the dialogs ask of the user and how a failure is worded.
 
-import type { IdentityError } from "./bindings";
-import { t } from "./i18n";
+import type { IdentityError, IdentityErrorKind } from "./bindings";
+import { t, type MessageKey } from "./i18n";
+
+/**
+ * The catalogue message (section 10) for each kind of identity failure. A kind added in the shell
+ * fails the typecheck until it is worded.
+ */
+export const IDENTITY_ERRORS: Record<IdentityErrorKind, MessageKey> = {
+  wrong_password: "identity.wrongPassword",
+  not_an_identity_file: "identity.notAFile",
+  store_unavailable: "identity.storeUnavailable",
+  replace_uncertain: "identity.replaceUncertain",
+  other: "identity.failed",
+};
 
 /** The shortest password an export is protected with. The core only refuses an empty one. */
 export const MIN_PASSWORD_CHARS = 8;
@@ -29,18 +41,7 @@ function isIdentityError(e: unknown): e is IdentityError {
 /** What went wrong with an export or import, in words for the person using the app. */
 export function identityFailure(e: unknown): string {
   if (isIdentityError(e)) {
-    switch (e.kind) {
-      case "wrong_password":
-        return t("identity.wrongPassword");
-      case "not_an_identity_file":
-        return t("identity.notAFile");
-      case "store_unavailable":
-        return t("identity.storeUnavailable", { reason: e.message });
-      case "replace_uncertain":
-        return t("identity.replaceUncertain");
-      case "other":
-        return t("identity.failed", { reason: e.message });
-    }
+    return t(IDENTITY_ERRORS[e.kind], { reason: e.message });
   }
   return t("identity.failed", { reason: e instanceof Error ? e.message : String(e) });
 }

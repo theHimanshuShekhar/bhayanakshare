@@ -94,13 +94,13 @@ describe("discoveryHint", () => {
 
   it("gives each reason its own words", () => {
     const reasons = (["port_in_use", "no_interface", "other"] as const).map(
-      (reason) => discoveryHint({ state: "unavailable", reason }, false)?.reason,
+      (reason) => discoveryHint({ state: "unavailable", reason }, false)?.message,
     );
     expect(new Set(reasons).size).toBe(3);
     expect(reasons).not.toContain(undefined);
   });
 
   it("says that ID holders cannot reach a Hidden Device, which a Device that looks for others does not", () => {
-    expect(discoveryHint(NO_PORT, true)?.summary).not.toBe(discoveryHint(NO_PORT, false)?.summary);
+    expect(discoveryHint(NO_PORT, true)?.message).not.toBe(discoveryHint(NO_PORT, false)?.message);
   });
 });

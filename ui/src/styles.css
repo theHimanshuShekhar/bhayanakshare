@@ -880,6 +880,13 @@ input.bs-switch:focus-visible {
   flex: none;
 }
 
+/* Why a Transfer failed, under the word "Failed". */
+.bs-row__why {
+  margin-top: 2px;
+  font-size: var(--bs-fs-small);
+  overflow-wrap: anywhere;
+}
+
 .bs-row__p {
   grid-column: 1 / -1;
 }
