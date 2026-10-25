@@ -377,6 +377,33 @@ describe("accessibility: History", () => {
     await screen.findByText("Could not load your History.");
     await expectNoViolations();
   });
+
+  it("has none when a text was copied, could not be copied, or a row could not be deleted", async () => {
+    const copyText = vi.fn().mockResolvedValueOnce(undefined).mockRejectedValue(new Error("no"));
+    const device = fakeApi({ copyText, deleteHistoryTransfer: () => Promise.reject(new Error("db")) }, contacts());
+    device.setHistory(entries());
+    await start(device);
+    open("History");
+    const copy = await screen.findByRole("button", { name: /^Copy the text from / });
+    fireEvent.click(copy);
+    await screen.findByText("Copied");
+    await expectNoViolations();
+    fireEvent.click(copy);
+    await screen.findByText("Could not copy. Select the text and copy it by hand.");
+    fireEvent.click(screen.getAllByRole("button", { name: /^Delete .* from History$/ })[0]);
+    await screen.findByText(/^Could not delete it\./);
+    await expectNoViolations();
+  });
+
+  it("has none with the filters narrowed to nothing", async () => {
+    const device = fakeApi({}, contacts());
+    device.setHistory([]);
+    await start(device);
+    open("History");
+    fireEvent.change(screen.getByLabelText("Search by item name"), { target: { value: "zzz" } });
+    await screen.findByText("No Transfers match.");
+    await expectNoViolations();
+  });
 });
 
 describe("accessibility: Contacts", () => {
@@ -552,6 +579,19 @@ describe("accessibility: dialogs", () => {
     fireEvent.change(screen.getByLabelText("Password of this file"), { target: { value: "correct horse" } });
     fireEvent.click(screen.getByRole("button", { name: "Continue" }));
     await screen.findByRole("alertdialog", { name: "Replace this Device's identity?" });
+    await expectNoViolations();
+  });
+
+  it("has none in My ID inside Settings, once copied and when it could not be copied", async () => {
+    const copyText = vi.fn().mockResolvedValueOnce(undefined).mockRejectedValue(new Error("no"));
+    await start(fakeApi({ copyText }));
+    open("Settings");
+    await screen.findByRole("img", { name: "QR code of the share link" });
+    fireEvent.click(screen.getByRole("button", { name: "Copy ID" }));
+    await screen.findByText("Copied");
+    await expectNoViolations();
+    fireEvent.click(screen.getByRole("button", { name: "Copy link" }));
+    await screen.findByText("Could not copy. Select the text and copy it by hand.");
     await expectNoViolations();
   });
 
