@@ -1,5 +1,6 @@
 import { useState } from "react";
 import type { Api } from "./api";
+import { Hint } from "./Banner";
 import { t } from "./i18n";
 import { TextComposer, useFocusWhenLeft } from "./TextComposer";
 import { baseName } from "./transfers";
@@ -15,13 +16,13 @@ export function SelectBox({
   onChange: () => void;
 }) {
   return (
-    <label className="select">
+    <label>
       <input
         type="checkbox"
         checked={checked}
         onChange={onChange}
         aria-label={t("selection.selectLabel", { name })}
-      />{" "}
+      />
       {t("selection.select")}
     </label>
   );
@@ -82,48 +83,54 @@ export function SelectionBar({
   };
 
   return (
-    <div className="selection">
-      <p role="status">
+    <div className="bs-selbar">
+      <p role="status" className="selbar__c">
         {ids.length === 1 ? t("selection.one") : t("selection.many", { count: ids.length })}
       </p>
       {composing ? (
-        <TextComposer
-          send={(text) => (ids.length === 1 ? api.sendText(ids[0], text) : api.sendTextBatch(ids, text))}
-          onSent={() => {
-            setComposing(false);
-            onSent();
-          }}
-          onBack={() => setComposing(false)}
-        />
+        <div className="selbar__compose">
+          <TextComposer
+            send={(text) => (ids.length === 1 ? api.sendText(ids[0], text) : api.sendTextBatch(ids, text))}
+            onSent={() => {
+              setComposing(false);
+              onSent();
+            }}
+            onBack={() => setComposing(false)}
+          />
+        </div>
       ) : (
-      <div className="actions">
-        {files.length > 0 ? (
-          <button type="button" onClick={() => send()} disabled={busy}>
-            {t("selection.sendQueued", { names: files.map(baseName).join(", ") })}
+        <div className="bs-btns">
+          {files.length > 0 ? (
+            <button type="button" className="bs-btn bs-btn--pri" onClick={() => send()} disabled={busy}>
+              {t("selection.sendQueued", { names: files.map(baseName).join(", ") })}
+            </button>
+          ) : (
+            <>
+              <button type="button" className="bs-btn bs-btn--pri" onClick={() => send(api.pickFiles)} disabled={busy}>
+                {t("send.chooseFiles")}
+              </button>
+              <button
+                type="button"
+                onClick={() => send(() => api.pickFolder().then((folder) => (folder === null ? null : [folder])))}
+                disabled={busy}
+              >
+                {t("send.chooseFolder")}
+              </button>
+              <button type="button" ref={writeText} onClick={() => setComposing(true)} disabled={busy}>
+                {t("send.writeText")}
+              </button>
+            </>
+          )}
+          <button type="button" onClick={onClear} disabled={busy}>
+            {t("selection.clear")}
           </button>
-        ) : (
-          <>
-            <button type="button" onClick={() => send(api.pickFiles)} disabled={busy}>
-              {t("send.chooseFiles")}
-            </button>
-            <button
-              type="button"
-              onClick={() => send(() => api.pickFolder().then((folder) => (folder === null ? null : [folder])))}
-              disabled={busy}
-            >
-              {t("send.chooseFolder")}
-            </button>
-            <button type="button" ref={writeText} onClick={() => setComposing(true)} disabled={busy}>
-              {t("send.writeText")}
-            </button>
-          </>
-        )}
-        <button type="button" onClick={onClear} disabled={busy}>
-          {t("selection.clear")}
-        </button>
-      </div>
+        </div>
       )}
-      {error !== null && <p role="alert">{error}</p>}
+      {error !== null && (
+        <Hint tone="err" icon="err" role="alert">
+          {error}
+        </Hint>
+      )}
     </div>
   );
 }

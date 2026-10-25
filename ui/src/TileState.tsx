@@ -1,3 +1,4 @@
+import { Icon } from "./Icon";
 import { t } from "./i18n";
 
 /** The id of the words a tile says besides its name, which the tile is described by. */
@@ -25,10 +26,24 @@ export function TileState({
 }) {
   return (
     <span id={tileStateId(deviceId)} className="tile-state">
-      {badge && <span className="badge">{t("contacts.badge")}</span>}
-      {print !== null && <span className="note">{print}</span>}
-      {nearby && <span className="note">{t("home.nearby")}</span>}
-      {picked && <span className="note">{t("selection.selected")}</span>}
+      {print !== null && <span className="bs-fp">{print}</span>}
+      {(badge || nearby || picked) && (
+        <span className="bs-tags">
+          {badge && <span className="bs-badge">{t("contacts.badge")}</span>}
+          {nearby && (
+            <span>
+              <Icon name="dot" size={12} />
+              {t("home.nearby")}
+            </span>
+          )}
+          {picked && (
+            <span>
+              <Icon name="check" size={14} />
+              {t("selection.selected")}
+            </span>
+          )}
+        </span>
+      )}
     </span>
   );
 }
