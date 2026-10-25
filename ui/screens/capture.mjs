@@ -62,9 +62,13 @@ try {
   const wanted = views.filter((v) => only.size === 0 || only.has(v.id));
   if (wanted.length === 0) throw new Error(`No view matches: ${[...only].join(", ")}`);
 
-  // A full run starts clean; a run of some views leaves the others as they were.
-  if (only.size === 0) await rm(OUT, { recursive: true, force: true });
+  // A full run starts clean (for its own theme); a run of some views leaves the others as they were.
   await mkdir(OUT, { recursive: true });
+  if (only.size === 0) {
+    for (const f of await readdir(OUT)) {
+      if (f.endsWith(".png") && f.endsWith(".dark.png") === dark) await rm(`${OUT}/${f}`);
+    }
+  }
 
   const shoot = async (view, size, name) => {
     const page = await context.newPage();
