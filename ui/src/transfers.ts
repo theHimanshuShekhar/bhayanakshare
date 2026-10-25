@@ -347,7 +347,7 @@ export const OFFER_WARNINGS = {
 } as const satisfies Record<OfferWarning, readonly MessageKey[]>;
 
 /**
- * "1 name will be changed to characters every system allows …", or once the Transfer is `done`
+ * "1 name will be changed to characters every system allows …", or once the Transfer is over (`done`)
  * (a row, History), "1 name was changed …".
  */
 export function adjustedNamesText(count: number, done = false): string {

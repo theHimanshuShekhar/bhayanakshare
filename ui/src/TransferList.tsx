@@ -12,6 +12,7 @@ import {
   canResend,
   canRetry,
   formatSize,
+  isOver,
   isPreparing,
   percent,
   skippedLinksText,
@@ -198,7 +199,7 @@ function TransferRow({
           <p className="bs-row__m">{skippedLinksText(x.skippedLinks)}</p>
         )}
         {x.role === "receiver" && x.adjustedNames > 0 && (
-          <p className="bs-row__m">{adjustedNamesText(x.adjustedNames, x.state.kind === "completed")}</p>
+          <p className="bs-row__m">{adjustedNamesText(x.adjustedNames, isOver(x.state))}</p>
         )}
         {savedTo !== null && <p className="bs-row__m">{t("transfer.savedTo", { path: savedTo })}</p>}
         {showFailed && <p role="alert">{t("transfer.showInFolderFailed")}</p>}

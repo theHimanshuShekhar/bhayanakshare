@@ -311,7 +311,7 @@ function HistoryRow({
   if (x.kind === "files") {
     details.push(x.file_count === 1 ? t("history.fileOne") : t("history.files", { count: x.file_count }));
   }
-  if (x.role === "receiver" && x.adjusted_names > 0) details.push(adjustedNamesText(x.adjusted_names, x.state.kind === "completed"));
+  if (x.role === "receiver" && x.adjusted_names > 0) details.push(adjustedNamesText(x.adjusted_names, isOver(x.state)));
 
   return (
     <li className="bs-row">
