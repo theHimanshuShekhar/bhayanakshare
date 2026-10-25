@@ -1,7 +1,9 @@
 import { useEffect, useState } from "react";
 import type { Api } from "./api";
+import { Banner, Hint } from "./Banner";
 import { BUG_REPORT_URL, diagnosticsFileName } from "./diagnostics";
 import { t } from "./i18n";
+import { SwitchRow } from "./SwitchRow";
 
 const reasonOf = (e: unknown) => (e instanceof Error ? e.message : String(e));
 
@@ -51,49 +53,55 @@ export function DiagnosticsSettings({ api }: { api: Api }) {
   };
 
   return (
-    <section aria-labelledby="diagnostics-heading">
-      <h3 id="diagnostics-heading">{t("diagnostics.heading")}</h3>
-      <p>{t("diagnostics.body")}</p>
-      <p>
-        <input
+    <section className="sect" aria-labelledby="diagnostics-heading">
+      <h3 className="bs-h2" id="diagnostics-heading">
+        {t("diagnostics.heading")}
+      </h3>
+      <div className="sbody">
+        <div className="srow">
+          <p>{t("diagnostics.body")}</p>
+        </div>
+        <SwitchRow
           id="debug-logging"
-          type="checkbox"
+          label={t("diagnostics.debug")}
+          hint={t("diagnostics.debugHint")}
           checked={debug === true}
           disabled={debug === null}
-          aria-describedby="debug-logging-hint"
-          onChange={(e) => chooseDebug(e.target.checked)}
-        />{" "}
-        <label htmlFor="debug-logging" className="inline">
-          {t("diagnostics.debug")}
-        </label>
-        <span id="debug-logging-hint" className="note">
-          {t("diagnostics.debugHint")}
-        </span>
-      </p>
-      {debugError !== null && <p role="alert">{debugError}</p>}
-      <p>
-        <button type="button" disabled={busy} onClick={exportDiagnostics}>
-          {t("diagnostics.export")}
-        </button>
-      </p>
-      {savedTo !== null && <p role="status">{t("diagnostics.exported", { path: savedTo })}</p>}
-      {exportError !== null && <p role="alert">{exportError}</p>}
-      <p>
-        <a
-          href={BUG_REPORT_URL}
-          aria-describedby="report-hint"
-          onClick={(e) => {
-            // The webview must not navigate away from the app.
-            e.preventDefault();
-            api.openUrl(BUG_REPORT_URL).catch(() => {});
-          }}
-        >
-          {t("diagnostics.report")}
-        </a>
-        <span id="report-hint" className="note">
-          {t("diagnostics.reportHint")}
-        </span>
-      </p>
+          error={debugError}
+          onChange={chooseDebug}
+        />
+        <div className="srow">
+          <div className="bs-btns">
+            <button type="button" disabled={busy} onClick={exportDiagnostics}>
+              {t("diagnostics.export")}
+            </button>
+          </div>
+          {savedTo !== null && (
+            <Banner kind="ok" role="status">
+              {t("diagnostics.exported", { path: savedTo })}
+            </Banner>
+          )}
+          {exportError !== null && (
+            <Banner kind="err" role="alert">
+              {exportError}
+            </Banner>
+          )}
+          <Hint>
+            <a
+              href={BUG_REPORT_URL}
+              aria-describedby="report-hint"
+              onClick={(e) => {
+                // The webview must not navigate away from the app.
+                e.preventDefault();
+                api.openUrl(BUG_REPORT_URL).catch(() => {});
+              }}
+            >
+              {t("diagnostics.report")}
+            </a>{" "}
+            <span id="report-hint">{t("diagnostics.reportHint")}</span>
+          </Hint>
+        </div>
+      </div>
     </section>
   );
 }

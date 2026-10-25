@@ -114,7 +114,7 @@ describe("the announcer", () => {
     const device = await start();
     await device.transfer("sender", { kind: "offered" });
     await device.transfer("sender", { kind: "failed", reason: "The connection dropped." });
-    expect(said().at(-1)).toBe("photo.jpg to Mum: Could not send. The connection dropped.");
+    expect(said().at(-1)).toBe("photo.jpg to Mum: Failed. The Transfer stopped because of an unexpected error: The connection dropped; if it keeps happening, export diagnostics in Settings.");
     expect(within(announcer()).queryByRole("alert")).toBeNull();
   });
 
@@ -161,7 +161,7 @@ describe("the announcer", () => {
     await member(1, PEER_ID, { kind: "transferring" });
     expect(said()).toHaveLength(1);
     await member(2, DAD, { kind: "failed", reason: "Gone." });
-    expect(said().at(-1)).toBe("photo.jpg to Dad: Could not send. Gone.");
+    expect(said().at(-1)).toBe("photo.jpg to Dad: Failed. The Transfer stopped because of an unexpected error: Gone; if it keeps happening, export diagnostics in Settings.");
     await member(1, PEER_ID, { kind: "completed", saved_to: null });
     expect(said().at(-1)).toBe("photo.jpg to 2 Devices: 1 of 2 delivered, 1 failed");
   });
@@ -169,7 +169,7 @@ describe("the announcer", () => {
   it("goes by a Contact's name", async () => {
     const device = await start(fakeApi({}, [contact({ id: PEER_ID, nickname: "Mum" })]));
     await device.transfer("sender", { kind: "offered" });
-    expect(said()).toEqual(["photo.jpg to Mum: Waiting for Mum…"]);
+    expect(said()).toEqual(["photo.jpg to Mum: Waiting for Mum to answer."]);
   });
 
   it("takes its words back after a while, so that it does not pile up", async () => {
@@ -204,7 +204,7 @@ describe("the announcer", () => {
       });
     await sent(2);
     await sent(3);
-    expect(said()).toEqual(["a.txt to Mum: Waiting for Mum…", "a.txt to Mum: Waiting for Mum…"]);
+    expect(said()).toEqual(["a.txt to Mum: Waiting for Mum to answer.", "a.txt to Mum: Waiting for Mum to answer."]);
   });
 });
 
@@ -223,7 +223,7 @@ describe("the announcer: copying", () => {
     await start(fakeApi({ copyText: () => Promise.reject(new Error("no")) }));
     fireEvent.click(screen.getByRole("button", { name: "Copy ID" }));
     const alert = await screen.findByRole("alert");
-    expect(alert.textContent).toBe("Could not copy. Select the text and copy it by hand.");
+    expect(alert.textContent).toBe("Could not copy to the clipboard; select the text and copy it by hand.");
     expect(said()).toEqual([]);
     expect(within(alert.closest("p")!).getByRole("button", { name: "Copy ID" })).toBeTruthy();
   });

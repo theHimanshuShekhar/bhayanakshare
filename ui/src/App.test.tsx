@@ -113,7 +113,7 @@ describe("sending", () => {
 
     await device.transfer("sender", { kind: "offered" });
     expect(screen.getByText("photo.jpg to K3QF-7XNA")).toBeTruthy();
-    expect(screen.getByText("Waiting for K3QF-7XNA…")).toBeTruthy();
+    expect(screen.getByText("Waiting for K3QF-7XNA to answer.")).toBeTruthy();
   });
 
   it("sends several chosen files as one Transfer", async () => {
@@ -168,11 +168,11 @@ describe("sending", () => {
     await device.transfer("sender", { kind: "offered" });
     await device.push({ type: "preparing", transfer_id: TRANSFER, preparing: true });
     expect(screen.getByText("Preparing the files for Mum…")).toBeTruthy();
-    expect(screen.queryByText("Waiting for Mum…")).toBeNull();
+    expect(screen.queryByText("Waiting for Mum to answer.")).toBeNull();
 
     // Done hashing before the answer: back to waiting for it.
     await device.push({ type: "preparing", transfer_id: TRANSFER, preparing: false });
-    expect(screen.getByText("Waiting for Mum…")).toBeTruthy();
+    expect(screen.getByText("Waiting for Mum to answer.")).toBeTruthy();
 
     // Or the answer comes first: accepted, and still preparing.
     await device.push({ type: "preparing", transfer_id: TRANSFER, preparing: true });
@@ -198,7 +198,7 @@ describe("sending", () => {
   it("tells the Sender how many links were skipped, and not the Receiver", async () => {
     const device = await start();
     await device.transfer("sender", { kind: "offered" }, null, { skipped_links: 3 });
-    expect(screen.getByText("3 links skipped")).toBeTruthy();
+    expect(screen.getByText("3 links to other files were not sent.")).toBeTruthy();
 
     await device.push({
       type: "transfer",
@@ -218,12 +218,12 @@ describe("sending", () => {
       expires_at: EXPIRES_AT,
       state: { kind: "offered" },
     });
-    expect(screen.getByText("1 link skipped")).toBeTruthy();
+    expect(screen.getByText("1 link to another file was not sent.")).toBeTruthy();
     cleanup();
 
     const received = await start();
     await received.transfer("receiver", { kind: "accepted" }, null, { skipped_links: 3 });
-    expect(screen.queryByText(/links skipped/)).toBeNull();
+    expect(screen.queryByText(/links to other files were not sent/)).toBeNull();
   });
 
   it("sends nothing when the file picker is cancelled", async () => {
@@ -241,7 +241,7 @@ describe("sending", () => {
       fakeApi({ sendFiles: vi.fn(() => Promise.reject("a Device ID is 52 characters of base32")) }),
     );
     await sendPhoto(device);
-    expect((await screen.findByRole("alert")).textContent).toContain("Could not send.");
+    expect((await screen.findByRole("alert")).textContent).toContain("Could not start the Transfer (");
     expect(screen.getByRole("alert").textContent).toContain("52 characters");
     expect(screen.getByRole("dialog")).toBeTruthy();
   });
@@ -300,7 +300,58 @@ describe("sending", () => {
       expires_at: EXPIRES_AT,
       state: { kind: "failed", reason: "The other Device went away." },
     });
-    expect(screen.getByText("Could not send. The other Device went away.")).toBeTruthy();
+    expect(screen.getByText("The connection to K3QF-7XNA stopped before the files were ready, and a Transfer cannot resume from that point; send it again.")).toBeTruthy();
+  });
+});
+
+describe("a failed Transfer", () => {
+  const CANT_REACH = "K3QF-7XNA could not be reached; check that it is online and running BhayanakShare, then try again.";
+
+  it("shows the word Failed with the reason's sentence under it, in an error row", async () => {
+    const device = await start();
+    await device.transfer("sender", {
+      kind: "failed",
+      reason: "Could not reach the receiving Device. It may be offline, or one of you may have no internet connection.",
+    });
+    const row = screen.getByText("photo.jpg to K3QF-7XNA").closest("li")!;
+    expect(row.className).toContain("bs-row--err");
+    const failed = within(row).getByText("Failed");
+    const why = within(row).getByText(CANT_REACH);
+    // The word first, the sentence under it.
+    expect(failed.compareDocumentPosition(why) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
+
+  it("words a reason by the side that shows it", async () => {
+    const stalled = "The Transfer made no progress for 24 hours, so it was given up.";
+    const sender = await start();
+    await sender.transfer("sender", { kind: "failed", reason: stalled });
+    expect(screen.getByText("No progress for 24 hours, so the Transfer was stopped; send it again.")).toBeTruthy();
+    cleanup();
+
+    const receiver = await start();
+    await receiver.transfer("receiver", { kind: "failed", reason: stalled });
+    expect(
+      screen.getByText(
+        "No progress for 24 hours, so the Transfer was stopped and the partly received files were deleted; ask K3QF-7XNA to send it again.",
+      ),
+    ).toBeTruthy();
+  });
+
+  it("shows the name of the file that changed, and the catch-all for a reason nobody knows", async () => {
+    const changed = await start();
+    await changed.transfer("sender", { kind: "failed", reason: "A file changed on the sending Device: docs/plan.txt" });
+    expect(
+      screen.getByText("A file on the sending Device changed or went missing: docs/plan.txt; send the Transfer again."),
+    ).toBeTruthy();
+    cleanup();
+
+    const unknown = await start();
+    await unknown.transfer("sender", { kind: "failed", reason: "Disk on fire." });
+    expect(
+      screen.getByText(
+        "The Transfer stopped because of an unexpected error: Disk on fire; if it keeps happening, export diagnostics in Settings.",
+      ),
+    ).toBeTruthy();
   });
 });
 
@@ -382,7 +433,7 @@ describe("receiving", () => {
     );
     await device.transfer("receiver", { kind: "offered" });
 
-    expect((await screen.findByRole("alert")).textContent).toBe("Needs 2 KiB, only 512 B free");
+    expect((await screen.findByRole("alert")).textContent).toBe("There is not enough space in this save folder: it needs 2 KiB and only 512 B is free; free some space or choose another folder.");
     expect((screen.getByRole("button", { name: "Accept" }) as HTMLButtonElement).disabled).toBe(true);
     // Declining is always possible.
     fireEvent.click(screen.getByRole("button", { name: "Decline" }));
@@ -397,7 +448,7 @@ describe("receiving", () => {
     await device.transfer("receiver", { kind: "offered" });
 
     expect((await screen.findByRole("alert")).textContent).toBe(
-      "Some paths are too long for this save folder",
+      "Some file paths would be too long for this save folder; choose a folder with a shorter path.",
     );
     expect((screen.getByRole("button", { name: "Accept" }) as HTMLButtonElement).disabled).toBe(true);
 
@@ -410,7 +461,7 @@ describe("receiving", () => {
     const device = await start();
     await device.transfer("receiver", { kind: "offered" }, null, { adjusted_names: 7 });
     // The Offer sheet, and the Transfer's row behind it. Accept stays possible: it is no error.
-    expect(await screen.findAllByText("7 names adjusted")).toHaveLength(2);
+    expect(await screen.findAllByText(/^7 names (will be|were) changed to characters every system allows/)).toHaveLength(2);
     expect((screen.getByRole("button", { name: "Accept" }) as HTMLButtonElement).disabled).toBe(false);
 
     cleanup();
@@ -419,7 +470,7 @@ describe("receiving", () => {
     await one.transfer("receiver", { kind: "completed", saved_to: "/home/me/photo.jpg" }, null, {
       adjusted_names: 1,
     });
-    expect(screen.getByText("1 name adjusted")).toBeTruthy();
+    expect(screen.getByText("1 name was changed to characters every system allows (for example “:” becomes “_”).")).toBeTruthy();
     cleanup();
 
     const plain = await start();
@@ -449,11 +500,11 @@ describe("receiving", () => {
     );
     const device = await start(fakeApi({ checkOffer }));
     await device.transfer("receiver", { kind: "offered" });
-    await screen.findByText(/Needs 2 KiB/);
+    await screen.findByText(/it needs 2 KiB/);
     expect(checkOffer).toHaveBeenLastCalledWith(TRANSFER, null);
 
     fireEvent.click(screen.getByRole("button", { name: "Change the save folder for this file" }));
-    await waitFor(() => expect(screen.queryByText(/Needs 2 KiB/)).toBeNull());
+    await waitFor(() => expect(screen.queryByText(/it needs 2 KiB/)).toBeNull());
     expect(checkOffer).toHaveBeenLastCalledWith(TRANSFER, "/mnt/big");
     expect(screen.getByRole("dialog").textContent).toContain("/mnt/big");
     const accept = screen.getByRole("button", { name: "Accept" }) as HTMLButtonElement;
@@ -519,7 +570,7 @@ describe("receiving", () => {
     );
     await device.transfer("receiver", { kind: "offered" });
     fireEvent.click(await screen.findByRole("button", { name: "Accept" }));
-    expect((await screen.findByRole("alert")).textContent).toContain("Could not answer the Offer");
+    expect((await screen.findByRole("alert")).textContent).toContain("Your answer did not reach K3QF-7XNA (");
   });
 
   it("shows progress while receiving and offers Show in folder when done", async () => {
@@ -593,7 +644,7 @@ describe("cancelling, expiry and the Offer countdown", () => {
     await device.push({ type: "progress", transfer_id: TRANSFER, bytes: 512, total: 2048, at: 5_000 });
 
     await device.transfer("receiver", { kind: "reconnecting" });
-    expect(screen.getByText("Lost contact with K3QF-7XNA. Reconnecting…")).toBeTruthy();
+    expect(screen.getByText("Lost contact with K3QF-7XNA, so BhayanakShare keeps trying to reconnect.")).toBeTruthy();
     expect(screen.getByRole("progressbar").getAttribute("value")).toBe("512");
     expect(screen.getByRole("button", { name: "Cancel photo.jpg" })).toBeTruthy();
 
@@ -631,14 +682,14 @@ describe("cancelling, expiry and the Offer countdown", () => {
     );
     await device.transfer("sender", { kind: "offered" });
     fireEvent.click(screen.getByRole("button", { name: "Cancel photo.jpg" }));
-    expect((await screen.findByRole("alert")).textContent).toContain("can no longer be cancelled");
+    expect((await screen.findByRole("alert")).textContent).toContain("Too late to cancel: the files are already being saved.");
   });
 
   it("shows an expired Offer on both sides, with one-click resend for the Sender", async () => {
     const device = await start();
     await device.transfer("sender", { kind: "offered" });
     await device.transfer("sender", { kind: "expired" });
-    expect(screen.getByText("K3QF-7XNA did not answer in time. The Offer expired.")).toBeTruthy();
+    expect(screen.getByText("K3QF-7XNA did not answer within 10 minutes, so the Offer expired; send it again to retry.")).toBeTruthy();
 
     fireEvent.click(screen.getByRole("button", { name: "Send again: photo.jpg" }));
     expect(device.api.resendTransfer).toHaveBeenCalledWith(TRANSFER);
@@ -653,7 +704,7 @@ describe("cancelling, expiry and the Offer countdown", () => {
     await screen.findByRole("dialog");
     await device.transfer("receiver", { kind: "expired" });
     expect(screen.queryByRole("dialog")).toBeNull();
-    expect(screen.getByText("The Offer expired before you answered.")).toBeTruthy();
+    expect(screen.getByText("You did not answer within 10 minutes, so the Offer expired; ask K3QF-7XNA to send it again.")).toBeTruthy();
     expect(screen.queryByRole("button", { name: /again/ })).toBeNull();
   });
 
@@ -664,7 +715,7 @@ describe("cancelling, expiry and the Offer countdown", () => {
     await device.transfer("sender", { kind: "expired" });
     fireEvent.click(screen.getByRole("button", { name: "Send again: photo.jpg" }));
     const alert = await screen.findByRole("alert");
-    expect(alert.textContent).toContain("Could not send it again");
+    expect(alert.textContent).toContain("Could not start the Transfer again (");
     expect(alert.textContent).toContain("is not a file");
   });
 
@@ -686,10 +737,10 @@ describe("cancelling, expiry and the Offer countdown", () => {
       batch_id: null,
       size: 2048,
       expires_at: EXPIRES_AT,
-      state: { kind: "failed", reason: "The other Device already has too many Offers from you." },
+      state: { kind: "failed", reason: "The other Device already has too many Offers from you waiting for an answer. Try again once it has answered some." },
     });
     const list = screen.getByRole("region", { name: "Transfers" });
-    expect(within(list).getByText(/Could not send\. The other Device already has too many Offers/)).toBeTruthy();
+    expect(within(list).getByText(/already has 5 Offers from this Device waiting/)).toBeTruthy();
   });
 });
 
@@ -832,7 +883,7 @@ describe("Contacts", () => {
     await screen.findByRole("button", { name: "Send to Mum" });
     await device.transfer("sender", { kind: "offered" });
     expect(screen.getByText("photo.jpg to Mum")).toBeTruthy();
-    expect(screen.getByText("Waiting for Mum…")).toBeTruthy();
+    expect(screen.getByText("Waiting for Mum to answer.")).toBeTruthy();
 
     await device.push({
       type: "transfer",
@@ -1286,9 +1337,9 @@ describe("the hint that local discovery could not start", () => {
   const HIDDEN = "You're Hidden, so Nearby Devices aren't shown.";
   const DOCS =
     "https://github.com/theHimanshuShekhar/bhayanakshare/blob/main/docs/firewall.md#when-home-says-local-discovery-could-not-start";
-  const DOWN = /Local discovery could not start, so Nearby Devices can't be found\./;
-  const DOWN_HIDDEN = /Local discovery could not start, so people who have your ID can't find this Device/;
-  const PORT = /UDP 5353/;
+  const DOWN = /Nearby Devices can't be found because another program is using UDP port 5353/;
+  const DOWN_HIDDEN = /People who have your ID can't find this Device on the network because another program is using UDP port 5353/;
+  const PORT = /UDP port 5353/;
   const PORT_IN_USE: DiscoveryStatus = { state: "unavailable", reason: "port_in_use" };
   const WORKING: DiscoveryStatus = { state: "working" };
 
@@ -1321,10 +1372,10 @@ describe("the hint that local discovery could not start", () => {
   it("gives each reason its own words", async () => {
     const device = await start();
     await device.discoveryChanges({ state: "unavailable", reason: "no_interface" });
-    expect(screen.getByText(/No network connection that can use it was found/)).toBeTruthy();
+    expect(screen.getByText(/there is no network connection to use/)).toBeTruthy();
     await device.discoveryChanges({ state: "unavailable", reason: "other" });
-    expect(screen.getByText(/The system reported an error/)).toBeTruthy();
-    expect(screen.queryByText(/No network connection that can use it was found/)).toBeNull();
+    expect(screen.getByText(/the system reported an error/)).toBeTruthy();
+    expect(screen.queryByText(/there is no network connection to use/)).toBeNull();
   });
 
   it("goes away when discovery recovers", async () => {
@@ -1395,7 +1446,7 @@ describe("the hint that local discovery could not start", () => {
     const before = screen.getAllByRole("status").filter((el) => el.textContent !== "").length;
     await device.discoveryChanges(PORT_IN_USE);
     const hint = screen.getByText(DOWN, { exact: false });
-    expect(hint.closest("[role=status]")).toBe(hint);
+    expect(hint.closest("[role=status]")).not.toBeNull();
     expect(screen.getAllByRole("status").filter((el) => el.textContent !== "").length).toBe(before);
   });
 
@@ -1554,7 +1605,7 @@ describe("Visibility", () => {
 
   it("says so, and offers no choice, when the setting cannot be read", async () => {
     await open(fakeApi({ visibility: () => Promise.reject(new Error("no")) }));
-    expect((await screen.findByRole("alert")).textContent).toContain("Could not read");
+    expect((await screen.findByRole("alert")).textContent).toContain("Who can see this Device could not be read");
     for (const radio of screen.getAllByRole("radio")) {
       expect((radio as HTMLInputElement).disabled).toBe(true);
     }
@@ -1686,7 +1737,7 @@ describe("first run", () => {
 
     const note = await screen.findByRole("status");
     expect(note.textContent).toBe(
-      "Setup is done, but start at login could not be switched on: This system has no login items. You can try again in Settings.",
+      "Setup is done, but start at login could not be switched on (This system has no login items); try again in Settings.",
     );
     // Everything else was kept and first run is done; nothing is in the way of going on.
     expect(device.api.setDeviceName).toHaveBeenCalled();
@@ -1760,7 +1811,7 @@ describe("first run", () => {
     fireEvent.change(nameField(), { target: { value: "\u0007" } });
     fireEvent.click(getStarted());
     expect((await screen.findByRole("alert")).textContent).toBe(
-      "Could not save the name. A Device Name cannot be empty.",
+      "Could not save the name (A Device Name cannot be empty); try again.",
     );
     expect(device.api.setVisibility).not.toHaveBeenCalled();
     expect(device.api.finishFirstRun).not.toHaveBeenCalled();
@@ -1777,7 +1828,7 @@ describe("first run", () => {
     await screen.findByText("/mnt/big");
     fireEvent.click(getStarted());
     expect((await screen.findByRole("alert")).textContent).toBe(
-      "Could not use that folder. BhayanakShare cannot write to it.",
+      "BhayanakShare cannot write to that folder; choose one you have permission to write in.",
     );
     expect(device.api.finishFirstRun).not.toHaveBeenCalled();
     expect(screen.getByRole("heading", { name: "Welcome to BhayanakShare" })).toBeTruthy();
@@ -1790,7 +1841,7 @@ describe("first run", () => {
       .mockResolvedValue(null);
     await begin(needed({ finishFirstRun }));
     fireEvent.click(getStarted());
-    expect((await screen.findByRole("alert")).textContent).toBe("Could not finish setting up. disk full");
+    expect((await screen.findByRole("alert")).textContent).toBe("Could not finish setting up (disk full); try again.");
     fireEvent.click(getStarted());
     await screen.findByText("AAAA-AAAA");
     expect(finishFirstRun).toHaveBeenCalledTimes(2);
@@ -1798,7 +1849,7 @@ describe("first run", () => {
 
   it("does not keep a Visibility it could only guess: unread and not chosen, it is left as it is", async () => {
     const device = await begin(needed({ visibility: () => Promise.reject(new Error("no")) }));
-    expect((await screen.findByRole("alert")).textContent).toContain("Could not read some of this Device's settings");
+    expect((await screen.findByRole("alert")).textContent).toContain("Some of this Device's saved settings could not be read");
     // Offered as the default, and not a reason to overwrite whatever the Device has.
     expect(radio("People who have my ID").checked).toBe(true);
     fireEvent.click(getStarted());
@@ -1946,7 +1997,7 @@ describe("Settings sections", () => {
       fireEvent.change(input, { target: { value: "Bob's PC" } });
       fireEvent.click(save());
       expect((await screen.findByRole("alert")).textContent).toBe(
-        "Could not save the name. the Device is shutting down",
+        "Could not save the name (the Device is shutting down); try again.",
       );
       expect(input.value).toBe("Bob's PC");
       expect(saying().filter((el) => el.textContent?.startsWith("Saved"))).toHaveLength(0);
@@ -1954,7 +2005,7 @@ describe("Settings sections", () => {
 
     it("says so, and offers no editing, when the name cannot be read", async () => {
       await open(fakeApi({ deviceName: () => Promise.reject(new Error("no")) }));
-      expect((await screen.findByRole("alert")).textContent).toContain("Could not read this Device's name");
+      expect((await screen.findByRole("alert")).textContent).toContain("This Device's name could not be read");
       expect((screen.getByRole("textbox", { name: "Device Name" }) as HTMLInputElement).disabled).toBe(true);
       expect(save().disabled).toBe(true);
     });
@@ -1997,14 +2048,14 @@ describe("Settings sections", () => {
       const dht = await box();
       fireEvent.click(dht);
       expect((await screen.findByRole("alert")).textContent).toBe(
-        "Could not change the public DHT. the Device is shutting down",
+        "Could not change the public DHT (the Device is shutting down); try again.",
       );
       expect(dht.checked).toBe(true);
     });
 
     it("says so, and offers no choice, when the setting cannot be read", async () => {
       await open(fakeApi({ publicDht: () => Promise.reject(new Error("no")) }));
-      expect((await screen.findByRole("alert")).textContent).toContain("Could not read whether the public DHT is on");
+      expect((await screen.findByRole("alert")).textContent).toContain("Whether the public DHT is on could not be read");
       expect((screen.getByRole("checkbox", { name: "Public DHT" }) as HTMLInputElement).disabled).toBe(true);
     });
   });
@@ -2050,7 +2101,7 @@ describe("Settings sections", () => {
       );
       await shown();
       fireEvent.click(change());
-      expect((await screen.findByRole("alert")).textContent).toBe("Could not use that folder. That is not a folder.");
+      expect((await screen.findByRole("alert")).textContent).toBe("That is a file, not a folder; choose a folder.");
       expect(await shown()).toBe("/home/me/Downloads/BhayanakShare");
     });
 
@@ -2067,12 +2118,12 @@ describe("Settings sections", () => {
 
     it("words each reason a folder is refused, and an unknown one with the Device's message", async () => {
       const cases: [string, string][] = [
-        ["not_absolute", "Could not use that folder. Its path must be a full path, not a relative one."],
-        ["not_a_folder", "Could not use that folder. That is not a folder."],
-        ["cannot_create", "Could not use that folder. It does not exist and could not be created."],
-        ["not_writable", "Could not use that folder. BhayanakShare cannot write to it."],
-        ["not_text", "Could not use that folder. Its path cannot be used."],
-        ["other", "Could not use that folder. the Device is shutting down"],
+        ["not_absolute", "That path is not a full path; choose a folder with the Change… button."],
+        ["not_a_folder", "That is a file, not a folder; choose a folder."],
+        ["cannot_create", "That folder does not exist and could not be created; choose another folder."],
+        ["not_writable", "BhayanakShare cannot write to that folder; choose one you have permission to write in."],
+        ["not_text", "That folder's path contains characters BhayanakShare cannot use; choose another folder."],
+        ["other", "Could not use that folder (the Device is shutting down); choose another one."],
       ];
       for (const [kind, words] of cases) {
         await open(
@@ -2089,7 +2140,7 @@ describe("Settings sections", () => {
 
     it("says so when the folder cannot be read", async () => {
       await open(fakeApi({ saveFolder: () => Promise.reject(new Error("no")) }));
-      expect((await screen.findByRole("alert")).textContent).toContain("Could not read the folder");
+      expect((await screen.findByRole("alert")).textContent).toContain("The folder for received files could not be read");
       expect((change() as HTMLButtonElement).disabled).toBe(true);
     });
   });
@@ -2105,7 +2156,7 @@ describe("Settings sections", () => {
 
     it("says when the version cannot be read", async () => {
       await open(fakeApi({ appVersion: () => Promise.reject(new Error("no")) }));
-      expect(await updates().findByText("The version of BhayanakShare could not be read.")).toBeTruthy();
+      expect(await updates().findByText("The version of BhayanakShare could not be read; reinstalling from the release page fixes it.")).toBeTruthy();
     });
 
     it("looks now, and says when nothing newer was found", async () => {
@@ -2194,7 +2245,7 @@ describe("Settings sections", () => {
     it("says when the check could not be made", async () => {
       await open(fakeApi({ checkForUpdate: vi.fn(() => Promise.reject(new Error("offline"))) }));
       fireEvent.click(check());
-      expect((await screen.findByRole("alert")).textContent).toBe("Could not check for updates. Are you online?");
+      expect((await screen.findByRole("alert")).textContent).toBe("Could not check for updates because there is no connection to the update server; check that you are online.");
       expect(check().disabled).toBe(false);
     });
 
@@ -2285,7 +2336,7 @@ describe("Diagnostics", () => {
   it("says so, and offers no switch, when the setting cannot be read", async () => {
     await open(fakeApi({ debugLogging: () => Promise.reject(new Error("no")) }));
     expect((await screen.findByRole("alert")).textContent).toBe(
-      "Could not read whether debug logging is on.",
+      "Whether debug logging is on could not be read; check the switch.",
     );
     expect((screen.getByRole("checkbox", { name: "Debug logging" }) as HTMLInputElement).disabled).toBe(true);
   });
@@ -2317,7 +2368,7 @@ describe("Diagnostics", () => {
     );
     fireEvent.click(exportButton());
     expect((await screen.findByRole("alert")).textContent).toBe(
-      "Could not export diagnostics. writing the diagnostics zip: No space left on device",
+      "Could not export diagnostics (writing the diagnostics zip: No space left on device); try again, or choose another folder.",
     );
     expect(saying()).toHaveLength(0);
     // It can be tried again.
@@ -2431,8 +2482,8 @@ describe("quitting", () => {
     const device = await start();
     await device.shell({ type: "confirm_quit", active: 2 });
     const dialog = screen.getByRole("dialog", { name: "Quit BhayanakShare?" });
-    expect(dialog.textContent).toContain("2 Transfers are in progress.");
-    expect(dialog.textContent).toContain("They'll resume when BhayanakShare next runs.");
+    expect(dialog.textContent).toContain("2 Transfers are in progress; they will resume when BhayanakShare next runs.");
+    expect(dialog.textContent).toContain("they will resume when BhayanakShare next runs.");
 
     fireEvent.click(within(dialog).getByRole("button", { name: "Keep running" }));
     expect(screen.queryByRole("dialog")).toBeNull();
@@ -2442,8 +2493,8 @@ describe("quitting", () => {
   it("says one Transfer in the singular", async () => {
     const device = await start();
     await device.shell({ type: "confirm_quit", active: 1 });
-    expect(screen.getByRole("dialog").textContent).toContain("A Transfer is in progress.");
-    expect(screen.getByRole("dialog").textContent).toContain("It'll resume");
+    expect(screen.getByRole("dialog").textContent).toContain("A Transfer is in progress; it will resume when BhayanakShare next runs.");
+    expect(screen.getByRole("dialog").textContent).toContain("it will resume");
   });
 
   it("quits on confirmation and shows Saving progress with nothing left to press", async () => {
@@ -2559,7 +2610,7 @@ describe("Batches", () => {
     select("Mum");
     select("Dad");
     fireEvent.click(screen.getByRole("button", { name: "Choose files…" }));
-    expect((await screen.findByRole("alert")).textContent).toContain("Could not send. no");
+    expect((await screen.findByRole("alert")).textContent).toContain("Could not start the Transfer (no); try again.");
     expect(screen.getByText("2 Devices selected")).toBeTruthy();
   });
 
@@ -2595,7 +2646,7 @@ describe("Batches", () => {
     expect(toggle.getAttribute("aria-expanded")).toBe("true");
     expect(screen.getByText("photo.jpg to Mum")).toBeTruthy();
     expect(screen.getByText("Dad declined.")).toBeTruthy();
-    expect(screen.getByText("Sis accepted. Waiting for a turn to send…")).toBeTruthy();
+    expect(screen.getByText("Sis accepted. Only 3 Devices receive from a Batch at once, so this one is waiting for a turn.")).toBeTruthy();
 
     fireEvent.click(toggle);
     expect(screen.queryByText("Dad declined.")).toBeNull();
@@ -2611,7 +2662,7 @@ describe("Batches", () => {
     fireEvent.click(screen.getByRole("button", { name: "Cancel all of photo.jpg" }));
     expect(device.api.cancelBatch).toHaveBeenCalledWith(BATCH);
 
-    const waiting = screen.getByText("Dad accepted. Waiting for a turn to send…").closest("li")!;
+    const waiting = screen.getByText("Dad accepted. Only 3 Devices receive from a Batch at once, so this one is waiting for a turn.").closest("li")!;
     fireEvent.click(within(waiting).getByRole("button", { name: "Cancel photo.jpg" }));
     expect(device.api.cancelTransfer).toHaveBeenCalledWith("22".repeat(16));
   });
@@ -2639,7 +2690,7 @@ describe("Batches", () => {
     await member(device, 3, MUM, { kind: "offered" });
     const list = screen.getByRole("region", { name: "Transfers" });
     expect(within(list).queryByText(/The other Device went away/)).toBeNull();
-    expect(screen.getByText("Waiting for Mum…")).toBeTruthy();
+    expect(screen.getByText("Waiting for Mum to answer.")).toBeTruthy();
     expect(screen.getByText("0 of 2 delivered, 1 declined, 1 in progress")).toBeTruthy();
   });
 
@@ -2706,7 +2757,7 @@ describe("Text", () => {
     fireEvent.click(screen.getByRole("button", { name: "Write text…" }));
     write("keep me");
     fireEvent.click(screen.getByRole("button", { name: "Send text" }));
-    expect((await screen.findByRole("alert")).textContent).toContain("Could not send. There is no text to send.");
+    expect((await screen.findByRole("alert")).textContent).toContain("Could not start the Transfer (There is no text to send); try again.");
     expect((screen.getByLabelText("Text") as HTMLTextAreaElement).value).toBe("keep me");
   });
 
@@ -2901,11 +2952,13 @@ describe("History", () => {
     ]);
     const row = (await screen.findByText("photos and 1 more from Laptop · K3QF-7XNA")).closest("li")!;
     expect(within(row).getByText("Received.")).toBeTruthy();
-    expect(within(row).getByText("5 MiB · 12 files · 2 names adjusted")).toBeTruthy();
+    expect(within(row).getByText("5 MiB · 12 files · 2 names were changed to characters every system allows (for example “:” becomes “_”).")).toBeTruthy();
     // The times are the user's own format; each is there.
     const times = within(row).getByText(/^Offered .* · Accepted .* · Finished /);
     expect(times.textContent).toContain(new Date(1_700_000_005_000).toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" }));
-    expect(within(row).getByText(`Saved to ${SAVED}`, { exact: false })).toBeTruthy();
+    // The path is its own element, in the monospace face, so the words and the path are two texts.
+    expect(within(row).getByText(SAVED).className).toContain("bs-mono");
+    expect(row.textContent).toContain(`Saved to ${SAVED}`);
 
     fireEvent.click(within(row).getByRole("button", { name: "Show in folder: photos and 1 more" }));
     expect(device.api.showInFolder).toHaveBeenCalledWith(SAVED);
@@ -2915,8 +2968,21 @@ describe("History", () => {
     const device = fakeApi();
     await openHistory(device, [single({}, false)]);
     const row = (await screen.findByText("photo.jpg from Laptop · K3QF-7XNA")).closest("li")!;
-    expect(within(row).getByText("File no longer at saved location")).toBeTruthy();
+    expect(within(row).getByText(/^The saved file is no longer at .*; it was moved or deleted\.$/)).toBeTruthy();
     expect(within(row).queryByRole("button", { name: /in folder/ })).toBeNull();
+  });
+
+  it("shows a failed Transfer as the word Failed with the sentence for its reason under it", async () => {
+    const device = fakeApi();
+    await openHistory(device, [
+      single({ role: "sender", state: { kind: "failed", reason: "The other Device went away." } }),
+    ]);
+    const row = (await screen.findByText("photo.jpg to Laptop · K3QF-7XNA")).closest("li")!;
+    const failed = within(row).getByText("Failed");
+    const why = within(row).getByText(
+      "The connection to Laptop · K3QF-7XNA stopped before the files were ready, and a Transfer cannot resume from that point; send it again.",
+    );
+    expect(failed.compareDocumentPosition(why) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
   });
 
   it("shows a text in full as plain text, with Copy, whichever way it went", async () => {
@@ -2955,7 +3021,7 @@ describe("History", () => {
 
     fireEvent.click(within(entry).getByRole("button", { name: /Show each Device/ }));
     expect(within(entry).getByText("report.txt to Device 0 · K3QF-7XNA")).toBeTruthy();
-    expect(within(entry).getByText("Could not send. Could not reach the receiving Device.")).toBeTruthy();
+    expect(within(entry).getByText("Device 2 · 2222-2222 could not be reached; check that it is online and running BhayanakShare, then try again.")).toBeTruthy();
     expect(within(entry).getByText("Device 1 · 1111-1111 declined.")).toBeTruthy();
   });
 
@@ -3012,7 +3078,7 @@ describe("History", () => {
     const device = fakeApi({ deleteHistoryTransfer: () => Promise.reject(new Error("it has not ended")) });
     await openHistory(device, [single()]);
     fireEvent.click(await screen.findByRole("button", { name: /^Delete/ }));
-    expect((await screen.findByRole("alert")).textContent).toContain("Could not delete it. it has not ended");
+    expect((await screen.findByRole("alert")).textContent).toContain("Could not delete this entry (it has not ended); try again.");
   });
 
   it("deletes a Batch once all of it has ended, and not before", async () => {
@@ -3094,7 +3160,7 @@ describe("History", () => {
     await openHistory(device, [single()]);
     fireEvent.click(await screen.findByRole("button", { name: "Clear History…" }));
     fireEvent.click(within(screen.getByRole("alertdialog")).getByRole("button", { name: "Clear History" }));
-    expect((await screen.findByRole("alert")).textContent).toContain("Could not clear History. disk full");
+    expect((await screen.findByRole("alert")).textContent).toContain("Could not clear History (disk full); try again.");
     expect(screen.getByRole("alertdialog")).toBeTruthy();
   });
 
@@ -3115,7 +3181,7 @@ describe("History", () => {
   it("says when History could not be read", async () => {
     const device = fakeApi({ history: () => Promise.reject(new Error("db")) });
     await openHistory(device, []);
-    expect((await screen.findByRole("alert")).textContent).toBe("Could not load your History.");
+    expect((await screen.findByRole("alert")).textContent).toBe("Your History could not be read; restart BhayanakShare, and export diagnostics in Settings if it still fails.");
   });
 });
 
@@ -3134,7 +3200,7 @@ describe("version mismatches", () => {
     const device = await start();
     await refused(device, "peer");
     expect(
-      screen.getByText(/Alice's Laptop · K3QF-7XNA is running an older BhayanakShare. Ask them to update./),
+      screen.getByText(/Alice's Laptop · K3QF-7XNA is running an older BhayanakShare; ask them to update./),
     ).toBeTruthy();
     expect(screen.queryByRole("button", { name: "Update now" })).toBeNull();
   });
@@ -3158,7 +3224,7 @@ describe("version mismatches", () => {
     );
     await refused(device, "this_device");
     fireEvent.click(screen.getByRole("button", { name: "Update now" }));
-    expect((await screen.findByText("Installing version 9.9.9…")).getAttribute("role")).toBe("status");
+    expect((await screen.findByText("Installing version 9.9.9…")).closest("[role=status]")).not.toBeNull();
     expect(device.api.checkForUpdate).toHaveBeenCalledTimes(1);
     // The version it was shown is the version it installs.
     expect(device.api.installUpdate).toHaveBeenCalledWith("9.9.9");
@@ -3179,7 +3245,7 @@ describe("version mismatches", () => {
     const device = await start(fakeApi({ checkForUpdate: () => Promise.reject("error sending request") }));
     await refused(device, "this_device");
     fireEvent.click(screen.getByRole("button", { name: "Update now" }));
-    expect((await screen.findByRole("alert")).textContent).toBe("Could not check for updates. Are you online?");
+    expect((await screen.findByRole("alert")).textContent).toBe("Could not check for updates because there is no connection to the update server; check that you are online.");
     // The button is there to try again.
     expect((screen.getByRole("button", { name: "Update now" }) as HTMLButtonElement).disabled).toBe(false);
   });
@@ -3194,7 +3260,7 @@ describe("version mismatches", () => {
     await refused(device, "this_device");
     fireEvent.click(screen.getByRole("button", { name: "Update now" }));
     expect((await screen.findByRole("alert")).textContent).toBe(
-      "The update's signature did not check out, so it was not installed.",
+      "The update's signature did not check out, so it was not installed; try again later, and report a problem if it keeps happening.",
     );
   });
 
@@ -3208,7 +3274,7 @@ describe("version mismatches", () => {
     await refused(device, "this_device");
     fireEvent.click(screen.getByRole("button", { name: "Update now" }));
     expect((await screen.findByRole("alert")).textContent).toContain(
-      "2 Transfers are in progress. They stop for the restart and resume when BhayanakShare is back.",
+      "2 Transfers are in progress; they stop for the restart and resume when BhayanakShare is back.",
     );
     expect(device.api.installUpdate).not.toHaveBeenCalled();
 
@@ -3225,7 +3291,7 @@ describe("version mismatches", () => {
     );
     await refused(device, "this_device");
     fireEvent.click(screen.getByRole("button", { name: "Update now" }));
-    expect((await screen.findByRole("alert")).textContent).toContain("A Transfer is in progress. It stops");
+    expect((await screen.findByRole("alert")).textContent).toContain("A Transfer is in progress; it stops");
     fireEvent.click(screen.getByRole("button", { name: "Not now" }));
     expect(screen.queryByRole("alert")).toBeNull();
     expect(device.api.installUpdate).not.toHaveBeenCalled();
@@ -3253,7 +3319,7 @@ describe("updates", () => {
 
   it("offers an AppImage to install the new version and restart, and installs only when asked", async () => {
     const device = await start(found({ type: "install", version: "0.2.0" }));
-    expect((await screen.findByText(/Update available \(version 0\.2\.0\)/)).getAttribute("role")).toBe("status");
+    expect((await screen.findByText(/Update available \(version 0\.2\.0\)/)).closest("[role=status]")).not.toBeNull();
     expect(screen.queryByRole("link", { name: "Open the release page" })).toBeNull();
     expect(device.api.installUpdate).not.toHaveBeenCalled();
 
@@ -3289,16 +3355,16 @@ describe("updates", () => {
 
   it("says in words why the update could not be installed, and lets the user try again", async () => {
     const cases: [string, string][] = [
-      ["version_changed", "A newer version came out in the meantime. Check again to install it."],
-      ["none_pending", "There is no update to install. Check again."],
-      ["already_installing", "An update is already being installed."],
-      ["quitting", "BhayanakShare is closing, so nothing was installed."],
-      ["not_self_updating", "This install is updated from the release page, not by BhayanakShare itself."],
-      ["download_failed", "Could not download the update. Are you online?"],
-      ["signature_invalid", "The update's signature did not check out, so it was not installed."],
-      ["install_failed", "Could not install the update."],
+      ["version_changed", "A newer version came out in the meantime; check for updates again to install it."],
+      ["none_pending", "There is no update to install; check for updates first."],
+      ["already_installing", "An update is already being installed; wait for it to finish."],
+      ["quitting", "BhayanakShare is closing, so nothing was installed; start it again and check for updates."],
+      ["not_self_updating", "This install is updated from the release page, not by BhayanakShare itself; open the release page to get the new version."],
+      ["download_failed", "Could not download the update because the connection failed; check that you are online and try again."],
+      ["signature_invalid", "The update's signature did not check out, so it was not installed; try again later, and report a problem if it keeps happening."],
+      ["install_failed", "Could not install the update; try again, or install it from the release page."],
       // Not a kind: never shown as it is, as it could be English or name a path.
-      ["No such file /home/me/x.AppImage", "Could not install the update."],
+      ["No such file /home/me/x.AppImage", "Could not install the update; try again, or install it from the release page."],
     ];
     for (const [kind, words] of cases) {
       const device = await start(
@@ -3319,7 +3385,7 @@ describe("updates", () => {
     const device = await start(found({ type: "install", version: "0.2.0" }, { transfersInProgress: () => Promise.resolve(3) }));
     fireEvent.click(await screen.findByRole("button", { name: "Install and restart" }));
     expect((await screen.findByRole("alert")).textContent).toContain(
-      "3 Transfers are in progress. They stop for the restart and resume when BhayanakShare is back.",
+      "3 Transfers are in progress; they stop for the restart and resume when BhayanakShare is back.",
     );
     expect(device.api.installUpdate).not.toHaveBeenCalled();
 
@@ -3331,7 +3397,7 @@ describe("updates", () => {
   it("says Transfer, not Transfers, for one in progress, and does nothing on not now", async () => {
     const device = await start(found({ type: "install", version: "0.2.0" }, { transfersInProgress: () => Promise.resolve(1) }));
     fireEvent.click(await screen.findByRole("button", { name: "Install and restart" }));
-    expect((await screen.findByRole("alert")).textContent).toContain("A Transfer is in progress. It stops for the restart");
+    expect((await screen.findByRole("alert")).textContent).toContain("A Transfer is in progress; it stops for the restart");
 
     fireEvent.click(screen.getByRole("button", { name: "Not now" }));
     expect(screen.queryByRole("alert")).toBeNull();
@@ -3470,7 +3536,7 @@ describe("Identity", () => {
     it("refuses two passwords that differ", async () => {
       const device = await startExport();
       fillExport(PASSWORD, PASSWORD + "!");
-      expect((await screen.findByRole("alert")).textContent).toBe("The two passwords are not the same.");
+      expect((await screen.findByRole("alert")).textContent).toBe("The two passwords do not match; type them again.");
       expect(device.api.pickIdentitySavePath).not.toHaveBeenCalled();
       expect(device.api.exportIdentity).not.toHaveBeenCalled();
     });
@@ -3517,7 +3583,7 @@ describe("Identity", () => {
       await startExport(fakeApi({ exportIdentity: vi.fn(() => fail("other", "writing /ro/id.bhid: read-only")) }));
       fillExport(PASSWORD);
       expect((await screen.findByRole("alert")).textContent).toBe(
-        "Something went wrong. writing /ro/id.bhid: read-only",
+        "Could not finish (writing /ro/id.bhid: read-only); try again.",
       );
     });
 
@@ -3572,7 +3638,7 @@ describe("Identity", () => {
       const device = await startImport(fakeApi({ transfersInProgress: vi.fn(() => Promise.resolve(2)) }));
       await toConfirmation(device);
       const warning = screen.getByRole("alertdialog", { name: "Replace this Device's identity?" });
-      expect(warning.textContent).toContain("2 Transfers are in progress. They will stop and won't resume.");
+      expect(warning.textContent).toContain("2 Transfers are in progress; they will stop and won't resume.");
       // Part of what the dialog is described by, like the rest of the warning.
       const body = document.getElementById(warning.getAttribute("aria-describedby") ?? "");
       expect(body?.textContent).toContain("2 Transfers are in progress");
@@ -3582,7 +3648,7 @@ describe("Identity", () => {
       const device = await startImport(fakeApi({ transfersInProgress: vi.fn(() => Promise.resolve(1)) }));
       await toConfirmation(device);
       expect(screen.getByRole("alertdialog").textContent).toContain(
-        "A Transfer is in progress. It will stop and won't resume.",
+        "A Transfer is in progress; it will stop and won't resume.",
       );
     });
 
@@ -3619,7 +3685,7 @@ describe("Identity", () => {
       );
       typeInto("Password of this file", "nope");
       fireEvent.click(screen.getByRole("button", { name: "Continue" }));
-      expect((await screen.findByRole("alert")).textContent).toBe("Wrong password, or the file is damaged.");
+      expect((await screen.findByRole("alert")).textContent).toBe("That password does not open this file, or the file is damaged; check the password and try again.");
       expect(screen.queryByRole("alertdialog")).toBeNull();
       expect(device.api.importIdentity).not.toHaveBeenCalled();
       // Back in the field, to try again.
@@ -3630,7 +3696,7 @@ describe("Identity", () => {
       await startImport(fakeApi({ checkIdentityImport: vi.fn(() => fail("not_an_identity_file")) }));
       typeInto("Password of this file", PASSWORD);
       fireEvent.click(screen.getByRole("button", { name: "Continue" }));
-      expect((await screen.findByRole("alert")).textContent).toBe("That is not a BhayanakShare identity file.");
+      expect((await screen.findByRole("alert")).textContent).toBe("That is not a BhayanakShare identity file; choose a .bhid file made by Export identity.");
     });
 
     it("says when the secret store cannot take the key, at the warning", async () => {
@@ -3640,7 +3706,7 @@ describe("Identity", () => {
       await toConfirmation(device);
       fireEvent.click(screen.getByRole("button", { name: "Replace and restart" }));
       expect((await screen.findByRole("alert")).textContent).toBe(
-        "The secret key could not be stored. the keychain is locked",
+        "The secret key could not be saved to the system keychain (the keychain is locked); unlock the keychain and try again.",
       );
       expect(screen.queryByText("Restarting…")).toBeNull();
       // Nothing was replaced, so the user may try again or cancel.
@@ -3663,7 +3729,7 @@ describe("Identity", () => {
       );
       typeInto("Password of this file", PASSWORD);
       fireEvent.click(screen.getByRole("button", { name: "Continue" }));
-      expect((await findStatus()).textContent).toContain("Nothing needs to change");
+      expect((await findStatus()).textContent).toContain("nothing needs to change");
       expect(screen.queryByRole("alertdialog")).toBeNull();
       expect(device.api.importIdentity).not.toHaveBeenCalled();
     });

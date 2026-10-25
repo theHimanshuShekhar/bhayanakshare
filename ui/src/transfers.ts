@@ -2,6 +2,7 @@
 // only: the React side just feeds events in and renders the result.
 
 import type { BatchId, DeviceEvent, Role, TransferId, TransferKind, TransferState } from "./bindings";
+import { failureMessage } from "./failures";
 import { t, type MessageKey } from "./i18n";
 
 export interface TransferView {
@@ -177,18 +178,60 @@ export function canRetry(view: TransferView): boolean {
   return view.role === "sender" && view.batch !== null && view.state.kind === "failed";
 }
 
-/** Sentence for a Transfer's current state, e.g. "Waiting for Mum…" (or a Fingerprint). */
+/** What a Transfer's row can say besides how it failed or was cancelled: its state, or Preparing. */
+export type StateWording = Exclude<TransferState["kind"], "failed" | "cancelled"> | "preparing";
+
+/**
+ * The catalogue message (sections 1 and 2) for each state, by the role showing it. Every state of
+ * every role has one, so a state added in the core fails the typecheck until it is worded. A
+ * state a role never shows is worded like the one it looks like to that role: a Sender keeps
+ * showing Transferring while the Receiver reconnects or saves, and a Receiver shows Accepted
+ * while its Sender is waiting for a turn.
+ */
+export const STATE_MESSAGES: Record<Role, Record<StateWording, MessageKey>> = {
+  sender: {
+    offered: "transfer.sending.offered",
+    accepted: "transfer.sending.accepted",
+    waiting: "transfer.sending.waiting",
+    preparing: "transfer.sending.preparing",
+    transferring: "transfer.sending.transferring",
+    reconnecting: "transfer.sending.transferring",
+    saving: "transfer.sending.transferring",
+    declined: "transfer.sending.declined",
+    completed: "transfer.sending.completed",
+    expired: "transfer.sending.expired",
+  },
+  receiver: {
+    offered: "transfer.receiving.offered",
+    accepted: "transfer.receiving.accepted",
+    waiting: "transfer.receiving.accepted",
+    preparing: "transfer.receiving.preparing",
+    transferring: "transfer.receiving.transferring",
+    reconnecting: "transfer.receiving.reconnecting",
+    saving: "transfer.receiving.saving",
+    declined: "transfer.receiving.declined",
+    completed: "transfer.receiving.completed",
+    expired: "transfer.receiving.expired",
+  },
+};
+
+/** Who stopped a Transfer, as its row says it: this Device's user, or the other Device. */
+export const CANCELLED_MESSAGES: Record<"you" | "other", MessageKey> = {
+  you: "transfer.cancelledByYou",
+  other: "transfer.cancelledByPeer",
+};
+
+/**
+ * Sentence for a Transfer's current state, e.g. "Waiting for Mum to answer." (`peer` is the other
+ * Device as its tile shows it). A failure is its cause and what to do (see `failureMessage`),
+ * which a row shows under the word "Failed".
+ */
 export function statusText(x: Pick<TransferView, "role" | "state">, peer: string, preparing = false): string {
-  const side = x.role === "sender" ? "sending" : "receiving";
-  const params = {
-    peer,
-    reason: x.state.kind === "failed" ? x.state.reason : "",
-  };
+  if (x.state.kind === "failed") return failureMessage(x.state.reason, x.role, peer);
   if (x.state.kind === "cancelled") {
-    return t(x.state.by === x.role ? "transfer.cancelledByYou" : "transfer.cancelledByPeer", params);
+    return t(CANCELLED_MESSAGES[x.state.by === x.role ? "you" : "other"], { peer });
   }
-  const state = preparing ? "preparing" : x.state.kind;
-  return t(`transfer.${side}.${state}` as MessageKey, params);
+  return t(STATE_MESSAGES[x.role][preparing ? "preparing" : x.state.kind], { peer });
 }
 
 /** A Batch as the Sender sees it: its Transfers, grouped. */
@@ -289,9 +332,34 @@ export function fingerprint(deviceId: string): string {
 
 const UNITS = ["B", "KiB", "MiB", "GiB", "TiB", "PiB"];
 
-/** "1 name adjusted" or "7 names adjusted": names the Receiver changed to be able to save them. */
-export function adjustedNamesText(count: number): string {
-  return count === 1 ? t("names.adjustedOne") : t("names.adjusted", { count });
+/** The warnings an Offer can carry (catalogue section 5), for the Receiver and for the Sender's row. */
+export type OfferWarning = "no_room" | "paths_too_long" | "names_adjusted" | "links_skipped";
+
+/**
+ * The message for each warning: one, or the singular and then the plural form. A warning added
+ * to the Offer sheet fails the typecheck until it is worded.
+ */
+export const OFFER_WARNINGS = {
+  no_room: ["offer.noRoom"],
+  paths_too_long: ["offer.pathsTooLong"],
+  names_adjusted: ["names.willChangeOne", "names.willChange"],
+  links_skipped: ["transfer.linkSkipped", "transfer.linksSkipped"],
+} as const satisfies Record<OfferWarning, readonly MessageKey[]>;
+
+/**
+ * "1 name will be changed to characters every system allows …", or once the Transfer is over (`done`)
+ * (a row, History), "1 name was changed …".
+ */
+export function adjustedNamesText(count: number, done = false): string {
+  if (done) return count === 1 ? t("names.adjustedOne") : t("names.adjusted", { count });
+  const [one, many] = OFFER_WARNINGS.names_adjusted;
+  return count === 1 ? t(one) : t(many, { count });
+}
+
+/** "1 link to another file was not sent." or "3 links to other files were not sent." */
+export function skippedLinksText(count: number): string {
+  const [one, many] = OFFER_WARNINGS.links_skipped;
+  return count === 1 ? t(one) : t(many, { count });
 }
 
 /** 1536 becomes "1.5 KiB". */

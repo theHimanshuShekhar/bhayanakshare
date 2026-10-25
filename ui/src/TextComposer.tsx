@@ -1,4 +1,5 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
+import { Banner, Hint } from "./Banner";
 import { t } from "./i18n";
 
 /**
@@ -19,18 +20,28 @@ export function useFocusWhenLeft(composing: boolean) {
  * Where text to send is written. Sending is up to `send`, which offers it to whoever the caller
  * has chosen; `onSent` follows once it has been offered. Text that is only blanks is not sent,
  * but what is sent is exactly what was typed.
+ *
+ * On its own it is a field with its buttons under it. With `inSheet` it is the whole of a
+ * sheet's body and button bar, for the dialog to put under its heading: anything it is given as
+ * `children` goes at the top of the body, above the text.
  */
 export function TextComposer({
   send,
   onSent,
   onBack,
   disabled = false,
+  inSheet = false,
+  children,
 }: {
   send: (text: string) => Promise<unknown>;
   onSent: () => void;
   onBack: () => void;
   /** The caller is not ready for text to go out (no Device chosen). */
   disabled?: boolean;
+  /** Lay out as the body and button bar of a sheet. */
+  inSheet?: boolean;
+  /** Shown above the text, in the body of the sheet. */
+  children?: ReactNode;
 }) {
   const [text, setText] = useState("");
   const [busy, setBusy] = useState(false);
@@ -52,30 +63,57 @@ export function TextComposer({
     }
   };
 
-  return (
+  const fields = (
     <>
-      <label htmlFor="text-to-send">{t("text.label")}</label>
-      <textarea
-        id="text-to-send"
-        ref={field}
-        value={text}
-        onChange={(e) => setText(e.target.value)}
-        aria-describedby="text-to-send-hint"
-        rows={6}
-        spellCheck
-      />
-      <p id="text-to-send-hint" className="note">
-        {t("text.hint")}
-      </p>
-      {error !== null && <p role="alert">{error}</p>}
-      <div className="actions">
-        <button type="button" onClick={submit} disabled={busy || disabled || text.trim() === ""}>
-          {t("text.send")}
-        </button>
-        <button type="button" onClick={onBack} disabled={busy}>
-          {t("text.back")}
-        </button>
+      {children}
+      <div className="bs-field">
+        <label className="bs-label" htmlFor="text-to-send">
+          {t("text.label")}
+        </label>
+        <textarea
+          id="text-to-send"
+          className="bs-input bs-ta"
+          ref={field}
+          value={text}
+          onChange={(e) => setText(e.target.value)}
+          aria-describedby="text-to-send-hint"
+          rows={6}
+          spellCheck
+        />
+        <Hint id="text-to-send-hint">{t("text.hint")}</Hint>
       </div>
+      {error !== null && (
+        <Banner kind="err" role="alert">
+          {error}
+        </Banner>
+      )}
     </>
+  );
+  const buttons = (
+    <>
+      <button
+        type="button"
+        className="bs-btn bs-btn--pri"
+        onClick={submit}
+        disabled={busy || disabled || text.trim() === ""}
+      >
+        {t("text.send")}
+      </button>
+      <button type="button" onClick={onBack} disabled={busy}>
+        {t("text.back")}
+      </button>
+    </>
+  );
+
+  return inSheet ? (
+    <>
+      <div className="bs-sheet__b">{fields}</div>
+      <div className="bs-sheet__a">{buttons}</div>
+    </>
+  ) : (
+    <div className="stack">
+      {fields}
+      <div className="bs-btns">{buttons}</div>
+    </div>
   );
 }

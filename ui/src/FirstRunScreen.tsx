@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState, type FormEvent } from "react";
 import type { Api, Visibility } from "./api";
 import { AutostartField } from "./AutostartField";
+import { Banner, FieldError, Hint } from "./Banner";
 import { DeviceNameField } from "./DeviceNameField";
 import { t, type MessageKey } from "./i18n";
 import { SaveFolderField } from "./SaveFolderField";
@@ -48,7 +49,7 @@ export function FirstRunScreen({ api, onDone }: { api: Api; onDone: () => void }
     };
   }, [api]);
 
-  if (defaults === null) return <p role="status">{t("firstRun.starting")}</p>;
+  if (defaults === null) return <Hint role="status">{t("firstRun.starting")}</Hint>;
   return <FirstRunForm api={api} defaults={defaults} loadError={loadError} onDone={onDone} />;
 }
 
@@ -153,37 +154,60 @@ function FirstRunForm({
   };
 
   return (
-    <section aria-labelledby="first-run-heading">
-      <h2 id="first-run-heading">{t("firstRun.heading")}</h2>
-      <p>{t("firstRun.intro")}</p>
-      {loadError && <p role="alert">{t("firstRun.loadFailed")}</p>}
-      <form onSubmit={start}>
-        <DeviceNameField ref={nameField} value={name} invalid={nameError !== null} onChange={setName} />
-        {nameError !== null && <p role="alert">{nameError}</p>}
-        <VisibilityField
-          value={visibility}
-          onChange={(value) => {
-            setVisibility(value);
-            setVisibilityChosen(true);
-          }}
-        />
-        <AutostartField checked={autostart} onChange={setAutostart} />
-        <SaveFolderField folder={picked ?? defaults.folder} disabled={busy} onChange={chooseFolder} />
-        {folderError !== null && <p role="alert">{folderError}</p>}
-        <p className="note">{t("firstRun.privacy")}</p>
-        {error !== null && <p role="alert">{error}</p>}
-        {autostartNote !== null && <p role="status">{autostartNote}</p>}
-        <p>
+    <section className="first-run" aria-labelledby="first-run-heading">
+      <div className="first-run__head">
+        <h2 className="bs-h1" id="first-run-heading">
+          {t("firstRun.heading")}
+        </h2>
+        <p>{t("firstRun.intro")}</p>
+      </div>
+      {loadError && (
+        <Banner kind="err" role="alert">
+          {t("firstRun.loadFailed")}
+        </Banner>
+      )}
+      <form className="first-run__form" onSubmit={start}>
+        <div className="sbody">
+          <div className="srow">
+            <DeviceNameField ref={nameField} value={name} invalid={nameError !== null} error={nameError} onChange={setName} />
+          </div>
+          <div className="srow">
+            <VisibilityField
+              value={visibility}
+              onChange={(value) => {
+                setVisibility(value);
+                setVisibilityChosen(true);
+              }}
+            />
+          </div>
+          <AutostartField checked={autostart} onChange={setAutostart} />
+          <div className="srow">
+            <SaveFolderField folder={picked ?? defaults.folder} disabled={busy} onChange={chooseFolder} />
+            {folderError !== null && <FieldError>{folderError}</FieldError>}
+          </div>
+        </div>
+        <Hint>{t("firstRun.privacy")}</Hint>
+        {error !== null && (
+          <Banner kind="err" role="alert">
+            {error}
+          </Banner>
+        )}
+        {autostartNote !== null && (
+          <Banner kind="warn" role="status">
+            {autostartNote}
+          </Banner>
+        )}
+        <div className="bs-btns">
           {autostartNote === null ? (
-            <button type="submit" disabled={busy}>
+            <button type="submit" className="bs-btn bs-btn--pri" disabled={busy}>
               {t("firstRun.start")}
             </button>
           ) : (
-            <button type="button" onClick={onDone}>
+            <button type="button" className="bs-btn bs-btn--pri" onClick={onDone}>
               {t("firstRun.continue")}
             </button>
           )}
-        </p>
+        </div>
       </form>
     </section>
   );

@@ -64,9 +64,13 @@ use crate::{
     manifest::{self, Manifest},
     names::{adjust_names, numbered},
     protocol::{self, FrameError, Message, OfferKind, spawn_reader, write_frame},
+    reasons::{
+        BAD_OFFER, CANT_FETCH, CANT_KEEP_TEXT, CANT_PREPARE_SPACE, CANT_RECORD, CANT_SAVE, FORGOTTEN, LOST, STALLED,
+        TOO_MUCH, UNEXPECTED, WRONG_FILE,
+    },
     session::{
-        CLOSE_GRACE, FORGOTTEN, Failure, HelloError, LOST, STALLED, Session, Stall, Stop, UNEXPECTED,
-        expect_hello, fail, made_progress, retry_delay, save_progress, stop,
+        CLOSE_GRACE, Failure, HelloError, Session, Stall, Stop, expect_hello, fail, made_progress, retry_delay,
+        save_progress, stop,
     },
     store,
     transfer::{OFFER_TTL_MS, Role, TransferId, TransferKind, TransferState},
@@ -131,13 +135,6 @@ const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// How long a Receiver that cancelled while disconnected tries to tell the Sender.
 const TELL_TIMEOUT: Duration = Duration::from_secs(5);
-
-const BAD_OFFER: &str = "The other Device sent an invalid Offer.";
-const CANT_FETCH: &str = "Could not download the files from the sending Device.";
-const WRONG_FILE: &str = "The sending Device sent different files than it offered.";
-const TOO_MUCH: &str = "The sending Device sent more than it offered.";
-const CANT_SAVE: &str = "Could not save the files to the save folder.";
-const CANT_KEEP_TEXT: &str = "Could not keep the text.";
 
 pub(crate) struct Handler {
     sh: Arc<Shared>,
@@ -345,7 +342,7 @@ async fn flow(
     let first = if auto.is_some() { TransferState::Accepted } else { TransferState::Offered };
     if let Err(e) = sh.begin(&info, first).await {
         sh.pending.lock().unwrap_or_else(|e| e.into_inner()).remove(&info.id);
-        return Err(Failure::with("Could not record the Offer.", e));
+        return Err(Failure::with(CANT_RECORD, e));
     }
     *announced = Some(info.clone());
     if manifest.is_some() {
@@ -644,7 +641,7 @@ async fn drive(
                 Err(e) => {
                     remove_dir(&dir).await;
                     // Not `e`: it names the folder, which is under the save folder.
-                    return Err(Failure::with("Could not prepare space to receive the file.", e.cause()));
+                    return Err(Failure::with(CANT_PREPARE_SPACE, e.cause()));
                 }
             }
         }

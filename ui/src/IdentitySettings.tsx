@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import type { Api, MyId } from "./api";
+import { Banner } from "./Banner";
 import { ExportIdentityDialog } from "./ExportIdentityDialog";
 import { t } from "./i18n";
 import { ImportIdentityDialog } from "./ImportIdentityDialog";
@@ -36,23 +37,33 @@ export function IdentitySettings({ api }: { api: Api }) {
   };
 
   return (
-    <section aria-labelledby="identity-heading">
-      <h3 id="identity-heading">{t("identity.heading")}</h3>
-      <p>{t("identity.body")}</p>
-      {me !== null && (
-        <p>
-          {t("identity.current")}: <strong>{me.fingerprint}</strong>
-        </p>
-      )}
-      {error !== null && <p role="alert">{error}</p>}
-      <p>
-        <button type="button" disabled={me === null} onClick={() => setDialog({ kind: "export" })}>
-          {t("identity.export")}
-        </button>{" "}
-        <button type="button" disabled={me === null} onClick={chooseFile}>
-          {t("identity.import")}
-        </button>
-      </p>
+    <section className="sect" aria-labelledby="identity-heading">
+      <h3 className="bs-h2" id="identity-heading">
+        {t("identity.heading")}
+      </h3>
+      <div className="sbody">
+        <div className="srow">
+          <p>{t("identity.body")}</p>
+          {me !== null && (
+            <p>
+              {t("identity.current")}: <strong className="bs-mono">{me.fingerprint}</strong>
+            </p>
+          )}
+          {error !== null && (
+            <Banner kind="err" role="alert">
+              {error}
+            </Banner>
+          )}
+          <div className="bs-btns">
+            <button type="button" disabled={me === null} onClick={() => setDialog({ kind: "export" })}>
+              {t("identity.export")}
+            </button>
+            <button type="button" disabled={me === null} onClick={chooseFile}>
+              {t("identity.import")}
+            </button>
+          </div>
+        </div>
+      </div>
       {me !== null && dialog?.kind === "export" && (
         <ExportIdentityDialog api={api} fingerprint={me.fingerprint} onClose={() => setDialog(null)} />
       )}

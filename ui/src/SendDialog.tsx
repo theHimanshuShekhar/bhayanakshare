@@ -1,5 +1,6 @@
 import { useRef, useState } from "react";
 import type { Api } from "./api";
+import { Banner, Hint } from "./Banner";
 import { t } from "./i18n";
 import { Sheet } from "./Sheet";
 import { parseShareLink } from "./shareLink";
@@ -66,14 +67,14 @@ export function SendDialog({
     }
   };
 
-  return (
-    <Sheet labelledBy="send-heading" onEscape={onClose} initialFocus={input}>
-      <h2 id="send-heading">
-        {contactName === null ? t("send.heading") : t("send.contactHeading", { name: contactName })}
-      </h2>
-      <label htmlFor="send-to">{t("send.idLabel")}</label>
+  const idField = (
+    <div className="bs-field">
+      <label className="bs-label" htmlFor="send-to">
+        {t("send.idLabel")}
+      </label>
       <input
         id="send-to"
+        className="bs-input bs-mono"
         ref={input}
         value={to}
         // A pasted share link becomes the Device ID in it; its name is of no use here.
@@ -82,58 +83,83 @@ export function SendDialog({
         spellCheck={false}
         autoComplete="off"
       />
-      <p id="send-to-hint" className="note">
-        {t("send.idHint")}
-      </p>
-      {remaining.length > 0 && (
-        <p>
-          {t("send.files")}: {remaining.map(baseName).join(", ")}
-        </p>
-      )}
-      {error !== null && !composing && <p role="alert">{error}</p>}
+      <Hint id="send-to-hint">{t("send.idHint")}</Hint>
+    </div>
+  );
+
+  return (
+    <Sheet labelledBy="send-heading" onEscape={onClose} initialFocus={input}>
+      <h2 id="send-heading" className="bs-sheet__t">
+        {contactName === null ? t("send.heading") : t("send.contactHeading", { name: contactName })}
+      </h2>
       {composing ? (
         <TextComposer
+          inSheet
           send={(text) => api.sendText(to.trim(), text)}
           onSent={onClose}
           onBack={() => setComposing(false)}
           disabled={to.trim() === ""}
-        />
+        >
+          {idField}
+        </TextComposer>
       ) : (
-      <div className="actions">
-        {remaining.length > 0 ? (
-          <button type="button" onClick={() => send()} disabled={busy || to.trim() === ""}>
-            {t("send.sendFiles")}
-          </button>
-        ) : (
-          <>
-            <button
-              type="button"
-              onClick={() => send(api.pickFiles)}
-              disabled={busy || to.trim() === ""}
-            >
-              {t("send.chooseFiles")}
+        <>
+          <div className="bs-sheet__b">
+            {idField}
+            {remaining.length > 0 && (
+              <p>
+                {t("send.files")}: {remaining.map(baseName).join(", ")}
+              </p>
+            )}
+            {error !== null && (
+              <Banner kind="err" role="alert">
+                {error}
+              </Banner>
+            )}
+          </div>
+          <div className="bs-sheet__a">
+            {remaining.length > 0 ? (
+              <button
+                type="button"
+                className="bs-btn bs-btn--pri"
+                onClick={() => send()}
+                disabled={busy || to.trim() === ""}
+              >
+                {t("send.sendFiles")}
+              </button>
+            ) : (
+              <>
+                <button
+                  type="button"
+                  onClick={() => send(api.pickFiles)}
+                  disabled={busy || to.trim() === ""}
+                >
+                  {t("send.chooseFiles")}
+                </button>
+                <button
+                  type="button"
+                  onClick={() =>
+                    send(() => api.pickFolder().then((folder) => (folder === null ? null : [folder])))
+                  }
+                  disabled={busy || to.trim() === ""}
+                >
+                  {t("send.chooseFolder")}
+                </button>
+                <button
+                  type="button"
+                  ref={writeText}
+                  onClick={() => setComposing(true)}
+                  disabled={busy || to.trim() === ""}
+                >
+                  {t("send.writeText")}
+                </button>
+              </>
+            )}
+            <button type="button" onClick={onClose}>
+              {t("send.cancel")}
             </button>
-            <button
-              type="button"
-              onClick={() => send(() => api.pickFolder().then((folder) => (folder === null ? null : [folder])))}
-              disabled={busy || to.trim() === ""}
-            >
-              {t("send.chooseFolder")}
-            </button>
-            <button
-              type="button"
-              ref={writeText}
-              onClick={() => setComposing(true)}
-              disabled={busy || to.trim() === ""}
-            >
-              {t("send.writeText")}
-            </button>
-          </>
-        )}
-        <button type="button" onClick={onClose}>
-          {t("send.cancel")}
-        </button>
-      </div>
+          </div>
+        </>
       )}
     </Sheet>
   );

@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState, type RefObject } from "react";
 import type { Api, Contact } from "./api";
+import { Banner, FieldError, Hint } from "./Banner";
 import { isDeviceId } from "./contacts";
 import { t } from "./i18n";
 import { QrScanner } from "./QrScanner";
@@ -120,20 +121,26 @@ export function AddContactDialog({
       onEscape={onClose}
       initialFocus={checking ? shownFingerprint : idInput}
     >
-      <h2 id="add-contact-heading">
+      <h2 id="add-contact-heading" className="bs-sheet__t">
         {checking ? t("addContact.checkHeading") : t("addContact.heading")}
       </h2>
       {checking ? (
         <>
-          <p>{t("addContact.check")}</p>
-          <p className="fingerprint">
-            <strong ref={shownFingerprint} tabIndex={-1}>
-              {fingerprint(trimmed.toUpperCase())}
-            </strong>
-          </p>
-          {error !== null && <p role="alert">{error}</p>}
-          <div className="actions">
-            <button type="button" onClick={add} disabled={busy}>
+          <div className="bs-sheet__b">
+            <p>{t("addContact.check")}</p>
+            <p className="fpbox">
+              <strong ref={shownFingerprint} tabIndex={-1}>
+                {fingerprint(trimmed.toUpperCase())}
+              </strong>
+            </p>
+            {error !== null && (
+              <Banner kind="err" role="alert">
+                {error}
+              </Banner>
+            )}
+          </div>
+          <div className="bs-sheet__a">
+            <button type="button" className="bs-btn bs-btn--pri" onClick={add} disabled={busy}>
               {t("addContact.confirm")}
             </button>
             <button type="button" onClick={() => setChecking(false)} disabled={busy}>
@@ -143,64 +150,85 @@ export function AddContactDialog({
         </>
       ) : (
         <>
-          <label htmlFor="add-contact-id">{t("addContact.idLabel")}</label>
-          <input
-            id="add-contact-id"
-            ref={idInput}
-            value={id}
-            onChange={(e) => typed(e.target.value)}
-            aria-describedby="add-contact-id-hint"
-            aria-invalid={trimmed !== "" && !valid}
-            spellCheck={false}
-            autoComplete="off"
-          />
-          <p id="add-contact-id-hint" className="note">
-            {t("addContact.idHint")}
-          </p>
-          {trimmed !== "" && !valid && <p role="alert">{t("addContact.idInvalid")}</p>}
-          {wasBadLink && <p role="alert">{t("addContact.badLink")}</p>}
-          {scanning ? (
-            <>
-              <QrScanner onDecoded={scanned} />
-              {notLink && <p role="alert">{t("addContact.scanNotLink")}</p>}
-              <button
+          <div className="bs-sheet__b">
+            <div className="bs-field">
+              <label className="bs-label" htmlFor="add-contact-id">
+                {t("addContact.idLabel")}
+              </label>
+              <input
+                id="add-contact-id"
+                className="bs-input bs-mono"
+                ref={idInput}
+                value={id}
+                onChange={(e) => typed(e.target.value)}
+                aria-describedby="add-contact-id-hint"
+                aria-invalid={trimmed !== "" && !valid}
+                spellCheck={false}
+                autoComplete="off"
+              />
+              <Hint id="add-contact-id-hint">{t("addContact.idHint")}</Hint>
+              {trimmed !== "" && !valid && <FieldError>{t("addContact.idInvalid")}</FieldError>}
+            </div>
+            {wasBadLink && (
+              <Banner kind="err" role="alert">
+                {t("addContact.badLink")}
+              </Banner>
+            )}
+            {scanning ? (
+              <>
+                <QrScanner onDecoded={scanned} />
+                {notLink && (
+                  <Banner kind="err" role="alert">
+                    {t("addContact.scanNotLink")}
+                  </Banner>
+                )}
+                <div className="bs-btns">
+                  <button
+                    type="button"
+                    ref={stopButton}
+                    onClick={() => {
+                      afterScan.current = scanButton;
+                      setScanning(false);
+                    }}
+                  >
+                    {t("addContact.scanStop")}
+                  </button>
+                </div>
+              </>
+            ) : (
+              <div className="bs-btns">
+                <button
                   type="button"
-                  ref={stopButton}
+                  ref={scanButton}
                   onClick={() => {
-                    afterScan.current = scanButton;
-                    setScanning(false);
+                    setNotLink(false);
+                    setScanning(true);
                   }}
                 >
-                {t("addContact.scanStop")}
-              </button>
-            </>
-          ) : (
+                  {t("addContact.scan")}
+                </button>
+              </div>
+            )}
+            <div className="bs-field">
+              <label className="bs-label" htmlFor="add-contact-name">
+                {t("addContact.nameLabel")}
+              </label>
+              <input
+                id="add-contact-name"
+                className="bs-input"
+                value={name}
+                onChange={(e) => setName(e.target.value)}
+                aria-describedby="add-contact-name-hint"
+                maxLength={64}
+                autoComplete="off"
+              />
+              <Hint id="add-contact-name-hint">{t("addContact.nameHint")}</Hint>
+            </div>
+          </div>
+          <div className="bs-sheet__a">
             <button
               type="button"
-              ref={scanButton}
-              onClick={() => {
-                setNotLink(false);
-                setScanning(true);
-              }}
-            >
-              {t("addContact.scan")}
-            </button>
-          )}
-          <label htmlFor="add-contact-name">{t("addContact.nameLabel")}</label>
-          <input
-            id="add-contact-name"
-            value={name}
-            onChange={(e) => setName(e.target.value)}
-            aria-describedby="add-contact-name-hint"
-            maxLength={64}
-            autoComplete="off"
-          />
-          <p id="add-contact-name-hint" className="note">
-            {t("addContact.nameHint")}
-          </p>
-          <div className="actions">
-            <button
-              type="button"
+              className="bs-btn bs-btn--pri"
               onClick={() => {
                 setScanning(false);
                 setChecking(true);

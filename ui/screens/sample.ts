@@ -4,6 +4,7 @@
 
 import type { Contact, Role } from "../src/api";
 import type { HistoryEntry, HistoryTransfer, NearbyDevice, TransferRecord, TransferState } from "../src/bindings";
+import { FAILURE_REASONS } from "../src/failureReasons";
 import { contact, type Unstamped } from "../src/testApi";
 
 /** A Device ID: its Fingerprint, then the rest of its 52 characters. */
@@ -163,7 +164,7 @@ function batch(): HistoryEntry {
       to(1, who(ASHA), { kind: "completed", saved_to: null }),
       to(2, who(WORK), { kind: "completed", saved_to: null }),
       to(3, who(MUM), { kind: "declined" }),
-      to(4, who(MEERA), { kind: "failed", reason: "Meera's tablet could not be reached." }),
+      to(4, who(MEERA), { kind: "failed", reason: FAILURE_REASONS.unreachable }),
     ],
   };
 }
@@ -192,7 +193,7 @@ export const HISTORY: HistoryEntry[] = [
     items: ["build-2026.10.1.zip"],
     size: mib(212),
     created_at: ago(180),
-    state: { kind: "failed", reason: "The connection to Work desktop was lost and could not be restored." },
+    state: { kind: "failed", reason: FAILURE_REASONS.lost },
   }),
   row({
     id: transferId(12),

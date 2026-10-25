@@ -15,6 +15,8 @@ import { ContactsScreen } from "./ContactsScreen";
 import { FirstRunScreen } from "./FirstRunScreen";
 import { useFocusRescue } from "./focusRescue";
 import { HistoryScreen } from "./HistoryScreen";
+import { Banner, Hint } from "./Banner";
+import { BrandMark, Icon } from "./Icon";
 import { MyDeviceId } from "./MyDeviceId";
 import { OfferSheet } from "./OfferSheet";
 import { QuitDialog } from "./QuitDialog";
@@ -31,6 +33,7 @@ import { t, type MessageKey } from "./i18n";
 import {
   DISCOVERY_DOCS_URL,
   FIREWALL_DOCS_URL,
+  NEARBY_HINTS,
   NEARBY_WAIT_MS,
   applyDiscovery,
   applyNearby,
@@ -45,6 +48,9 @@ import { applyVersionNotices } from "./versions";
 
 /** Gives focus to a heading that is there for it (`tabIndex={-1}`). */
 const focusHeading = (id: string) => document.getElementById(id)?.focus();
+
+/** The letter a Device's tile shows in its avatar. */
+const initial = (name: string) => [...name][0] ?? "";
 
 /** Local discovery until the Device says otherwise. */
 const WORKING: DiscoveryStatus = { state: "working" };
@@ -124,7 +130,6 @@ function Screens({ api }: { api: Api }) {
   const [preferred, setPreferred] = useState<TransferId | undefined>();
   // Quit was chosen while Transfers are in progress.
   const [quit, setQuit] = useState<{ active: number; saving: boolean } | null>(null);
-  const current = TABS.find((x) => x.id === tab) ?? TABS[0];
   const offer = pendingOffer(transfers, preferred);
   // The tab on show (none while first run is, or may be, still to do), which the tab bar and the
   // tab's own content follow.
@@ -144,6 +149,7 @@ function Screens({ api }: { api: Api }) {
   const loadContacts = useCallback(() => api.contacts().then(setContacts, () => {}), [api]);
 
   const strangers = nearbyStrangers(nearby, contacts);
+  const noDevices = contacts.length === 0 && strangers.length === 0;
   // Nobody is listed Nearby, and the Device knows why when discovery could not start.
   const down = nearby.length === 0 ? discoveryHint(discovery, visibility === "hidden") : null;
   // The guess points at the page; what is known, at the section for it.
@@ -281,228 +287,269 @@ function Screens({ api }: { api: Api }) {
     loadContacts();
   }, [loadContacts, tab, transfers.order.length, named, nearby]);
 
+  const brand = (
+    <h1 className="brand">
+      <BrandMark />
+      <span>{t("app.name")}</span>
+    </h1>
+  );
+
   return (
     <div className="app">
       <TransferAnnouncements transfers={transfers} contacts={contacts} />
-      <header inert={inert}>
-        <h1>{t("app.name")}</h1>
-        {shownTab !== null && (
-          <nav aria-label={t("nav.label")}>
-            {TABS.map((x) => (
-              <button
-                key={x.id}
-                type="button"
-                aria-current={x.id === tab ? "page" : undefined}
-                onClick={() => setTab(x.id)}
-              >
-                {t(x.label)}
-              </button>
-            ))}
-          </nav>
-        )}
-      </header>
-      {shownTab !== null && (
-        <div inert={inert}>
-          {/* Settings has the banner's place in its Updates section: one notice, one status. */}
-          {shownTab !== "settings" && offeredVersion(update) !== dismissedUpdate && (
-            <UpdateBanner
-              api={api}
-              update={update}
-              busy={updater.busy}
-              onInstall={updater.install}
-              onDismiss={() => setDismissedUpdate(offeredVersion(update))}
-            />
-          )}
-          <VersionNotices
-            contacts={contacts}
-            notices={versionNotices}
-            updating={updater.busy}
-            onUpdateNow={updater.updateNow}
-            onDismiss={(peer) => dispatchVersion({ type: "dismiss_version_notice", peer })}
-          />
-          {shownTab !== "settings" && <UpdateStatus updater={updater} />}
-        </div>
-      )}
-      <main inert={inert}>
-        {firstRunNeeded === true && <FirstRunScreen api={api} onDone={() => setFirstRunNeeded(false)} />}
-        {shownTab === "home" && <p>{t(current.placeholder)}</p>}
-        {shownTab === "home" && (
-          <>
-            <MyDeviceId api={api} />
-            {queued.length > 0 && (
-              <p role="status">
-                {t("queued.banner", { names: queued.map(baseName).join(", ") })}{" "}
-                <button type="button" onClick={() => setQueued([])}>
-                  {t("queued.clear")}
-                </button>
-              </p>
-            )}
-            <section aria-labelledby="devices-heading">
-              <h2 id="devices-heading">{t("home.devices")}</h2>
-              <div className="tiles">
-                {sortedContacts(contacts).map((c) => {
-                  // A Contact that is Nearby shows what it announces until it has a name here.
-                  const here = nearby.find((d) => d.id === c.id);
-                  const name = peerName(c.id, contacts, here?.name ?? null);
-                  const picked = chosen.includes(c.id);
-                  return (
-                    <div key={c.id} className={picked ? "tile-group selected" : "tile-group"}>
-                      <button
-                        type="button"
-                        className="tile"
-                        aria-label={t("home.sendToContact", { name })}
-                        aria-describedby={tileStateId(c.id)}
-                        onClick={() => setSending({ to: c.id, name })}
-                      >
-                        <strong>{name}</strong>
-                        <TileState
-                          deviceId={c.id}
-                          badge
-                          print={fingerprint(c.id)}
-                          nearby={here !== undefined}
-                          picked={picked}
-                        />
-                      </button>
-                      <SelectBox name={name} checked={picked} onChange={() => toggle(c.id)} />
-                    </div>
-                  );
-                })}
-                {strangers.map((d) => {
-                  const label = peerName(d.id, contacts, d.name);
-                  const picked = chosen.includes(d.id);
-                  return (
-                    <div key={d.id} className={picked ? "tile-group selected" : "tile-group"}>
-                      <button
-                        type="button"
-                        className="tile"
-                        aria-label={t("home.sendToNearby", { name: label })}
-                        aria-describedby={tileStateId(d.id)}
-                        onClick={() => setSending({ to: d.id, name: label })}
-                      >
-                        <strong>{d.name ?? fingerprint(d.id)}</strong>
-                        <TileState
-                          deviceId={d.id}
-                          badge={false}
-                          print={d.name !== null ? fingerprint(d.id) : null}
-                          nearby
-                          picked={picked}
-                        />
-                      </button>
-                      <button
-                        type="button"
-                        aria-label={t("home.saveAsContactLabel", { name: label })}
-                        onClick={() => setSaving({ id: d.id, name: d.name })}
-                      >
-                        {t("home.saveAsContact")}
-                      </button>
-                      <SelectBox name={label} checked={picked} onChange={() => toggle(d.id)} />
-                    </div>
-                  );
-                })}
+      {/* First run (and the moment before the Device says whether it is needed) is one centred
+          column; the tabs have the sidebar. */}
+      <div className={shownTab === null ? "first" : "shell"}>
+        <header className={shownTab === null ? undefined : "side"} inert={inert}>
+          {brand}
+          {shownTab !== null && (
+            <nav aria-label={t("nav.label")}>
+              {TABS.map((x) => (
                 <button
+                  key={x.id}
                   type="button"
-                  className="tile"
-                  onClick={() => setSending({ to: "", name: null })}
+                  aria-current={x.id === tab ? "page" : undefined}
+                  onClick={() => setTab(x.id)}
                 >
-                  {t("home.sendToId")}
+                  {t(x.label)}
                 </button>
-              </div>
-              {chosen.length > 0 && (
-                <SelectionBar
+              ))}
+            </nav>
+          )}
+        </header>
+        <div className={shownTab === null ? undefined : "page"}>
+          {shownTab !== null && (
+            <div className="notices" inert={inert}>
+              {/* Settings has the banner's place in its Updates section: one notice, one status. */}
+              {shownTab !== "settings" && offeredVersion(update) !== dismissedUpdate && (
+                <UpdateBanner
                   api={api}
-                  ids={chosen}
-                  files={queued}
-                  onClear={() => setSelected([])}
-                  // The bar goes with the selection and the button pressed with it: what was
-                  // sent is what is looked at next, so that is where focus goes.
-                  onSent={() => {
-                    focusHeading("transfers-heading");
-                    setSelected([]);
-                  }}
-                  onFilesSent={() => setQueued([])}
+                  update={update}
+                  busy={updater.busy}
+                  onInstall={updater.install}
+                  onDismiss={() => setDismissedUpdate(offeredVersion(update))}
                 />
               )}
-              {down === null && visibility === "hidden" && nearby.length === 0 && (
-                // Not a live region: it is a state that is there on arriving, not news.
-                <p className="hint">
-                  {t("home.hiddenHint")}{" "}
-                  <button type="button" onClick={() => setTab("settings")}>
-                    {t("home.hiddenChange")}
-                  </button>
-                </p>
-              )}
-              {(down !== null || (visibility !== "hidden" && waited && nearby.length === 0)) && (
-                // One hint in one place: what is known (discovery could not start) takes the place
-                // of the guess (a firewall may be in the way), and both are announced the same way.
-                <p role="status" className="hint">
-                  {down === null ? (
-                    t("home.firewallHint")
-                  ) : (
-                    <>
-                      {t(down.summary)} {t(down.reason)}
-                    </>
-                  )}{" "}
-                  <a
-                    href={docs}
-                    onClick={(e) => {
-                      // The webview must not navigate away from the app.
-                      e.preventDefault();
-                      api.openUrl(docs).catch(() => {});
-                    }}
+              <VersionNotices
+                contacts={contacts}
+                notices={versionNotices}
+                updating={updater.busy}
+                onUpdateNow={updater.updateNow}
+                onDismiss={(peer) => dispatchVersion({ type: "dismiss_version_notice", peer })}
+              />
+              {shownTab !== "settings" && <UpdateStatus updater={updater} />}
+            </div>
+          )}
+          <main inert={inert}>
+            {firstRunNeeded === true && <FirstRunScreen api={api} onDone={() => setFirstRunNeeded(false)} />}
+            {shownTab === "home" && (
+              <>
+                <div className="pagehead">
+                  <h2 className="bs-h1">{t("tab.home")}</h2>
+                </div>
+                {queued.length > 0 && (
+                  <Banner
+                    kind="info"
+                    role="status"
+                    title={t("queued.banner", { names: queued.map(baseName).join(", ") })}
+                    actions={
+                      <button type="button" onClick={() => setQueued([])}>
+                        {t("queued.clear")}
+                      </button>
+                    }
+                  />
+                )}
+                {down === null && visibility === "hidden" && nearby.length === 0 && (
+                  // Not a live region: it is a state that is there on arriving, not news.
+                  <Hint icon="info">
+                    {t(NEARBY_HINTS.hidden)}{" "}
+                    <button type="button" className="bs-btn bs-btn--quiet" onClick={() => setTab("settings")}>
+                      {t("home.hiddenChange")}
+                    </button>
+                  </Hint>
+                )}
+                {(down !== null || (visibility !== "hidden" && waited && nearby.length === 0)) && (
+                  // One hint in one place: what is known (discovery could not start) takes the place
+                  // of the guess (a firewall may be in the way), and both are announced the same way.
+                  <Banner
+                    kind="warn"
+                    role="status"
+                    title={down === null ? t(NEARBY_HINTS.firewall) : undefined}
+                    actions={
+                      <a
+                        className="bs-btn"
+                        href={docs}
+                        onClick={(e) => {
+                          // The webview must not navigate away from the app.
+                          e.preventDefault();
+                          api.openUrl(docs).catch(() => {});
+                        }}
+                      >
+                        {t("home.firewallDocs")}
+                      </a>
+                    }
                   >
-                    {t("home.firewallDocs")}
-                  </a>
-                </p>
-              )}
-            </section>
-            <section aria-labelledby="transfers-heading">
-              <h2 id="transfers-heading" tabIndex={-1}>
-                {t("home.transfers")}
-              </h2>
-              {transfers.order.length === 0 ? (
-                <p>{t("home.noTransfers")}</p>
-              ) : (
-                <TransferList api={api} contacts={contacts} items={listItems(transfers)} />
-              )}
-            </section>
-          </>
-        )}
-        {shownTab === "contacts" && (
-          <ContactsScreen
-            api={api}
-            contacts={contacts}
-            onChanged={loadContacts}
-            onAdd={() => setAdding(true)}
-            onRemove={setRemoving}
-            onShowHistory={(c) => {
-              setHistoryDevice(c.id);
-              setTab("history");
-            }}
-          />
-        )}
-        {shownTab === "history" && (
-          <HistoryScreen
-            api={api}
-            contacts={contacts}
-            device={historyDevice}
-            onDevice={setHistoryDevice}
-            // History lists what is going on too: read it again as Transfers change state.
-            stamp={Object.values(transfers.byId)
-              .map((x) => `${x.id}:${x.state.kind}`)
-              .join()}
-            version={cleared}
-            onClear={() => setClearing(true)}
-          />
-        )}
-        {shownTab === "settings" && (
-          <SettingsScreen
-            api={api}
-            updater={updater}
-            update={update}
-            onCheckForUpdates={checkForUpdates}
-          />
-        )}
-      </main>
+                    {down !== null && t(down.message)}
+                  </Banner>
+                )}
+                <section className="sect" aria-labelledby="devices-heading">
+                  <h3 className="bs-h2" id="devices-heading">
+                    {t("home.devices")}
+                  </h3>
+                  {noDevices && <p className="empty">{t("home.placeholder")}</p>}
+                  <div className="grid">
+                    {sortedContacts(contacts).map((c) => {
+                      // A Contact that is Nearby shows what it announces until it has a name here.
+                      const here = nearby.find((d) => d.id === c.id);
+                      const name = peerName(c.id, contacts, here?.name ?? null);
+                      const picked = chosen.includes(c.id);
+                      return (
+                        <div key={c.id} className={picked ? "bs-tile bs-tile--sel" : "bs-tile"}>
+                          <button
+                            type="button"
+                            className="tile bs-tmain"
+                            aria-label={t("home.sendToContact", { name })}
+                            aria-describedby={tileStateId(c.id)}
+                            onClick={() => setSending({ to: c.id, name })}
+                          >
+                            <span className="bs-av" aria-hidden="true">
+                              {initial(name)}
+                            </span>
+                            <span className="bs-nm">{name}</span>
+                            <TileState
+                              deviceId={c.id}
+                              badge
+                              print={fingerprint(c.id)}
+                              nearby={here !== undefined}
+                              picked={picked}
+                            />
+                          </button>
+                          <div className="bs-tfoot">
+                            <SelectBox name={name} checked={picked} onChange={() => toggle(c.id)} />
+                          </div>
+                        </div>
+                      );
+                    })}
+                    {strangers.map((d) => {
+                      const label = peerName(d.id, contacts, d.name);
+                      const heading = d.name ?? fingerprint(d.id);
+                      const picked = chosen.includes(d.id);
+                      return (
+                        <div key={d.id} className={picked ? "bs-tile bs-tile--sel" : "bs-tile"}>
+                          <button
+                            type="button"
+                            className="tile bs-tmain"
+                            aria-label={t("home.sendToNearby", { name: label })}
+                            aria-describedby={tileStateId(d.id)}
+                            onClick={() => setSending({ to: d.id, name: label })}
+                          >
+                            <span className="bs-av" aria-hidden="true">
+                              {initial(heading)}
+                            </span>
+                            <span className="bs-nm">{heading}</span>
+                            <TileState
+                              deviceId={d.id}
+                              badge={false}
+                              print={d.name !== null ? fingerprint(d.id) : null}
+                              nearby
+                              picked={picked}
+                            />
+                          </button>
+                          <div className="bs-tfoot">
+                            <SelectBox name={label} checked={picked} onChange={() => toggle(d.id)} />
+                            <button
+                              type="button"
+                              className="bs-btn bs-btn--quiet"
+                              aria-label={t("home.saveAsContactLabel", { name: label })}
+                              onClick={() => setSaving({ id: d.id, name: d.name })}
+                            >
+                              {t("home.saveAsContact")}
+                            </button>
+                          </div>
+                        </div>
+                      );
+                    })}
+                    <div className="bs-tile bs-tile--add">
+                      <button
+                        type="button"
+                        className="tile bs-tmain"
+                        onClick={() => setSending({ to: "", name: null })}
+                      >
+                        <Icon name="plus" size={24} />
+                        <span className="bs-nm">{t("home.sendToId")}</span>
+                      </button>
+                    </div>
+                  </div>
+                  {chosen.length > 0 && (
+                    <SelectionBar
+                      api={api}
+                      ids={chosen}
+                      files={queued}
+                      onClear={() => setSelected([])}
+                      // The bar goes with the selection and the button pressed with it: what was
+                      // sent is what is looked at next, so that is where focus goes.
+                      onSent={() => {
+                        focusHeading("transfers-heading");
+                        setSelected([]);
+                      }}
+                      onFilesSent={() => setQueued([])}
+                    />
+                  )}
+                </section>
+                {/* This Device's ID comes after the Devices and the Transfers, or before the
+                    Transfers when there are no Devices to send to. */}
+                {noDevices && <MyDeviceId api={api} />}
+                <section className="sect" aria-labelledby="transfers-heading">
+                  <h3 className="bs-h2" id="transfers-heading" tabIndex={-1}>
+                    {t("home.transfers")}
+                  </h3>
+                  {transfers.order.length === 0 ? (
+                    <p className="empty">{t("home.noTransfers")}</p>
+                  ) : (
+                    <TransferList api={api} contacts={contacts} items={listItems(transfers)} />
+                  )}
+                </section>
+                {!noDevices && <MyDeviceId api={api} />}
+              </>
+            )}
+            {shownTab === "contacts" && (
+              <ContactsScreen
+                api={api}
+                contacts={contacts}
+                onChanged={loadContacts}
+                onAdd={() => setAdding(true)}
+                onRemove={setRemoving}
+                onShowHistory={(c) => {
+                  setHistoryDevice(c.id);
+                  setTab("history");
+                }}
+              />
+            )}
+            {shownTab === "history" && (
+              <HistoryScreen
+                api={api}
+                contacts={contacts}
+                device={historyDevice}
+                onDevice={setHistoryDevice}
+                // History lists what is going on too: read it again as Transfers change state.
+                stamp={Object.values(transfers.byId)
+                  .map((x) => `${x.id}:${x.state.kind}`)
+                  .join()}
+                version={cleared}
+                onClear={() => setClearing(true)}
+              />
+            )}
+            {shownTab === "settings" && (
+              <SettingsScreen
+                api={api}
+                updater={updater}
+                update={update}
+                onCheckForUpdates={checkForUpdates}
+              />
+            )}
+          </main>
+        </div>
+      </div>
       {/* An Offer sheet goes over whatever else is open, and the sheets under it must not be reached. */}
       <div inert={offer !== undefined}>
         {sending && (

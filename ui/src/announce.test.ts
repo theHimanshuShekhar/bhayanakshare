@@ -103,7 +103,7 @@ describe("announcements: what a state change says", () => {
 
   it("says a Transfer started when this Device sent it", () => {
     const { said } = play([transfer({ kind: "offered" }, { role: "sender" })]);
-    expect(said).toEqual([["photo.jpg to Mum: Waiting for Mum…"]]);
+    expect(said).toEqual([["photo.jpg to Mum: Waiting for Mum to answer."]]);
   });
 
   it("says each change of state once: accepted, receiving, received", () => {
@@ -128,7 +128,7 @@ describe("announcements: what a state change says", () => {
       transfer({ kind: "offered" }, { role: "sender" }),
       transfer({ kind: "failed", reason: "The connection dropped." }, { role: "sender" }),
     ]);
-    expect(said[1]).toEqual(["photo.jpg to Mum: Could not send. The connection dropped."]);
+    expect(said[1]).toEqual(["photo.jpg to Mum: Failed. The Transfer stopped because of an unexpected error: The connection dropped; if it keeps happening, export diagnostics in Settings."]);
   });
 
   it("says who declined, cancelled and did not answer", () => {
@@ -136,7 +136,7 @@ describe("announcements: what a state change says", () => {
       play([transfer({ kind: "offered" }, { role: "sender" }), transfer(state, { role: "sender" })]).said[1];
     expect(sent({ kind: "declined" })).toEqual(["photo.jpg to Mum: Mum declined."]);
     expect(sent({ kind: "cancelled", by: "receiver" })).toEqual(["photo.jpg to Mum: Mum cancelled."]);
-    expect(sent({ kind: "expired" })).toEqual(["photo.jpg to Mum: Mum did not answer in time. The Offer expired."]);
+    expect(sent({ kind: "expired" })).toEqual(["photo.jpg to Mum: Mum did not answer within 10 minutes, so the Offer expired; send it again to retry."]);
   });
 
   it("says Preparing, and that the Receiver lost contact", () => {
@@ -149,8 +149,8 @@ describe("announcements: what a state change says", () => {
       transfer({ kind: "reconnecting" }, { role: "receiver", id: "cd".repeat(16) }),
     ]);
     expect(said[1]).toEqual(["photo.jpg to Mum: Preparing the files for Mum…"]);
-    expect(said[2]).toEqual(["photo.jpg to Mum: Waiting for Mum…"]);
-    expect(said[5]).toEqual(["photo.jpg from Mum: Lost contact with Mum. Reconnecting…"]);
+    expect(said[2]).toEqual(["photo.jpg to Mum: Waiting for Mum to answer."]);
+    expect(said[5]).toEqual(["photo.jpg from Mum: Lost contact with Mum, so BhayanakShare keeps trying to reconnect."]);
   });
 
   it("leaves out Saving, which is over in a moment and followed by Received", () => {
@@ -160,7 +160,7 @@ describe("announcements: what a state change says", () => {
 
   it("names a text by the word Text", () => {
     const { said } = play([transfer({ kind: "offered" }, { kind: "text", role: "sender" })]);
-    expect(said[0]).toEqual(["Text to Mum: Waiting for Mum…"]);
+    expect(said[0]).toEqual(["Text to Mum: Waiting for Mum to answer."]);
   });
 
   it("says what happened to several Transfers at once, in the order they began", () => {
@@ -171,7 +171,7 @@ describe("announcements: what a state change says", () => {
       transfer({ kind: "completed", saved_to: null }, { id: "22".repeat(16), peer: OTHER }),
     ].reduce(applyEvent, both);
     expect(announcements(both, next, {}, peerOf, 0).messages).toEqual([
-      "photo.jpg from Mum: Could not receive. No.",
+      "photo.jpg from Mum: Failed. The Transfer stopped because of an unexpected error: No; if it keeps happening, export diagnostics in Settings.",
       "photo.jpg from Dad: Received.",
     ]);
   });
@@ -294,7 +294,7 @@ describe("announcements: a Batch", () => {
       member(2, OTHER, { kind: "offered" }),
       member(2, OTHER, { kind: "failed", reason: "Gone." }),
     ]);
-    expect(said[2]).toEqual(["photo.jpg to Dad: Could not send. Gone."]);
+    expect(said[2]).toEqual(["photo.jpg to Dad: Failed. The Transfer stopped because of an unexpected error: Gone; if it keeps happening, export diagnostics in Settings."]);
   });
 
   it("says how it ended, once every Receiver is done", () => {
@@ -318,7 +318,7 @@ describe("announcements: a Batch", () => {
       member(3, PEER, { kind: "completed", saved_to: null }),
     ]);
     expect(said[1]).toEqual([
-      "photo.jpg to Mum: Could not send. No.",
+      "photo.jpg to Mum: Failed. The Transfer stopped because of an unexpected error: No; if it keeps happening, export diagnostics in Settings.",
       "photo.jpg to 1 Devices: 0 of 1 delivered, 1 failed",
     ]);
     expect(said[2]).toEqual([]);

@@ -1,5 +1,6 @@
 import { useRef, useState } from "react";
 import type { Api } from "./api";
+import { Banner } from "./Banner";
 import { t } from "./i18n";
 import { Sheet } from "./Sheet";
 
@@ -37,22 +38,32 @@ export function QuitDialog({
 
   return (
     <Sheet labelledBy="quit-heading" onEscape={saving ? undefined : onCancel} initialFocus={keep}>
-      <h2 id="quit-heading">{saving ? t("quit.saving") : t("quit.heading")}</h2>
+      <h2 id="quit-heading" className="bs-sheet__t">
+        {saving ? t("quit.saving") : t("quit.heading")}
+      </h2>
       {saving ? (
-        <p role="status">{t("quit.savingHint")}</p>
+        <div className="bs-sheet__b">
+          <p role="status">{t("quit.savingHint")}</p>
+          <div className="bs-bar bs-bar--prep" role="progressbar" aria-label={t("quit.saving")} />
+        </div>
       ) : (
         <>
-          <p>
-            {active === 1 ? t("quit.inProgressOne") : t("quit.inProgress", { count: active })}{" "}
-            {active === 1 ? t("quit.resumeOne") : t("quit.resume")}
-          </p>
-          {error !== null && <p role="alert">{error}</p>}
-          <div className="actions">
-            <button type="button" onClick={quit}>
-              {t("quit.confirm")}
-            </button>
-            <button type="button" ref={keep} onClick={onCancel}>
+          <div className="bs-sheet__b">
+            <p>
+              {active === 1 ? t("quit.warningOne") : t("quit.warning", { count: active })}
+            </p>
+            {error !== null && (
+              <Banner kind="err" role="alert">
+                {error}
+              </Banner>
+            )}
+          </div>
+          <div className="bs-sheet__a">
+            <button type="button" className="bs-btn bs-btn--pri" ref={keep} onClick={onCancel}>
               {t("quit.cancel")}
+            </button>
+            <button type="button" className="bs-btn" onClick={quit}>
+              {t("quit.confirm")}
             </button>
           </div>
         </>
