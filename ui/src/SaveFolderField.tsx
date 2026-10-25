@@ -1,6 +1,7 @@
 import { t } from "./i18n";
 
-/** The folder received files are saved to, with a button to choose another. Used by Settings and
+/** The folder received files are saved to, with a button to choose another: a label, then the path
+ * and the button. It is the content of a row, which the caller makes. Used by Settings and
  * by first run. */
 export function SaveFolderField({
   folder,
@@ -14,17 +15,24 @@ export function SaveFolderField({
   onChange: () => void;
 }) {
   return (
-    <p>
-      <span id="save-folder-label">{t("saveFolder.label")}: </span>
-      <code aria-labelledby="save-folder-label">{folder ?? ""}</code>{" "}
-      <button
-        type="button"
-        disabled={disabled || folder === null}
-        aria-label={t("saveFolder.changeLabel")}
-        onClick={onChange}
-      >
-        {t("saveFolder.change")}
-      </button>
-    </p>
+    <>
+      <span id="save-folder-label" className="bs-label">
+        {t("saveFolder.label")}
+      </span>
+      <div className="kv">
+        <code className="bs-mono" aria-labelledby="save-folder-label">
+          {folder ?? ""}
+        </code>
+        <button
+          type="button"
+         
+          disabled={disabled || folder === null}
+          aria-label={t("saveFolder.changeLabel")}
+          onClick={onChange}
+        >
+          {t("saveFolder.change")}
+        </button>
+      </div>
+    </>
   );
 }

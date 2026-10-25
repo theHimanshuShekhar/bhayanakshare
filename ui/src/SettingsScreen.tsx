@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import type { Api, UpdateAction, Visibility } from "./api";
 import { AutostartField } from "./AutostartField";
+import { FieldError } from "./Banner";
 import { t } from "./i18n";
 import { DeviceNameSettings } from "./DeviceNameSettings";
 import { DiagnosticsSettings } from "./DiagnosticsSettings";
@@ -8,6 +9,7 @@ import { IdentitySettings } from "./IdentitySettings";
 import { MyDeviceId } from "./MyDeviceId";
 import { ReceivingSettings } from "./ReceivingSettings";
 import { UpdateSettings } from "./UpdateSettings";
+import { SwitchRow } from "./SwitchRow";
 import type { Updater } from "./updates";
 import { VisibilityField } from "./VisibilityField";
 
@@ -86,44 +88,66 @@ export function SettingsScreen({
   };
 
   return (
-    <section aria-labelledby="settings-heading">
-      <h2 id="settings-heading">{t("settings.heading")}</h2>
-      <section aria-labelledby="settings-this-device-heading">
-        <h3 id="settings-this-device-heading">{t("settings.thisDevice")}</h3>
-        <DeviceNameSettings api={api} onSaved={() => setRenamed((n) => n + 1)} />
-        <MyDeviceId key={renamed} api={api} nested />
+    <section className="settings" aria-labelledby="settings-heading">
+      <div className="pagehead">
+        <h2 className="bs-h1" id="settings-heading">
+          {t("settings.heading")}
+        </h2>
+      </div>
+      <section className="sect" aria-labelledby="settings-this-device-heading">
+        <h3 className="bs-h2" id="settings-this-device-heading">
+          {t("settings.thisDevice")}
+        </h3>
+        <div className="sbody">
+          <div className="srow">
+            <DeviceNameSettings api={api} onSaved={() => setRenamed((n) => n + 1)} />
+          </div>
+          <div className="srow">
+            <MyDeviceId key={renamed} api={api} nested />
+          </div>
+        </div>
       </section>
-      <section aria-labelledby="settings-privacy-heading">
-        <h3 id="settings-privacy-heading">{t("settings.privacy")}</h3>
-        <VisibilityField value={visibility} onChange={choose} />
-        {error !== null && <p role="alert">{error}</p>}
-        <p>
-          <input
+      <section className="sect" aria-labelledby="settings-privacy-heading">
+        <h3 className="bs-h2" id="settings-privacy-heading">
+          {t("settings.privacy")}
+        </h3>
+        <div className="sbody">
+          <div className="srow">
+            <VisibilityField value={visibility} onChange={choose} />
+            {error !== null && <FieldError>{error}</FieldError>}
+          </div>
+          <SwitchRow
             id="public-dht"
-            type="checkbox"
+            label={t("dht.label")}
+            hint={t("dht.hint")}
             checked={dht === true}
             disabled={dht === null}
-            aria-describedby="public-dht-hint"
-            onChange={(e) => chooseDht(e.target.checked)}
-          />{" "}
-          <label htmlFor="public-dht" className="inline">
-            {t("dht.label")}
-          </label>
-          <span id="public-dht-hint" className="note">
-            {t("dht.hint")}
-          </span>
-        </p>
-        {dhtError !== null && <p role="alert">{dhtError}</p>}
+            error={dhtError}
+            onChange={chooseDht}
+          />
+        </div>
       </section>
-      <section aria-labelledby="settings-receiving-heading">
-        <h3 id="settings-receiving-heading">{t("settings.receiving")}</h3>
-        <ReceivingSettings api={api} />
+      <section className="sect" aria-labelledby="settings-receiving-heading">
+        <h3 className="bs-h2" id="settings-receiving-heading">
+          {t("settings.receiving")}
+        </h3>
+        <div className="sbody">
+          <ReceivingSettings api={api} />
+        </div>
       </section>
-      <section aria-labelledby="settings-app-heading">
-        <h3 id="settings-app-heading">{t("settings.app")}</h3>
-        <AutostartField checked={autostart === true} disabled={autostart === null} onChange={chooseAutostart} />
-        {autostartError !== null && <p role="alert">{autostartError}</p>}
-        <UpdateSettings api={api} updater={updater} update={update} onCheck={onCheckForUpdates} />
+      <section className="sect" aria-labelledby="settings-app-heading">
+        <h3 className="bs-h2" id="settings-app-heading">
+          {t("settings.app")}
+        </h3>
+        <div className="sbody">
+          <AutostartField
+            checked={autostart === true}
+            disabled={autostart === null}
+            error={autostartError}
+            onChange={chooseAutostart}
+          />
+          <UpdateSettings api={api} updater={updater} update={update} onCheck={onCheckForUpdates} />
+        </div>
       </section>
       <IdentitySettings api={api} />
       <DiagnosticsSettings api={api} />
