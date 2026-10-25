@@ -13,6 +13,7 @@ use serde::Serialize;
 use specta::Type;
 use tauri::{
     AppHandle, Manager, Runtime, Window, WindowEvent,
+    image::Image,
     menu::{CheckMenuItem, Menu, MenuItem, PredefinedMenuItem, Submenu},
     tray::TrayIconBuilder,
 };
@@ -179,11 +180,38 @@ pub fn build_tray<R: Runtime>(app: &AppHandle<R>, visibility: Visibility) -> tau
                 }
             }
         });
-    if let Some(icon) = app.default_window_icon() {
-        tray = tray.icon(icon.clone());
+    let scale = app.primary_monitor().ok().flatten().map_or(1.0, |monitor| monitor.scale_factor());
+    if let Some(icon) = tray_glyph(TRAY_LOGICAL_SIZE, scale).or_else(|| app.default_window_icon().cloned()) {
+        tray = tray.icon(icon);
     }
     tray.build(app)?;
     Ok(())
+}
+
+/// The tray's flat glyphs, one per Windows scaling step (100%, 125%, 150%, 200%), from the design
+/// (`assets/brand/README.md`). Always the white ones: Windows 11's taskbar and GNOME's top bar are
+/// dark by default, and Tauri cannot say what colour the panel is (a window's theme is the app's
+/// theme, not the taskbar's or the shell's). The near-black glyphs for a light panel are in the
+/// same folder, for when that can be told.
+const TRAY_GLYPHS: [(u32, &[u8]); 4] = [
+    (16, include_bytes!("../icons/tray/tray-16-dark.png")),
+    (20, include_bytes!("../icons/tray/tray-20-dark.png")),
+    (24, include_bytes!("../icons/tray/tray-24-dark.png")),
+    (32, include_bytes!("../icons/tray/tray-32-dark.png")),
+];
+
+/// The tray icon's size before scaling: the Windows notification area's 16 px, and 24 px on Linux,
+/// where panels draw their indicators larger.
+const TRAY_LOGICAL_SIZE: f64 = if cfg!(windows) { 16.0 } else { 24.0 };
+
+/// The glyph whose size is closest to `logical` px at the display's scale factor.
+fn tray_glyph_for(logical: f64, scale: f64) -> (u32, &'static [u8]) {
+    let wanted = (logical * scale).round().max(0.0) as u32;
+    TRAY_GLYPHS.into_iter().min_by_key(|(size, _)| size.abs_diff(wanted)).expect("there are tray glyphs")
+}
+
+fn tray_glyph(logical: f64, scale: f64) -> Option<Image<'static>> {
+    Image::from_bytes(tray_glyph_for(logical, scale).1).ok()
 }
 
 /// The tray's "Send files…": ask for files, then let the UI ask to whom.
@@ -309,6 +337,29 @@ pub async fn finish_quit<R: Runtime>(app: &AppHandle<R>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_tray_glyph_follows_the_display_scale() {
+        // Windows: 16 px at 100%, 20 at 125%, 24 at 150%, 32 at 200%.
+        for (scale, size) in [(0.5, 16), (1.0, 16), (1.25, 20), (1.5, 24), (2.0, 32), (3.0, 32)] {
+            assert_eq!(tray_glyph_for(16.0, scale).0, size, "at {scale}");
+        }
+        // Linux draws 24 px at 100%.
+        assert_eq!(tray_glyph_for(24.0, 1.0).0, 24);
+        assert_eq!(tray_glyph_for(24.0, 2.0).0, 32);
+    }
+
+    #[test]
+    fn each_tray_glyph_is_a_white_square_of_its_size() {
+        for (size, _) in TRAY_GLYPHS {
+            let glyph = tray_glyph(size as f64, 1.0).expect("the glyph decodes");
+            assert_eq!((glyph.width(), glyph.height()), (size, size));
+            // Flat white where it is drawn, and drawn somewhere: no tile behind it.
+            let drawn: Vec<_> = glyph.rgba().chunks_exact(4).filter(|p| p[3] != 0).collect();
+            assert!(!drawn.is_empty() && drawn.iter().all(|p| p[..3] == [255, 255, 255]), "{size}");
+            assert!(glyph.rgba().chunks_exact(4).any(|p| p[3] == 0), "{size} has a transparent background");
+        }
+    }
 
     fn args(list: &[&str]) -> Vec<String> {
         list.iter().map(|s| s.to_string()).collect()

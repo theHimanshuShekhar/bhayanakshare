@@ -816,6 +816,79 @@ mod tests {
         assert!(bundle["windows"].get("signCommand").is_none() && bundle["windows"].get("certificateThumbprint").is_none());
     }
 
+    /// The width and height in a PNG's header.
+    fn png_size(bytes: &[u8]) -> (u32, u32) {
+        assert_eq!(&bytes[..8], b"\x89PNG\r\n\x1a\n", "not a PNG");
+        let at = |i: usize| u32::from_be_bytes(bytes[i..i + 4].try_into().unwrap());
+        (at(16), at(20))
+    }
+
+    /// The sizes of an `.ico`'s frames (a width of 0 in the directory means 256).
+    fn ico_frames(bytes: &[u8]) -> Vec<(u32, u32)> {
+        assert_eq!(&bytes[..4], [0, 0, 1, 0], "not an .ico");
+        let count = u16::from_le_bytes([bytes[4], bytes[5]]) as usize;
+        let side = |b: u8| if b == 0 { 256 } else { b as u32 };
+        (0..count).map(|i| (side(bytes[6 + 16 * i]), side(bytes[7 + 16 * i]))).collect()
+    }
+
+    #[test]
+    fn the_icon_set_is_complete_for_both_platforms() {
+        let conf = tauri_conf();
+        let listed: Vec<&str> =
+            conf["bundle"]["icon"].as_array().unwrap().iter().map(|i| i.as_str().unwrap()).collect();
+        let read = |path: &str| {
+            std::fs::read(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(path))
+                .unwrap_or_else(|e| panic!("bundle.icon lists {path}: {e}"))
+        };
+
+        // Linux (AppImage, deb, rpm: each PNG goes to the icon theme folder of its size, and the
+        // desktop file names the icon): the sizes of the design's set, each file what its name says.
+        let mut sizes = Vec::new();
+        for path in listed.iter().filter(|p| p.ends_with(".png")) {
+            let (w, h) = png_size(&read(path));
+            assert_eq!(w, h, "{path} is not square");
+            let name = std::path::Path::new(path).file_name().unwrap().to_str().unwrap();
+            if let Some((named, _)) = name.split_once('x') {
+                assert_eq!(named, w.to_string(), "{path} is {w} px");
+            }
+            sizes.push(w);
+        }
+        for need in [16, 24, 32, 48, 64, 128, 256, 512] {
+            assert!(sizes.contains(&need), "no {need} px PNG in bundle.icon: {sizes:?}");
+        }
+        // The window icon on Linux is the first PNG listed: not one of the small sizes.
+        assert!(sizes[0] >= 64, "the window icon is {} px", sizes[0]);
+        assert!(include_str!("../linux/bhayanakshare.desktop").contains("Icon={{icon}}"));
+
+        // Windows (the exe, the installer, the taskbar and title bar): an .ico with the frames the
+        // shell asks for; 16, 24 and 32 are the design's pixel-drawn ones.
+        assert!(listed.contains(&"icons/icon.ico"));
+        let frames = ico_frames(&read("icons/icon.ico"));
+        for need in [16, 24, 32, 48, 64, 256] {
+            assert!(frames.contains(&(need, need)), "no {need} px frame in icon.ico: {frames:?}");
+        }
+        // The installer's own images must be bitmaps (NSIS cannot show a PNG), so none is wired in
+        // until it is a .bmp; the design's PNGs wait in assets/brand.
+        let nsis = &tauri_windows_conf()["bundle"]["windows"]["nsis"];
+        for key in ["headerImage", "sidebarImage", "installerIcon"] {
+            if let Some(path) = nsis.get(key).and_then(Value::as_str) {
+                assert!(path.ends_with(if key == "installerIcon" { ".ico" } else { ".bmp" }), "{key} is {path}");
+            }
+        }
+
+        // The tray: a glyph of each Windows scaling step in both colours (background.rs picks one).
+        for size in [16, 20, 24, 32] {
+            for colour in ["dark", "light"] {
+                let path = format!("icons/tray/tray-{size}-{colour}.png");
+                assert_eq!(png_size(&read(&path)), (size, size), "{path}");
+            }
+        }
+
+        // macOS is not built, but the config lists its icon, so it must be a real one.
+        assert!(listed.contains(&"icons/icon.icns"));
+        assert_eq!(&read("icons/icon.icns")[..4], b"icns");
+    }
+
     #[test]
     fn neither_config_touches_the_firewall_and_both_platforms_make_updater_artifacts() {
         for (name, text) in [
