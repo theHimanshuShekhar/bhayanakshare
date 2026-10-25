@@ -12,7 +12,7 @@ Created in [T3 Code](https://t3.codes).
 |---|---|
 | `crates/core` | The Rust core, with no Tauri dependency: Device API, control protocol, blob stores, SQLite persistence. All integration tests live here. |
 | `src-tauri` | The Tauri 2 shell: starts a core `Device`, exposes its commands to the UI, forwards its event stream. |
-| `ui` | React + TypeScript + Vite front end. `ui/src/bindings.ts` is generated from the Rust types and committed; every UI string is in `ui/src/i18n.ts`. |
+| `ui` | React + TypeScript + Vite front end. `ui/src/bindings.ts` is generated from the Rust types and committed, and so is `ui/src/failureReasons.ts`, from the core's list of failure reasons; every UI string is in `ui/src/i18n.ts`. |
 | `ui/screens` | The screen preview harness (dev only, never shipped): see [Screen previews](#screen-previews). |
 
 The core's public seam is `Device`: it is created from a data folder, a save folder, a key source and an injected clock; commands go in as methods and everything that happens comes back, in order, on one `EventStream`. The shell and every test use only that.
@@ -108,7 +108,7 @@ pnpm install
 
 pnpm typecheck   # cargo check --workspace --all-targets (core + shell), then tsc for the UI
 pnpm test        # cargo test --workspace (core + shell), then the UI tests (vitest)
-pnpm bindings    # regenerate ui/src/bindings.ts after changing a command or an event type
+pnpm bindings    # regenerate ui/src/bindings.ts and ui/src/failureReasons.ts after changing a command, an event type or a failure reason
 
 pnpm dev         # run the desktop app with hot reload
 pnpm build       # build installers
@@ -116,7 +116,7 @@ pnpm build       # build installers
 
 Plain `cargo check` and `cargo test` at the repository root cover only the core (the workspace's `default-members`), so they need no system libraries. Add `--workspace` to include the shell.
 
-The UI's TypeScript types for commands and events are generated from the Rust types with [specta](https://github.com/specta-rs/tauri-specta). `cargo test --workspace` fails if `ui/src/bindings.ts` is stale; `pnpm bindings` rewrites it.
+The UI's TypeScript types for commands and events are generated from the Rust types with [specta](https://github.com/specta-rs/tauri-specta). `cargo test --workspace` fails if `ui/src/bindings.ts` or `ui/src/failureReasons.ts` is stale; `pnpm bindings` rewrites them.
 
 ### Running two instances on one machine
 

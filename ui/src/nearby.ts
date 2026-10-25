@@ -1,7 +1,7 @@
 // What the UI knows about Nearby Devices, built up from the Device's event stream. Pure functions
 // only: the React side just feeds events in and renders the result.
 
-import type { Contact, DeviceEvent, DiscoveryStatus, NearbyDevice } from "./bindings";
+import type { Contact, DeviceEvent, DiscoveryStatus, NearbyDevice, UnavailableReason } from "./bindings";
 import { findContact } from "./contacts";
 import type { MessageKey } from "./i18n";
 
@@ -37,28 +37,36 @@ export function settleDiscovery(current: DiscoveryStatus, next: DiscoveryStatus)
   return same ? current : next;
 }
 
+/** The hints Home gives about Nearby Devices that are not for a fault: the message of each (H6, H7). */
+export const NEARBY_HINTS = {
+  /** Nobody Nearby after a while: a firewall may be in the way. */
+  firewall: "home.firewallHint",
+  /** Hidden, so no Nearby Devices are shown. */
+  hidden: "home.hiddenHint",
+} as const satisfies Record<string, MessageKey>;
+
 /** Applies one event: a `discovery_status` event holds the status as it is then. */
 export function applyDiscovery(status: DiscoveryStatus, event: DeviceEvent): DiscoveryStatus {
   return event.type === "discovery_status" ? settleDiscovery(status, event.status) : status;
 }
 
 /**
- * What to tell the user when local discovery could not start: the words (i18n keys) for what
- * happened and for why, or `null` while it works. A Hidden Device looks for nobody, so what it
- * loses is that Devices holding its ID cannot reach it.
+ * The catalogue message (section 8) for each reason local discovery could not start: one sentence,
+ * cause then fix, for a Visible Device and one for a Hidden one. A Hidden Device looks for
+ * nobody, so what it loses is that Devices holding its ID cannot find it. A reason added in the
+ * core fails the typecheck until it is worded.
  */
-export function discoveryHint(
-  status: DiscoveryStatus,
-  hidden: boolean,
-): { summary: MessageKey; reason: MessageKey } | null {
+export const DISCOVERY_MESSAGES: Record<UnavailableReason, { visible: MessageKey; hidden: MessageKey }> = {
+  port_in_use: { visible: "home.discoveryPort", hidden: "home.discoveryPortHidden" },
+  no_interface: { visible: "home.discoveryInterface", hidden: "home.discoveryInterfaceHidden" },
+  other: { visible: "home.discoveryOther", hidden: "home.discoveryOtherHidden" },
+};
+
+/**
+ * What to tell the user when local discovery could not start: the words (an i18n key) for why and
+ * what to do, or `null` while it works.
+ */
+export function discoveryHint(status: DiscoveryStatus, hidden: boolean): { message: MessageKey } | null {
   if (status.state === "working") return null;
-  const reasons = {
-    port_in_use: "home.discoveryDownPort",
-    no_interface: "home.discoveryDownInterface",
-    other: "home.discoveryDownOther",
-  } as const;
-  return {
-    summary: hidden ? "home.discoveryDownHidden" : "home.discoveryDown",
-    reason: reasons[status.reason],
-  };
+  return { message: DISCOVERY_MESSAGES[status.reason][hidden ? "hidden" : "visible"] };
 }

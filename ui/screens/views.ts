@@ -4,6 +4,7 @@
 
 import { fireEvent, screen, waitFor } from "@testing-library/dom";
 import type { Api, Contact, HistoryEntry } from "../src/api";
+import { FAILURE_REASONS } from "../src/failureReasons";
 import { NEARBY_WAIT_MS } from "../src/nearby";
 import { fakeApi } from "../src/testApi";
 import {
@@ -136,7 +137,7 @@ async function completed(device: Device) {
 
 async function ended(device: Device) {
   await device.push(
-    transfer(10, "sender", { kind: "failed", reason: "The connection to Work desktop was lost and could not be restored." }, who(WORK), {
+    transfer(10, "sender", { kind: "failed", reason: FAILURE_REASONS.lost }, who(WORK), {
       name: "build-2026.10.1.zip",
       items: ["build-2026.10.1.zip"],
       size: mib(212),
@@ -154,7 +155,7 @@ async function batch(device: Device) {
   await device.push(transfer(21, "sender", { kind: "completed", saved_to: null }, who(ASHA), agenda));
   await device.push(transfer(22, "sender", { kind: "transferring" }, who(WORK), agenda));
   await device.push(transfer(23, "sender", { kind: "declined" }, who(MUM), agenda));
-  await device.push(transfer(24, "sender", { kind: "failed", reason: "Meera's tablet could not be reached." }, who(MEERA), agenda));
+  await device.push(transfer(24, "sender", { kind: "failed", reason: FAILURE_REASONS.unreachable }, who(MEERA), agenda));
   await device.push(transfer(25, "sender", { kind: "waiting" }, who(GUEST), agenda));
 }
 
@@ -280,7 +281,7 @@ export const VIEWS: View[] = [
     contacts: CONTACTS,
     setup: async (device) => {
       await device.discoveryChanges({ state: "unavailable", reason: "port_in_use" });
-      await screen.findByText(/Local discovery could not start/);
+      await screen.findByText(/Nearby Devices can't be found because/);
     },
   },
   {
@@ -290,7 +291,7 @@ export const VIEWS: View[] = [
     overrides: hidden,
     setup: async (device) => {
       await device.discoveryChanges({ state: "unavailable", reason: "no_interface" });
-      await screen.findByText(/people who have your ID can't find this Device/);
+      await screen.findByText(/People who have your ID can't find this Device/);
     },
   },
   {
@@ -613,7 +614,7 @@ export const VIEWS: View[] = [
     overrides: { history: () => Promise.reject(new Error("db")) },
     setup: async () => {
       await openTab("History");
-      await screen.findByText("Could not load your History.");
+      await screen.findByText(/^Your History could not be read/);
     },
   },
 
@@ -900,7 +901,7 @@ export const VIEWS: View[] = [
       await type("Password", goodPassword);
       await type("Type the password again", goodPassword);
       await button("Save as…");
-      await screen.findByText(/Keep it somewhere safe/);
+      await screen.findByText(/keep it somewhere safe/);
     },
   },
   {
@@ -923,7 +924,7 @@ export const VIEWS: View[] = [
       await button("Import identity…");
       await type("Password of this file", "not the password");
       await button("Continue");
-      await screen.findByText(/Wrong password/);
+      await screen.findByText(/That password does not open this file/);
     },
   },
   {

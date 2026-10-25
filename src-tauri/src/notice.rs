@@ -8,7 +8,7 @@ use std::{collections::HashMap, sync::Mutex};
 
 use bhayanakshare_core::{
     Contact, Device, DeviceId, Event, EventKind, Role, TransferEvent, TransferId, TransferKind,
-    TransferState,
+    TransferState, identify_failure,
 };
 use tauri::{AppHandle, Manager, Runtime};
 
@@ -143,29 +143,95 @@ pub fn called(t: &TransferEvent) -> String {
     }
 }
 
-/// The title and body of a notification.
+/// The title and body of a notification. A failure's body is what was sent or received, then the
+/// error-message catalogue's sentence for its cause (see [`failure_sentence`]).
 pub fn text(notice: &Notice, role: Role, kind: TransferKind, name: &str, who: &str) -> (String, String) {
     let text = kind == TransferKind::Text;
     match (notice, role) {
         (Notice::Offer, _) => {
-            (if text { "Incoming text" } else { "Incoming file" }.into(), format!("{name} from {who}"))
+            (if text { "Incoming text" } else { "Incoming files" }.into(), format!("{name} from {who}"))
         }
         (Notice::AutoAccepted, _) => {
             (if text { "Text received" } else { "File received" }.into(), format!("{name} from {who}"))
         }
-        (Notice::Failed { reason }, Role::Sender) => {
-            ("Could not send".into(), format!("{name} to {who}. {reason}"))
+        (Notice::Failed { reason }, Role::Sender) => (
+            "Could not send".into(),
+            format!("{name} to {who}. {}", failure_sentence(reason, role, who)),
+        ),
+        (Notice::Failed { reason }, Role::Receiver) => (
+            "Could not receive".into(),
+            format!("{name} from {who}. {}", failure_sentence(reason, role, who)),
+        ),
+    }
+}
+
+/// The catalogue's sentence for a failure reason, as the UI words it (`failure.*` in
+/// `ui/src/i18n.ts`): the cause, then what to do. `who` is the other Device as its tile shows it.
+/// A reason that is not one of the core's `FAILURE_REASONS` is an unexpected error (C12).
+pub fn failure_sentence(reason: &str, role: Role, who: &str) -> String {
+    match identify_failure(reason) {
+        Some((known, rest)) => known_sentence(known.id, role, who, rest, reason),
+        None => unexpected(reason),
+    }
+}
+
+/// C12, with the reason in brackets, so without the full stop it may end with.
+fn unexpected(reason: &str) -> String {
+    let reason = reason.trim_end_matches(|c: char| c == '.' || c.is_whitespace());
+    format!(
+        "The Transfer stopped because of an unexpected error: {reason}; if it keeps happening, export diagnostics in Settings."
+    )
+}
+
+/// The sentence for the reason `id` names. `rest` is the varying part of the reason (a file's
+/// name, a Device's name) and `reason` all of it. Every id of `FAILURE_REASONS` is dealt with,
+/// which a test checks.
+fn known_sentence(id: &str, role: Role, who: &str, rest: &str, reason: &str) -> String {
+    match id {
+        "unreachable" | "cant_open" => format!(
+            "{who} could not be reached; check that it is online and running BhayanakShare, then try again."
+        ),
+        "lost" | "restarted" | "cant_fetch" => format!(
+            "The connection to {who} stopped before the files were ready, and a Transfer cannot resume from that point; send it again."
+        ),
+        "stalled" if role == Role::Sender => {
+            "No progress for 24 hours, so the Transfer was stopped; send it again.".into()
         }
-        (Notice::Failed { reason }, Role::Receiver) => {
-            ("Could not receive".into(), format!("{name} from {who}. {reason}"))
+        "stalled" => format!(
+            "No progress for 24 hours, so the Transfer was stopped and the partly received files were deleted; ask {who} to send it again."
+        ),
+        "file_changed" => format!(
+            "A file on the sending Device changed or went missing: {rest}; send the Transfer again."
+        ),
+        "busy" => format!(
+            "{who} already has 5 Offers from this Device waiting; wait for it to answer some, then send again."
+        ),
+        "invalid_names" => format!(
+            "{who} refused the Offer because some file or folder names are not valid; rename them and send again."
+        ),
+        "forgotten" => {
+            format!("{who} no longer has a record of this Transfer; ask them to send it again.")
         }
+        "cant_save" => format!(
+            "The files arrived but could not be saved to your save folder; fix that or change the save folder in Settings, then ask {who} to send them again."
+        ),
+        "cant_keep_text" => format!(
+            "The text arrived but could not be kept on this Device; ask {who} to send it again."
+        ),
+        "peer_older" => format!("{who} is running an older BhayanakShare; ask them to update."),
+        "this_older" => format!(
+            "This Device is running an older BhayanakShare than {who}; update it to send and receive with them."
+        ),
+        // The Transfer broke a rule of the protocol, or something inside failed: nothing the
+        // user can fix, so the reason is shown as it is.
+        _ => unexpected(reason),
     }
 }
 
 /// Shown the first time the window is closed.
 pub const TRAY_TITLE: &str = "BhayanakShare is still running";
 pub const TRAY_BODY: &str =
-    "Closing the window keeps BhayanakShare in the background so you can receive files. Open it or quit it from its tray menu.";
+    "Closing the window keeps BhayanakShare in the background so you can receive files; open it or quit it from its tray menu.";
 
 /// Shows a notification. `on_click` runs if the user clicks it, on platforms where that can be
 /// known (Linux); it is called from a background thread. Failure to show one (no notification
@@ -215,6 +281,7 @@ pub fn show<R: Runtime>(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use bhayanakshare_core::{FAILURE_REASONS, Matching};
 
     fn event(id: u8, role: Role, state: TransferState) -> TransferEvent {
         TransferEvent {
@@ -340,12 +407,72 @@ mod tests {
     #[test]
     fn the_text_says_what_and_who() {
         let (title, body) = text(&Notice::Offer, Role::Receiver, TransferKind::Files, "a.txt", "Mum");
-        assert_eq!((title.as_str(), body.as_str()), ("Incoming file", "a.txt from Mum"));
+        assert_eq!((title.as_str(), body.as_str()), ("Incoming files", "a.txt from Mum"));
         let failed = Notice::Failed { reason: "The other Device went away.".into() };
         assert_eq!(text(&failed, Role::Sender, TransferKind::Files, "a.txt", "Mum").0, "Could not send");
         assert_eq!(
             text(&failed, Role::Receiver, TransferKind::Files, "a.txt", "Mum").1,
-            "a.txt from Mum. The other Device went away."
+            "a.txt from Mum. The connection to Mum stopped before the files were ready, and a Transfer cannot resume from that point; send it again."
+        );
+    }
+
+    /// The reasons whose sentence is the catalogue's C12 on purpose: the Transfer broke a rule of
+    /// the protocol, or something inside failed.
+    const UNEXPECTED_ON_PURPOSE: [&str; 10] = [
+        "unexpected",
+        "bad_offer",
+        "wrong_file",
+        "too_much",
+        "cant_record",
+        "cant_prepare_space",
+        "cant_look_up",
+        "cant_check_files",
+        "cant_read_files",
+        "cant_prepare_files",
+    ];
+
+    #[test]
+    fn every_failure_reason_has_a_notification_sentence() {
+        for known in FAILURE_REASONS {
+            for role in [Role::Sender, Role::Receiver] {
+                let sample = match known.matching {
+                    Matching::Exact => known.text.to_owned(),
+                    Matching::Prefix => format!("{}notes.txt", known.text),
+                    Matching::Suffix => format!("Alice's Laptop{}", known.text),
+                };
+                let sentence = failure_sentence(&sample, role, "Mum");
+                let is_c12 = sentence.starts_with("The Transfer stopped because of an unexpected error: ");
+                assert_eq!(is_c12, UNEXPECTED_ON_PURPOSE.contains(&known.id), "{}: {sentence}", known.id);
+                assert!(sentence.ends_with('.'), "{}: {sentence}", known.id);
+                assert!(!sentence.contains('{'), "{}: {sentence}", known.id);
+            }
+        }
+    }
+
+    #[test]
+    fn a_failure_is_worded_by_its_cause_and_who_it_involves() {
+        let who = "Mum";
+        assert_eq!(
+            failure_sentence("A file changed on the sending Device: photo.jpg", Role::Receiver, who),
+            "A file on the sending Device changed or went missing: photo.jpg; send the Transfer again."
+        );
+        let stalled = "The Transfer made no progress for 24 hours, so it was given up.";
+        assert_eq!(
+            failure_sentence(stalled, Role::Sender, who),
+            "No progress for 24 hours, so the Transfer was stopped; send it again."
+        );
+        assert!(failure_sentence(stalled, Role::Receiver, who).ends_with("ask Mum to send it again."));
+        assert_eq!(
+            failure_sentence("Alice is running an older BhayanakShare. Ask them to update.", Role::Sender, "Alice"),
+            "Alice is running an older BhayanakShare; ask them to update."
+        );
+    }
+
+    #[test]
+    fn an_unknown_reason_is_an_unexpected_error_with_the_reason_in_brackets() {
+        assert_eq!(
+            failure_sentence("Disk on fire.", Role::Sender, "Mum"),
+            "The Transfer stopped because of an unexpected error: Disk on fire; if it keeps happening, export diagnostics in Settings."
         );
     }
 }

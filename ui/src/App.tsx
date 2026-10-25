@@ -33,6 +33,7 @@ import { t, type MessageKey } from "./i18n";
 import {
   DISCOVERY_DOCS_URL,
   FIREWALL_DOCS_URL,
+  NEARBY_HINTS,
   NEARBY_WAIT_MS,
   applyDiscovery,
   applyNearby,
@@ -361,7 +362,7 @@ function Screens({ api }: { api: Api }) {
                 {down === null && visibility === "hidden" && nearby.length === 0 && (
                   // Not a live region: it is a state that is there on arriving, not news.
                   <Hint icon="info">
-                    {t("home.hiddenHint")}{" "}
+                    {t(NEARBY_HINTS.hidden)}{" "}
                     <button type="button" className="bs-btn bs-btn--quiet" onClick={() => setTab("settings")}>
                       {t("home.hiddenChange")}
                     </button>
@@ -373,7 +374,7 @@ function Screens({ api }: { api: Api }) {
                   <Banner
                     kind="warn"
                     role="status"
-                    title={down === null ? t("home.firewallHint") : undefined}
+                    title={down === null ? t(NEARBY_HINTS.firewall) : undefined}
                     actions={
                       <a
                         className="bs-btn"
@@ -388,11 +389,7 @@ function Screens({ api }: { api: Api }) {
                       </a>
                     }
                   >
-                    {down !== null && (
-                      <>
-                        {t(down.summary)} {t(down.reason)}
-                      </>
-                    )}
+                    {down !== null && t(down.message)}
                   </Banner>
                 )}
                 <section className="sect" aria-labelledby="devices-heading">

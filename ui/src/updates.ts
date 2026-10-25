@@ -19,7 +19,8 @@ export type UpdateProgress =
   | { step: "up_to_date" }
   | { step: "failed"; message: string };
 
-const ERRORS: Record<UpdateError, MessageKey> = {
+/** The catalogue message (section 7) for each reason an update was not installed. */
+export const UPDATE_ERRORS: Record<UpdateError, MessageKey> = {
   not_self_updating: "update.error.notSelfUpdating",
   none_pending: "update.error.nonePending",
   version_changed: "update.error.versionChanged",
@@ -32,7 +33,7 @@ const ERRORS: Record<UpdateError, MessageKey> = {
 
 /** What a rejected install says, in words. Anything that is not a known kind is a failed install. */
 export function updateErrorMessage(e: unknown): string {
-  const key = typeof e === "string" ? ERRORS[e as UpdateError] : undefined;
+  const key = typeof e === "string" ? UPDATE_ERRORS[e as UpdateError] : undefined;
   return t(key ?? "update.error.installFailed");
 }
 

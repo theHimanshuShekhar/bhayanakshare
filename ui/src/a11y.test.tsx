@@ -272,13 +272,13 @@ describe("accessibility: the hint that local discovery could not start", () => {
   it("has no violations on Home, for a Device that looks for others and for a Hidden one", async () => {
     const device = await start(fakeApi({}, contacts()));
     await device.discoveryChanges({ state: "unavailable", reason: "port_in_use" });
-    await screen.findByText(/Local discovery could not start, so Nearby Devices/);
+    await screen.findByText(/Nearby Devices can't be found because/);
     await expectNoViolations();
 
     cleanup();
     const hidden = await start(fakeApi({ visibility: () => Promise.resolve("hidden") }, contacts()));
     await hidden.discoveryChanges({ state: "unavailable", reason: "no_interface" });
-    await screen.findByText(/people who have your ID can't find this Device/);
+    await screen.findByText(/People who have your ID can't find this Device/);
     await expectNoViolations();
   });
 });
@@ -314,7 +314,7 @@ describe("accessibility: the Offer sheet, with problems", () => {
     const items = Array.from({ length: 12 }, (_, i) => `file-${i}.txt`);
     await row(device, 1, "receiver", { kind: "offered" }, { items, name: "file-0.txt", file_count: 12, adjusted_names: 3 });
     await screen.findByRole("dialog", { name: "Incoming files" });
-    await screen.findAllByText("3 names adjusted");
+    await screen.findAllByText(/^3 names (will be|were) changed/);
     await screen.findByText("and 2 more");
     expect((screen.getByRole("button", { name: "Accept" }) as HTMLButtonElement).disabled).toBe(false);
     await expectNoViolations();
@@ -400,7 +400,7 @@ describe("accessibility: History", () => {
   it("has none when it is empty or cannot be read", async () => {
     await start(fakeApi({ history: () => Promise.reject(new Error("db")) }));
     open("History");
-    await screen.findByText("Could not load your History.");
+    await screen.findByText(/^Your History could not be read/);
     await expectNoViolations();
   });
 
@@ -415,9 +415,9 @@ describe("accessibility: History", () => {
     await screen.findByText("Copied");
     await expectNoViolations();
     fireEvent.click(copy);
-    await screen.findByText("Could not copy. Select the text and copy it by hand.");
+    await screen.findByText("Could not copy to the clipboard; select the text and copy it by hand.");
     fireEvent.click(screen.getAllByRole("button", { name: /^Delete .* from History$/ })[0]);
-    await screen.findByText(/^Could not delete it\./);
+    await screen.findByText(/^Could not delete this entry/);
     await expectNoViolations();
   });
 
@@ -617,7 +617,7 @@ describe("accessibility: dialogs", () => {
     await screen.findByText("Copied");
     await expectNoViolations();
     fireEvent.click(screen.getByRole("button", { name: "Copy link" }));
-    await screen.findByText("Could not copy. Select the text and copy it by hand.");
+    await screen.findByText("Could not copy to the clipboard; select the text and copy it by hand.");
     await expectNoViolations();
   });
 
@@ -661,7 +661,7 @@ describe("accessibility: dialogs", () => {
     expect(password.getAttribute("aria-invalid")).toBe("true");
     await expectNoViolations();
     fireEvent.click(screen.getByRole("button", { name: "Continue" }));
-    await screen.findByText(/Nothing needs to change/);
+    await screen.findByText(/nothing needs to change/);
     await expectNoViolations();
     fireEvent.click(screen.getByRole("button", { name: "Close" }));
 
@@ -717,7 +717,7 @@ describe("accessibility: live regions", () => {
     );
     await start(device);
     open("History");
-    expect(await screen.findAllByText("File no longer at saved location")).toHaveLength(3);
+    expect(await screen.findAllByText(/^The saved file is no longer at /)).toHaveLength(3);
     expect(talking()).toHaveLength(0);
   });
 

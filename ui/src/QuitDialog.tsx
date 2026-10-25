@@ -50,8 +50,7 @@ export function QuitDialog({
         <>
           <div className="bs-sheet__b">
             <p>
-              {active === 1 ? t("quit.inProgressOne") : t("quit.inProgress", { count: active })}{" "}
-              {active === 1 ? t("quit.resumeOne") : t("quit.resume")}
+              {active === 1 ? t("quit.warningOne") : t("quit.warning", { count: active })}
             </p>
             {error !== null && (
               <Banner kind="err" role="alert">

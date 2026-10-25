@@ -98,9 +98,9 @@ describe("applyEvent", () => {
   });
 
   it("says how many names were adjusted", () => {
-    expect(adjustedNamesText(1)).toBe("1 name adjusted");
-    expect(adjustedNamesText(2)).toBe("2 names adjusted");
-    expect(adjustedNamesText(1500)).toBe("1500 names adjusted");
+    expect(adjustedNamesText(1)).toBe("1 name will be changed to characters every system allows (for example “:” becomes “_”).");
+    expect(adjustedNamesText(2)).toBe("2 names will be changed to characters every system allows (for example “:” becomes “_”).");
+    expect(adjustedNamesText(1500)).toBe("1500 names will be changed to characters every system allows (for example “:” becomes “_”).");
   });
 
   it("shows Preparing while the files are hashed, over Offered and Accepted only", () => {

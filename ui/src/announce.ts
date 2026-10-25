@@ -32,6 +32,12 @@ export type ProgressMemory = Record<TransferId | string, { bucket: number; at: n
 
 const line = (title: string, text: string) => t("announce.line", { title, text });
 
+/** What a Transfer's row says, as it is said: a failure starts with the word, as its row does. */
+const said = (view: TransferView, peer: string, preparing = false) => {
+  const text = statusText(view, peer, preparing);
+  return view.state.kind === "failed" ? t("announce.failed", { text }) : text;
+};
+
 const titleOf = (view: TransferView, peer: string) =>
   t(view.role === "sender" ? "transfer.to" : "transfer.from", { name: transferName(view), peer });
 
@@ -81,7 +87,7 @@ export function announcements(
 
     if (view.batch !== null) {
       if (view.state.kind === "failed" && was?.state.kind !== "failed") {
-        messages.push(line(title, statusText(view, peer)));
+        messages.push(line(title, said(view, peer)));
       }
       continue;
     }
@@ -89,8 +95,8 @@ export function announcements(
     // The sheet for this Offer is opening, and takes focus.
     const sheet = was === undefined && opened && opens?.id === id;
     if (view.state.kind !== "saving" && !sheet) {
-      const text = statusText(view, peer, isPreparing(view));
-      const before = was === undefined ? null : statusText(was, peerOf(was), isPreparing(was));
+      const text = said(view, peer, isPreparing(view));
+      const before = was === undefined ? null : said(was, peerOf(was), isPreparing(was));
       if (text !== before) messages.push(line(title, text));
     }
 

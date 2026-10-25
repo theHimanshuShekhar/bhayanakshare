@@ -60,9 +60,13 @@ use crate::{
     manifest::Manifest,
     protocol::{self, LONG_TEXT_NAME, MAX_INLINE_TEXT, Message, Offer, write_frame},
     scan::{self, Scan},
+    reasons::{
+        BUSY, CANT_CHECK_FILES, CANT_LOOK_UP, CANT_OPEN, CANT_PREPARE_FILES, CANT_READ_FILES, CHANGED_PREFIX,
+        INVALID_NAMES, LOST, STALLED, UNEXPECTED, UNREACHABLE,
+    },
     session::{
-        BUSY, CLOSE_GRACE, Failure, HelloError, INVALID_NAMES, LOST, STALLED, Session, Stall, Stop, UNEXPECTED,
-        expect_hello, fail, made_progress, save_progress, stop,
+        CLOSE_GRACE, Failure, HelloError, Session, Stall, Stop, expect_hello, fail, made_progress, save_progress,
+        stop,
     },
     transfer::{Role, STALL_TTL_MS, TransferId, TransferState},
 };
@@ -294,9 +298,6 @@ pub(crate) fn recover(
     });
 }
 
-/// Why a Transfer fails when no address of the Receiver works: every lookup came back empty or
-/// the addresses found got no answer.
-const UNREACHABLE: &str = "Could not reach the receiving Device. It may be offline, or one of you may have no internet connection.";
 
 /// How long to try the addresses found for the Receiver before giving up on it: a Device none of
 /// the lookups can place fails at once, but a stale address (a Contact that has since gone
@@ -314,7 +315,7 @@ async fn connect(sh: &Shared, to: &DeviceAddr) -> Result<(Session, Option<String
     let (mut send, recv) = conn
         .open_bi()
         .await
-        .map_err(fail("Could not reach the receiving Device."))?;
+        .map_err(fail(CANT_OPEN))?;
     let mut incoming = protocol::spawn_reader(recv);
 
     write_frame(&mut send, &Message::Hello(protocol::Hello::named(sh.device_name().await)))
@@ -744,13 +745,13 @@ async fn check_files(
 /// Transfer must still be there, with the size and modification time it had when the Offer was
 /// made (spec section 4). Returns the files as recorded.
 async fn check_sources(sh: &Shared, info: &TransferInfo) -> Result<Vec<Source>, Failure> {
-    let sources = sh.db.sources(info.id).await.map_err(fail("Could not look up the Transfer."))?;
+    let sources = sh.db.sources(info.id).await.map_err(fail(CANT_LOOK_UP))?;
     let (sources, gone) = tokio::task::spawn_blocking(move || {
         let gone = sources.iter().find(|source| !is_unchanged(source)).map(|s| s.name.clone());
         (sources, gone)
     })
     .await
-    .map_err(fail("Could not check the files."))?;
+    .map_err(fail(CANT_CHECK_FILES))?;
     match gone {
         Some(name) => Err(changed(&name)),
         None => Ok(sources),
@@ -761,7 +762,7 @@ async fn check_sources(sh: &Shared, info: &TransferInfo) -> Result<Vec<Source>, 
 fn changed(name: &str) -> Failure {
     // The user is told which file; the log is not (a `Failure::with` would log the reason).
     tracing::warn!("Transfer failed: a file changed on the sending Device (source check failed)");
-    Failure(format!("A file changed on the sending Device: {name}"))
+    Failure(format!("{CHANGED_PREFIX}{name}"))
 }
 
 fn is_unchanged(source: &Source) -> bool {
@@ -886,7 +887,7 @@ async fn import(
         .buffered_ordered(IMPORT_PARALLELISM)
         .try_collect()
         .await
-        .map_err(fail("Could not read the files."))?;
+        .map_err(fail(CANT_READ_FILES))?;
     replace_stale(&store, db, sources, &tags).await?;
     let collection = Collection::from_iter(
         sources.iter().map(|source| source.name.clone()).zip(tags.iter().map(TempTag::hash)),
@@ -894,7 +895,7 @@ async fn import(
     let root = collection
         .store(&store)
         .await
-        .map_err(fail("Could not prepare the files for sending."))?;
+        .map_err(fail(CANT_PREPARE_FILES))?;
     let hash = root.hash();
     tags.push(root);
     Ok((hash, tags))
@@ -940,7 +941,7 @@ async fn replace_stale(
         }
         let copy = add(store, source.path.clone(), ImportMode::Copy)
             .await
-            .map_err(fail("Could not read the files."))?;
+            .map_err(fail(CANT_READ_FILES))?;
         if copy.hash().as_bytes() != &hash {
             // It changed between the two imports.
             return Err(changed(&source.name));
