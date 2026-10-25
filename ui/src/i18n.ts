@@ -328,6 +328,7 @@ const en = {
   "offer.accept": "Accept",
   "offer.decline": "Decline",
   "offer.expiresIn": "Expires in {time}",
+  "offer.acceptBlocked": "Accept is not available until the problems above are solved.",
   "offer.failed": "Could not answer the Offer. {reason}",
 
   "transfer.nameMore": "{name} and {count} more",

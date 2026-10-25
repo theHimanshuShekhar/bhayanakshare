@@ -1,5 +1,6 @@
 import jsQR from "jsqr";
 import { useEffect, useRef, useState } from "react";
+import { Banner, Hint } from "./Banner";
 import { t } from "./i18n";
 
 /** How often a frame from the camera is looked at, and the widest it is looked at. */
@@ -67,13 +68,17 @@ export function QrScanner({ onDecoded }: { onDecoded: (text: string) => void }) 
     };
   }, []);
 
-  if (error !== null) return <p role="alert">{error}</p>;
+  if (error !== null) {
+    return (
+      <Banner kind="err" role="alert">
+        {error}
+      </Banner>
+    );
+  }
   return (
     <>
       <video ref={video} className="scanner" muted playsInline aria-label={t("scan.video")} />
-      <p role="status" className="note">
-        {t("scan.hint")}
-      </p>
+      <Hint role="status">{t("scan.hint")}</Hint>
     </>
   );
 }

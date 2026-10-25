@@ -1629,70 +1629,34 @@ html:has(.bs-scrim) {
 }
 
 /* Sheets (#69) */
-.overlay {
-  position: fixed;
-  inset: 0;
-  z-index: 5;
-  display: grid;
-  place-items: center;
-  padding: var(--bs-s4);
-  background: var(--bs-scrim);
-}
 
-.sheet {
-  width: 100%;
-  max-width: 560px;
-  max-height: calc(100vh - 32px);
-  overflow: auto;
-  padding: var(--bs-s6);
-  background: var(--bs-surface);
-  color: var(--bs-ink);
-  border: 1px solid var(--bs-line);
-  border-radius: var(--bs-r-xl);
-  box-shadow: var(--bs-e3);
-}
-
-.sheet label {
-  display: block;
-  margin-bottom: 4px;
-  font-weight: var(--bs-fw-semibold);
-}
-
-.sheet input:not([type="checkbox"], [type="radio"]),
-.sheet textarea {
-  display: block;
-  width: 100%;
-}
-
-.sheet dt {
-  font-size: 12px;
-  font-weight: var(--bs-fw-bold);
+/* The time left on an Offer. */
+.offer-expiry {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+  margin: 0;
   color: var(--bs-muted);
-  text-transform: uppercase;
-  letter-spacing: 0.05em;
+  font-size: var(--bs-fs-small);
 }
 
-.sheet dd {
-  margin: 0 0 8px;
-  overflow-wrap: anywhere;
+/* "and 3 more", under the Items an Offer lists. */
+.offer-more {
+  margin: 2px 0 0;
+  font-weight: var(--bs-fw-regular);
 }
 
-.fingerprint {
-  font: 700 32px var(--bs-mono);
-  letter-spacing: 0.14em;
-  text-align: center;
+/* A Device ID is typed in the mono face: `.bs-input` sets the font after `.bs-mono` does. */
+.bs-sheet .bs-input.bs-mono {
+  font-family: var(--bs-mono);
 }
 
-.plain-text {
-  max-height: 14rem;
-  overflow: auto;
-  padding: 10px 12px;
-  background: var(--bs-bg);
-  border: 1px solid var(--bs-line);
-  border-radius: var(--bs-r-md);
-  font: inherit;
-  white-space: pre-wrap;
-  overflow-wrap: anywhere;
+/* A dialog whose fields are in a form: the form carries the body and the buttons, so the
+ * buttons stay in the form and still sit along the bottom of the sheet. */
+.bs-sheet > form {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
 }
 
 /* Shared by several screens until each is redone */

@@ -1,5 +1,6 @@
 import { useRef, useState } from "react";
 import type { Api, Contact } from "./api";
+import { Banner } from "./Banner";
 import { contactName } from "./contacts";
 import { t } from "./i18n";
 import { Sheet } from "./Sheet";
@@ -45,15 +46,23 @@ export function RemoveContactDialog({
       // The safe answer starts focused, so Enter cannot remove a Contact by accident.
       initialFocus={keep}
     >
-      <h2 id="remove-heading">{t("removeContact.heading", { name })}</h2>
-      <p id="remove-body">{t("removeContact.body")}</p>
-      {error !== null && <p role="alert">{error}</p>}
-      <div className="actions">
-        <button type="button" onClick={remove} disabled={busy}>
-          {t("removeContact.confirm")}
-        </button>
-        <button type="button" ref={keep} onClick={onClose}>
+      <h2 id="remove-heading" className="bs-sheet__t">
+        {t("removeContact.heading", { name })}
+      </h2>
+      <div className="bs-sheet__b">
+        <p id="remove-body">{t("removeContact.body")}</p>
+        {error !== null && (
+          <Banner kind="err" role="alert">
+            {error}
+          </Banner>
+        )}
+      </div>
+      <div className="bs-sheet__a">
+        <button type="button" className="bs-btn" ref={keep} onClick={onClose}>
           {t("removeContact.cancel")}
+        </button>
+        <button type="button" className="bs-btn bs-btn--danger" onClick={remove} disabled={busy}>
+          {t("removeContact.confirm")}
         </button>
       </div>
     </Sheet>

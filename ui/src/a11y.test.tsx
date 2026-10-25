@@ -253,6 +253,32 @@ describe("accessibility: the Offer sheet", () => {
   });
 });
 
+describe("accessibility: the Offer sheet, with problems", () => {
+  it("has none with adjusted names and many items, and Accept still available", async () => {
+    const device = await start(fakeApi({}, contacts()));
+    const items = Array.from({ length: 12 }, (_, i) => `file-${i}.txt`);
+    await row(device, 1, "receiver", { kind: "offered" }, { items, name: "file-0.txt", file_count: 12, adjusted_names: 3 });
+    await screen.findByRole("dialog", { name: "Incoming files" });
+    await screen.findAllByText("3 names adjusted");
+    await screen.findByText("and 2 more");
+    expect((screen.getByRole("button", { name: "Accept" }) as HTMLButtonElement).disabled).toBe(false);
+    await expectNoViolations();
+  });
+
+  it("has none while the folder cannot be used: Accept is off and says why", async () => {
+    const checkOffer = vi.fn(() => Promise.reject(new Error("drive not connected")));
+    const device = await start(fakeApi({ checkOffer }));
+    await row(device, 1, "receiver", { kind: "offered" });
+    await screen.findByText(/Could not use that folder/);
+    const accept = screen.getByRole("button", { name: "Accept" }) as HTMLButtonElement;
+    expect(accept.disabled).toBe(true);
+    expect(document.getElementById(accept.getAttribute("aria-describedby")!)?.textContent).toMatch(
+      /Accept is not available until the problems above are solved/,
+    );
+    await expectNoViolations();
+  });
+});
+
 describe("accessibility: Batch rows", () => {
   const many = async (device: ReturnType<typeof fakeApi>) => {
     await row(device, 1, "sender", { kind: "completed", saved_to: null }, { batch_id: BATCH });
@@ -449,7 +475,7 @@ describe("accessibility: dialogs", () => {
     await screen.findByRole("dialog", { name: "Export identity" });
     await expectNoViolations();
     fireEvent.click(screen.getByRole("button", { name: "Save as…" }));
-    await screen.findByText(/at least/i, { selector: "[role=alert]" });
+    expect((await screen.findByRole("alert")).textContent).toMatch(/at least/i);
     await expectNoViolations();
     fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
 
@@ -460,6 +486,74 @@ describe("accessibility: dialogs", () => {
     fireEvent.click(screen.getByRole("button", { name: "Continue" }));
     await screen.findByRole("alertdialog", { name: "Replace this Device's identity?" });
     await expectNoViolations();
+  });
+
+  it("has none in Export identity: a mismatch under the field, a save that failed, and once saved", async () => {
+    const exportIdentity = vi.fn().mockRejectedValueOnce(new Error("disk full")).mockResolvedValue(null);
+    await start(fakeApi({ exportIdentity }));
+    open("Settings");
+    await waitFor(() =>
+      expect((screen.getByRole("button", { name: "Export identity…" }) as HTMLButtonElement).disabled).toBe(false),
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Export identity…" }));
+    await screen.findByRole("dialog", { name: "Export identity" });
+    fireEvent.change(screen.getByLabelText("Password"), { target: { value: "long enough" } });
+    fireEvent.change(screen.getByLabelText("Type the password again"), { target: { value: "different" } });
+    fireEvent.click(screen.getByRole("button", { name: "Save as…" }));
+    await screen.findByRole("alert");
+    await expectNoViolations();
+    fireEvent.change(screen.getByLabelText("Type the password again"), { target: { value: "long enough" } });
+    fireEvent.click(screen.getByRole("button", { name: "Save as…" }));
+    await screen.findByText(/disk full/);
+    await expectNoViolations();
+    fireEvent.click(screen.getByRole("button", { name: "Save as…" }));
+    await screen.findByText(/Saved to/);
+    await expectNoViolations();
+  });
+
+  it("has none in Import identity: a wrong password, a file with this Device's own identity, and the warnings", async () => {
+    const checkIdentityImport = vi
+      .fn()
+      .mockRejectedValueOnce({ kind: "wrong_password", message: "" })
+      .mockResolvedValueOnce({ id: "A".repeat(52), fingerprint: "AAAA-AAAA" })
+      .mockResolvedValue({ id: "B".repeat(52), fingerprint: "BBBB-BBBB" });
+    const transfersInProgress = vi.fn(() => Promise.resolve(2));
+    await start(fakeApi({ checkIdentityImport, transfersInProgress }));
+    open("Settings");
+    fireEvent.click(await screen.findByRole("button", { name: "Import identity…" }));
+    const password = await screen.findByLabelText("Password of this file");
+    fireEvent.change(password, { target: { value: "wrong" } });
+    fireEvent.click(screen.getByRole("button", { name: "Continue" }));
+    await screen.findByRole("alert");
+    expect(password.getAttribute("aria-invalid")).toBe("true");
+    await expectNoViolations();
+    fireEvent.click(screen.getByRole("button", { name: "Continue" }));
+    await screen.findByText(/Nothing needs to change/);
+    await expectNoViolations();
+    fireEvent.click(screen.getByRole("button", { name: "Close" }));
+
+    fireEvent.click(screen.getByRole("button", { name: "Import identity…" }));
+    fireEvent.change(await screen.findByLabelText("Password of this file"), { target: { value: "right" } });
+    fireEvent.click(screen.getByRole("button", { name: "Continue" }));
+    await screen.findByRole("alertdialog", { name: "Replace this Device's identity?" });
+    await screen.findByText(/2 Transfers are in progress/);
+    await expectNoViolations();
+  });
+
+  it("has none in the camera's own refusal", async () => {
+    const { QrScanner } = await vi.importActual<typeof import("./QrScanner")>("./QrScanner");
+    vi.stubGlobal("navigator", { ...navigator, mediaDevices: undefined });
+    try {
+      render(
+        <main>
+          <QrScanner onDecoded={() => {}} />
+        </main>,
+      );
+      await screen.findByRole("alert");
+      await expectNoViolations();
+    } finally {
+      vi.unstubAllGlobals();
+    }
   });
 
   it("has none in My ID's QR code", async () => {
