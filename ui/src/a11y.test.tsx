@@ -220,6 +220,54 @@ describe("accessibility: Home", () => {
   });
 });
 
+describe("accessibility: Home, redesigned", () => {
+  it("has none with no Devices and no Transfers: both empty boxes, and My ID before Transfers", async () => {
+    await start();
+    await screen.findByText("Your Contacts and Nearby Devices will appear here.");
+    await screen.findByText("No Transfers yet.");
+    await expectNoViolations();
+  });
+
+  it("has none in the selection bar while a text is written to several Devices", async () => {
+    const device = await start(fakeApi({}, contacts()));
+    await device.nearby({ id: STRANGER, name: "Sam's laptop" });
+    fireEvent.click(await screen.findByRole("checkbox", { name: /Select Mum/ }));
+    fireEvent.click(screen.getByRole("checkbox", { name: /Select Sam/ }));
+    fireEvent.click(screen.getByRole("button", { name: "Write text…" }));
+    await expectNoViolations();
+  });
+
+  it("has none with the firewall hint, and with files waiting", async () => {
+    const real = globalThis.setTimeout;
+    vi.spyOn(globalThis, "setTimeout").mockImplementation(((fn: () => void, ms?: number, ...args: unknown[]) =>
+      real(fn, ms === 30_000 ? 0 : ms, ...args)) as unknown as typeof setTimeout);
+    const device = await start();
+    await device.shell({ type: "send_files", paths: ["/tmp/a.txt"] });
+    await screen.findByText(/No Devices found on this network yet/);
+    await screen.findByText(/Choose a Device to send a\.txt to/);
+    await expectNoViolations();
+    vi.restoreAllMocks();
+  });
+
+  it("has none with a package's update banner, which links to the release page", async () => {
+    const device = await start();
+    await device.shell({ type: "update_available", action: { type: "open_page", version: "0.3.0" } });
+    await screen.findByRole("link", { name: "Open the release page" });
+    await expectNoViolations();
+  });
+
+  it("has none with a Transfer reconnecting, declined and cancelled, and a text copied", async () => {
+    const device = await start(fakeApi({}, contacts()));
+    await row(device, 1, "receiver", { kind: "reconnecting" });
+    await device.push({ type: "progress", transfer_id: "1".repeat(32), bytes: 1024, total: 2048 });
+    await row(device, 2, "sender", { kind: "declined" });
+    await row(device, 3, "receiver", { kind: "cancelled", by: "sender" });
+    await row(device, 4, "receiver", { kind: "completed", saved_to: null }, { kind: "text", text: "hello", name: "", items: [] });
+    fireEvent.click(await screen.findByRole("button", { name: /^Copy the text/ }));
+    await expectNoViolations();
+  });
+});
+
 describe("accessibility: the hint that local discovery could not start", () => {
   it("has no violations on Home, for a Device that looks for others and for a Hidden one", async () => {
     const device = await start(fakeApi({}, contacts()));
@@ -542,6 +590,6 @@ describe("accessibility: live regions", () => {
   it("keeps the words of a hint that appears because something happened: an update", async () => {
     const device = await start();
     await device.shell({ type: "update_available", action: { type: "open_page", version: "0.3.0" } });
-    expect((await screen.findByText(/Update available/)).getAttribute("role")).toBe("status");
+    expect((await screen.findByText(/Update available/)).closest("[role=status]")).not.toBeNull();
   });
 });

@@ -1565,70 +1565,41 @@ html:has(.bs-scrim) {
  * Each screen's ticket removes its part as the screen moves to the components. */
 
 /* Home (#68) */
-.tiles {
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(176px, 1fr));
-  gap: 14px;
-}
 
-.tile-group {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-  padding: 8px;
-  background: var(--bs-surface);
-  border: 1px solid var(--bs-ctl);
-  border-radius: var(--bs-r-lg);
-}
-
-.tile-group.selected {
-  border: 2px solid var(--bs-accent);
-  background: var(--bs-soft);
-}
-
-.tile {
-  min-height: 88px;
-  flex-direction: column;
-}
-
+/* What a tile says besides its name sits in the tile's own column, not in a box of its own. */
 .tile-state {
   display: contents;
 }
 
-.selection {
-  display: grid;
-  gap: 10px;
-  padding: 12px var(--bs-s4);
-  background: var(--bs-surface);
-  border: 2px solid var(--bs-accent);
-  border-radius: var(--bs-r-lg);
-}
-
-.transfers {
-  list-style: none;
+.selbar__c {
   margin: 0;
-  padding: 0;
+  font-weight: var(--bs-fw-bold);
+}
+
+/* Writing a text: the field and its buttons take the bar's whole width, one above the other. */
+.selbar__compose {
+  flex: 1 1 100%;
   display: grid;
   gap: 10px;
+  min-width: 0;
 }
 
-.transfers li {
-  padding: 12px var(--bs-s4);
-  background: var(--bs-surface);
-  border: 1px solid var(--bs-line);
-  border-radius: var(--bs-r-lg);
+.selbar__compose textarea {
+  width: 100%;
 }
 
-.transfers .members {
-  list-style: none;
-  display: grid;
-  gap: 8px;
-  margin: 8px 0 0;
-  padding: 0;
+/* A text received: its buttons sit under it, inside the row's left column. */
+.bs-row .copy {
+  margin-top: 8px;
+  align-items: center;
 }
 
-.transfers p {
-  margin: 4px 0;
+.bs-row .copy .bs-row__s {
+  margin-top: 0;
+}
+
+.bs-row .plain-text {
+  margin-top: 8px;
 }
 
 /* History (#70) */

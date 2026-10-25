@@ -1395,7 +1395,7 @@ describe("the hint that local discovery could not start", () => {
     const before = screen.getAllByRole("status").filter((el) => el.textContent !== "").length;
     await device.discoveryChanges(PORT_IN_USE);
     const hint = screen.getByText(DOWN, { exact: false });
-    expect(hint.closest("[role=status]")).toBe(hint);
+    expect(hint.closest("[role=status]")).not.toBeNull();
     expect(screen.getAllByRole("status").filter((el) => el.textContent !== "").length).toBe(before);
   });
 
@@ -3158,7 +3158,7 @@ describe("version mismatches", () => {
     );
     await refused(device, "this_device");
     fireEvent.click(screen.getByRole("button", { name: "Update now" }));
-    expect((await screen.findByText("Installing version 9.9.9…")).getAttribute("role")).toBe("status");
+    expect((await screen.findByText("Installing version 9.9.9…")).closest("[role=status]")).not.toBeNull();
     expect(device.api.checkForUpdate).toHaveBeenCalledTimes(1);
     // The version it was shown is the version it installs.
     expect(device.api.installUpdate).toHaveBeenCalledWith("9.9.9");
@@ -3253,7 +3253,7 @@ describe("updates", () => {
 
   it("offers an AppImage to install the new version and restart, and installs only when asked", async () => {
     const device = await start(found({ type: "install", version: "0.2.0" }));
-    expect((await screen.findByText(/Update available \(version 0\.2\.0\)/)).getAttribute("role")).toBe("status");
+    expect((await screen.findByText(/Update available \(version 0\.2\.0\)/)).closest("[role=status]")).not.toBeNull();
     expect(screen.queryByRole("link", { name: "Open the release page" })).toBeNull();
     expect(device.api.installUpdate).not.toHaveBeenCalled();
 

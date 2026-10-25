@@ -1,4 +1,5 @@
 import type { Api, UpdateAction } from "./api";
+import { Banner } from "./Banner";
 import { t } from "./i18n";
 import { offeredVersion, type Updater } from "./updates";
 import { RELEASES_URL } from "./versions";
@@ -9,24 +10,30 @@ export function UpdateStatus({ updater }: { updater: Updater }) {
   if (progress === null || progress.step === "preparing") return null;
   switch (progress.step) {
     case "checking":
-      return <p role="status">{t("update.checking")}</p>;
+      return <Banner kind="info" role="status" title={t("update.checking")} />;
     case "installing":
-      return <p role="status">{t("update.installing", { version: progress.version })}</p>;
+      return <Banner kind="info" role="status" title={t("update.installing", { version: progress.version })} />;
     case "up_to_date":
-      return <p role="status">{t("update.none")}</p>;
+      return <Banner kind="info" role="status" title={t("update.none")} />;
     case "failed":
-      return <p role="alert">{progress.message}</p>;
+      return <Banner kind="err" role="alert" title={progress.message} />;
     case "confirm":
       return (
-        <p role="alert">
-          {progress.active === 1 ? t("update.activeOne") : t("update.active", { count: progress.active })}{" "}
-          <button type="button" onClick={() => updater.confirm()}>
-            {t("update.confirm", { version: progress.version })}
-          </button>{" "}
-          <button type="button" onClick={updater.cancel}>
-            {t("update.cancel")}
-          </button>
-        </p>
+        <Banner
+          kind="warn"
+          role="alert"
+          title={progress.active === 1 ? t("update.activeOne") : t("update.active", { count: progress.active })}
+          actions={
+            <>
+              <button type="button" className="bs-btn bs-btn--pri" onClick={() => updater.confirm()}>
+                {t("update.confirm", { version: progress.version })}
+              </button>
+              <button type="button" onClick={updater.cancel}>
+                {t("update.cancel")}
+              </button>
+            </>
+          }
+        />
       );
   }
 }
@@ -55,32 +62,36 @@ export function UpdateBanner({
   const version = offeredVersion(update);
   if (version === null) return null;
   return (
-    <p role="status" className="hint">
-      {t("update.available", { version })}{" "}
-      {update.type === "install" ? (
-        <button type="button" disabled={busy} onClick={() => onInstall(version)}>
-          {t("update.install")}
-        </button>
-      ) : (
-        <a
-          href={RELEASES_URL}
-          onClick={(e) => {
-            // The webview must not navigate away from the app.
-            e.preventDefault();
-            api.openUrl(RELEASES_URL).catch(() => {});
-          }}
-        >
-          {t("update.releasePage")}
-        </a>
-      )}
-      {onDismiss && (
+    <Banner
+      kind="info"
+      role="status"
+      title={t("update.available", { version })}
+      actions={
         <>
-          {" "}
-          <button type="button" disabled={busy} onClick={onDismiss}>
-            {t("update.dismiss")}
-          </button>
+          {update.type === "install" ? (
+            <button type="button" className="bs-btn bs-btn--pri" disabled={busy} onClick={() => onInstall(version)}>
+              {t("update.install")}
+            </button>
+          ) : (
+            <a
+              className="bs-btn bs-btn--pri"
+              href={RELEASES_URL}
+              onClick={(e) => {
+                // The webview must not navigate away from the app.
+                e.preventDefault();
+                api.openUrl(RELEASES_URL).catch(() => {});
+              }}
+            >
+              {t("update.releasePage")}
+            </a>
+          )}
+          {onDismiss && (
+            <button type="button" disabled={busy} onClick={onDismiss}>
+              {t("update.dismiss")}
+            </button>
+          )}
         </>
-      )}
-    </p>
+      }
+    />
   );
 }

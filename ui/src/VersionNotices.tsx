@@ -1,4 +1,5 @@
 import type { Contact } from "./api";
+import { Banner } from "./Banner";
 import { peerName } from "./contacts";
 import { t } from "./i18n";
 import type { VersionNotice } from "./versions";
@@ -20,17 +21,24 @@ export function VersionNotices({ contacts, notices, updating, onUpdateNow, onDis
         const name = peerName(notice.peer, contacts, notice.peerName);
         const thisDevice = notice.outdated === "this_device";
         return (
-          <p key={notice.peer} role="status" className="hint">
-            {t(thisDevice ? "version.thisOlder" : "version.peerOlder", { name })}{" "}
-            {thisDevice && (
-              <button type="button" disabled={updating} onClick={onUpdateNow}>
-                {t("version.update")}
-              </button>
-            )}{" "}
-            <button type="button" onClick={() => onDismiss(notice.peer)}>
-              {t("version.dismiss")}
-            </button>
-          </p>
+          <Banner
+            key={notice.peer}
+            kind="warn"
+            role="status"
+            title={t(thisDevice ? "version.thisOlder" : "version.peerOlder", { name })}
+            actions={
+              <>
+                {thisDevice && (
+                  <button type="button" className="bs-btn bs-btn--pri" disabled={updating} onClick={onUpdateNow}>
+                    {t("version.update")}
+                  </button>
+                )}
+                <button type="button" onClick={() => onDismiss(notice.peer)}>
+                  {t("version.dismiss")}
+                </button>
+              </>
+            }
+          />
         );
       })}
     </>
