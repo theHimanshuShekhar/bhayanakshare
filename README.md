@@ -73,6 +73,8 @@ Which bundles each platform builds is set in `src-tauri/tauri.linux.conf.json` a
 
 `.github/workflows/bundle-check.yml` builds the same bundles without a tag, a secret or a signature, so a change to the packaging shows its result on the push that makes it. It runs when the bundle config, `build.rs`, the icons, the Linux desktop file or either workflow changes (and by hand from the Actions tab), keeps the bundles as workflow artifacts for 3 days, and on Windows checks that the app has exactly one embedded manifest, with Common Controls v6 and nothing above `asInvoker`.
 
+The icons (`src-tauri/icons/`) and the brand files they come from (`assets/`) are described in [`assets/brand/README.md`](assets/brand/README.md), with how to regenerate them. The window and installer icon is `icon.ico` on Windows and the PNGs in `bundle.icon` on Linux; the tray draws a flat white glyph (`icons/tray/`), picked by display scale. A test in `src-tauri/src/updates.rs` checks that the icon set is complete for both platforms.
+
 Each beta and 1.0 must pass the [release checklist](docs/release-checklist.md): the manual gate, run on one Windows 11 PC and one Linux PC on the same LAN, with their firewalls on.
 
 The release workflow is the one that sees the signing key, so its actions are pinned to commits (the tag is in a comment beside each), it caches nothing, and only the build job (both of its legs) has write permission. Update the pins by hand, checking the new tag.
